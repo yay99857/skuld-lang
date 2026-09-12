@@ -63,7 +63,7 @@ accurate; documenting a future feature is not a request to implement it.
   checker → HIR → C → clang pipeline, native Demos 0–2 and loops. Scalar types
   are int, float, bool, string and void; functions, locals, calls, returns,
   conditionals, `while`, `loop`, `break`, `continue`, structs and
-  reference-counted string concatenation execute. Parameters and `let` bindings are immutable.
+  reference-counted string concatenation and interpolation execute. Parameters and `let` bindings are immutable.
 - `lex`, `parse`, `resolve` inspect individual stages. `check` performs full
   static checking without clang; `emit-c` emits checked C; `run` builds and
   executes in a private temporary directory, keeping nothing; `build` keeps the
@@ -91,8 +91,8 @@ accurate; documenting a future feature is not a request to implement it.
   generated C; do not restate retain/release in the code generator. Ownership
   is emitted with cleanup attributes: fresh values are adopted, borrowed values
   retained on entry, arguments borrowed, returns retained.
-- Next milestone: the planned Demo 3 showcase, which reuses this runtime and
-  adds reference semantics plus the cycle problem. Members
+- Next milestone: classes, which reuse this runtime and add reference
+  semantics plus the cycle problem that needs `weak`. Members
   are parser syntax only and are rejected by checking until their milestone.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.

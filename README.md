@@ -152,8 +152,11 @@ Strings are reference counted: `+` concatenates and the result is freed when
 its last reference goes away. Counts are not atomic, there is no garbage
 collector and no cycle collector; literals never allocate.
 
-Next: the planned class/object/interpolation showcase (Demo 3), which reuses
-this runtime and adds reference semantics. Structs, managed memory, modules, standard library, official
+`"${value}"` interpolates, accepting what `print` accepts and lowering to
+concatenation.
+
+Next: classes (Demo 3), which reuse this runtime and add reference semantics
+along with the reference cycles that come with them. Structs, managed memory, modules, standard library, official
 formatter, broader tooling, portability and eventual self-hosting remain ahead.
 Status is reported as completed milestones, not as a completion percentage, and
 implies neither production readiness nor measured Go/Rust performance.

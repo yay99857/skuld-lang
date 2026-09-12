@@ -1,0 +1,21 @@
+struct Person {
+    name: string
+    age: int
+
+    introduction() -> string {
+        return "I am ${this.name}, ${this.age} years old."
+    }
+}
+
+func main() {
+    let person = Person { name: "Ada", age: 36 }
+    print(person.introduction())
+
+    // Anything `print` accepts can be interpolated, and expressions may hold
+    // braces: a record literal inside `${ }` does not end it early.
+    print("adult: ${person.age >= 18}, half: ${person.age / 2}")
+    print("another: ${Person { name: "Grace", age: 45 }.introduction()}")
+
+    // `\$` keeps a literal `${` as text.
+    print("\${not interpolated}")
+}

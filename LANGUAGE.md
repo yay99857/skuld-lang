@@ -2,8 +2,8 @@
 
 Status labels: **Implemented** means available now; **Planned** describes future
 intent, not accepted/executable programs; **Experimental** denotes provisional
-choices. The complete single-file native pipeline, Demos 0–2, loops, structs and
-reference-counted strings are implemented. Classes, arrays and self-hosting
+choices. The complete single-file native pipeline, Demos 0–2, loops, structs,
+reference-counted strings and interpolation are implemented. Classes, arrays and self-hosting
 remain planned.
 
 ## Philosophy — Planned
@@ -75,8 +75,9 @@ suffixes are not supported; they can lex as adjacent tokens, which the parser re
 
 Strings use double quotes; chars use single quotes and must decode to exactly
 one Unicode scalar value (not one grapheme). Both accept Unicode text and the
-escapes `\\`, `\"`, `\'`, `\n`, `\r`, `\t`, `\0`. Literal line breaks are
-rejected. `${name}` is currently ordinary string text, with no interpolation.
+escapes `\\`, `\"`, `\'`, `\n`, `\r`, `\t`, `\0`, `\$`. Literal line breaks
+are rejected. `${expr}` interpolates; `\$` writes a literal `${`, and a `$`
+not followed by `{` is ordinary text.
 Block comments are unsupported; their delimiters currently lex as operators.
 
 Tokens and diagnostics retain half-open byte spans. EOF occurs exactly once at
@@ -280,7 +281,7 @@ literals. Float printing uses 17 significant digits. Bool prints `true` or
 A string is a pointer, a length and an owner. Literals keep the owner null and
 point at static bytes that live for the program duration; concatenation
 allocates and reference counts the result. Printing and equality preserve
-embedded NUL bytes. There is no string mutation or interpolation yet.
+embedded NUL bytes. There is no string mutation yet.
 
 Printing, comparison and checked-arithmetic helpers are emitted with the C;
 integer checks use clang overflow builtins. Retain and release come from
@@ -396,7 +397,19 @@ func greeting(name: string) -> string {
 
 `+` concatenates strings and produces a new one; no other operator is defined
 on them, and there is no implicit conversion, so `"a" + 1` is a type error.
-Interpolation is still future work.
+
+```skuld
+print("${person.name} is ${person.age}, adult: ${person.age >= 18}")
+```
+
+Interpolation accepts exactly what `print` accepts — int, float, bool and
+string — so a value reads the same interpolated or printed; anything else,
+including a struct, has no textual form and is rejected. Booleans interpolate
+to static bytes and do not allocate. Expressions may contain braces: a record
+literal or a method call inside `${ }` does not end it early.
+
+Interpolation lowers to concatenation, so it costs what writing the
+concatenation by hand would.
 
 Generated code releases every owning slot on every exit path, including
 `return`, `break` and `continue`. Structs that hold strings are managed too:
@@ -443,8 +456,8 @@ Skuld must not expose uninitialized field reads as JavaScript-style undefined.
 The sketch's lowercase `address` does not declare a type or establish an alias;
 the specification uses `Address` as a placeholder for a separately declared type.
 
-The example's string `+` is implemented concatenation. String interpolation
-remains a separate future capability.
+The example's string `+` is implemented concatenation, and interpolation is
+implemented as well.
 
 Structs are implemented with fields and methods; see the section below. They
 adopt the class receiver shape: no `func`, no explicit receiver, `this` for
