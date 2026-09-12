@@ -81,3 +81,24 @@ Documentation-only edits need a consistency review across `README.md`,
   Experimental. Changing behavior means updating those markers in the same
   change; documenting a feature is not permission to implement it.
 - Stay inside the active milestone described in `AGENTS.md`.
+
+## Committing
+
+This repository uses micro commits: **one completed task, one commit.** Commit
+as soon as a task is done and validated — do not let finished work pile up into
+a single large change.
+
+- Stage explicit paths. Never `git add -A`, `git add .`, or `git commit -a`.
+- One concern per commit. A refactor riding along with a feature belongs in its
+  own commit, as does a formatting pass.
+- Match the existing log: `type(scope): imperative subject`, then a body saying
+  **why** the change exists rather than listing the files. English, like the
+  rest of the repository. Keep the trailer convention `git log` already shows.
+- Another agent may be editing this tree at the same time. Before staging, sort
+  by mtime and leave the recently-touched cluster alone; committing a file
+  mid-edit captures a half-finished state. Scratch files at the repository root
+  are not project content — leave them untracked.
+- Validate before committing, not after: `cargo fmt --all`, the relevant tests,
+  then `cargo clippy --workspace --all-targets -- -D warnings`. A commit whose
+  tests were never run is worse than no commit.
+- Push only when asked.
