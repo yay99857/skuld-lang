@@ -1,11 +1,12 @@
 //! Readable C11 generation from typed HIR only. No source syntax or name lookup.
-use crate::{hir::*, types::Type};
+use crate::{hir::*, type_checker::StructInfo, types::Type};
 
 pub fn emit_c(program: &Program) -> String {
     let mut emitter = Emitter {
-        output: PRELUDE.into(),
+        output: format!("{PRELUDE_HEAD}{RUNTIME}{PRELUDE_TAIL}"),
         indent: 0,
         next_temp: 0,
+        structs: program.structs.clone(),
     };
     // Declaration order is a valid definition order: a value type cannot
     // contain itself, and the checker rejects any cycle.
@@ -26,6 +27,51 @@ pub fn emit_c(program: &Program) -> String {
         }
         emitter.indent -= 1;
         emitter.line(&format!("}} skuld_s{index};"));
+    }
+    for index in 0..program.structs.len() {
+        if !emitter.managed(Type::Struct(crate::types::StructId(index))) {
+            continue;
+        }
+        let fields: Vec<_> = emitter.structs[index]
+            .fields
+            .iter()
+            .enumerate()
+            .filter(|(_, field)| emitter.managed(field.ty))
+            .map(|(position, field)| (position, field.ty))
+            .collect();
+        emitter.line("");
+        emitter.line(&format!(
+            "static inline skuld_s{index} skuld_s{index}_retain(skuld_s{index} value) {{"
+        ));
+        emitter.indent += 1;
+        for (position, ty) in &fields {
+            let retained = emitter.retained(*ty, &format!("value.f{position}"));
+            emitter.line(&format!("value.f{position} = {retained};"));
+        }
+        emitter.line("return value;");
+        emitter.indent -= 1;
+        emitter.line("}");
+        emitter.line(&format!(
+            "static inline void skuld_s{index}_release(skuld_s{index} *slot) {{"
+        ));
+        emitter.indent += 1;
+        for (position, ty) in &fields {
+            let release = emitter
+                .release_function(*ty)
+                .expect("managed field has a release");
+            emitter.line(&format!("{release}(&slot->f{position});"));
+        }
+        emitter.indent -= 1;
+        emitter.line("}");
+        emitter.line(&format!(
+            "static inline void skuld_s{index}_assign(skuld_s{index} *slot, skuld_s{index} value) {{"
+        ));
+        emitter.indent += 1;
+        emitter.line(&format!("skuld_s{index} previous = *slot;"));
+        emitter.line(&format!("*slot = skuld_s{index}_retain(value);"));
+        emitter.line(&format!("skuld_s{index}_release(&previous);"));
+        emitter.indent -= 1;
+        emitter.line("}");
     }
     if !program.structs.is_empty() {
         emitter.line("");
@@ -100,18 +146,74 @@ struct Emitter {
     output: String,
     indent: usize,
     next_temp: usize,
+    /// Needed to decide which types own a reference and must be released.
+    structs: Vec<StructInfo>,
 }
 impl Emitter {
+    /// A type owns references when it is a string or holds one, directly or
+    /// through another struct. Unmanaged values need no retain, release or
+    /// cleanup, so they cost exactly what they did before.
+    fn managed(&self, ty: Type) -> bool {
+        match ty {
+            Type::String => true,
+            Type::Struct(id) => self.structs[id.0]
+                .fields
+                .iter()
+                .any(|field| self.managed(field.ty)),
+            _ => false,
+        }
+    }
+    fn retained(&self, ty: Type, value: &str) -> String {
+        match ty {
+            Type::String => format!("skuld_string_retain({value})"),
+            Type::Struct(id) if self.managed(ty) => format!("skuld_s{}_retain({value})", id.0),
+            _ => value.into(),
+        }
+    }
+    fn release_function(&self, ty: Type) -> Option<String> {
+        match ty {
+            Type::String => Some("skuld_string_release".into()),
+            Type::Struct(id) if self.managed(ty) => Some(format!("skuld_s{}_release", id.0)),
+            _ => None,
+        }
+    }
+    /// Every owning slot releases on every exit path, including `return`,
+    /// `break` and `continue`, which C cannot express without this attribute.
+    fn cleanup(&self, ty: Type) -> String {
+        match self.release_function(ty) {
+            Some(function) => format!("__attribute__((cleanup({function}))) "),
+            None => String::new(),
+        }
+    }
+    fn assign_function(&self, ty: Type) -> Option<String> {
+        match ty {
+            Type::String => Some("skuld_string_assign".into()),
+            Type::Struct(id) if self.managed(ty) => Some(format!("skuld_s{}_assign", id.0)),
+            _ => None,
+        }
+    }
     fn line(&mut self, line: &str) {
         self.output.push_str(&"    ".repeat(self.indent));
         self.output.push_str(line);
         self.output.push('\n');
     }
-    fn temporary(&mut self, ty: Type, value: &str) -> String {
+    /// `owned` marks a value that already carries a reference of its own, such
+    /// as a fresh concatenation or a function result. A borrowed value, like
+    /// reading a variable or a field, is retained as it enters the slot.
+    fn store(&mut self, ty: Type, value: &str, owned: bool) -> String {
         let name = format!("skuld_t{}", self.next_temp);
         self.next_temp += 1;
-        self.line(&format!("{} {name} = {value};", c_type(ty)));
+        let initializer = if owned {
+            value.to_string()
+        } else {
+            self.retained(ty, value)
+        };
+        let cleanup = self.cleanup(ty);
+        self.line(&format!("{cleanup}{} {name} = {initializer};", c_type(ty)));
         name
+    }
+    fn temporary(&mut self, ty: Type, value: &str) -> String {
+        self.store(ty, value, false)
     }
     fn block_contents(&mut self, block: &Block) {
         self.line(&format!(
@@ -141,7 +243,13 @@ impl Emitter {
                 initializer,
             } => {
                 let value = self.expression(initializer);
-                self.line(&format!("{} skuld_v{} = {value};", c_type(*ty), id.0));
+                let initial = self.retained(*ty, &value);
+                let cleanup = self.cleanup(*ty);
+                self.line(&format!(
+                    "{cleanup}{} skuld_v{} = {initial};",
+                    c_type(*ty),
+                    id.0
+                ));
                 self.line(&format!("(void)skuld_v{};", id.0));
             }
             StatementKind::Expression(expr) => {
@@ -151,11 +259,16 @@ impl Emitter {
                 }
             }
             StatementKind::Return(value) => {
-                let value = value
-                    .as_ref()
-                    .map(|e| self.expression(e))
-                    .unwrap_or_default();
-                self.line(&format!("return {value};"));
+                let rendered = match value {
+                    // The caller receives a reference of its own, because every
+                    // local here is released as this function returns.
+                    Some(expr) => {
+                        let value = self.expression(expr);
+                        self.retained(expr.ty, &value)
+                    }
+                    None => String::new(),
+                };
+                self.line(&format!("return {rendered};"));
             }
             StatementKind::Block(block) => self.block(block),
             StatementKind::If {
@@ -223,7 +336,7 @@ impl Emitter {
                     .map(|byte| format!("\\{byte:03o}"))
                     .collect();
                 format!(
-                    "((skuld_string){{(const unsigned char *)\"{escaped}\", {}}})",
+                    "((skuld_string){{(const unsigned char *)\"{escaped}\", {}, NULL}})",
                     value.len()
                 )
             }
@@ -231,10 +344,17 @@ impl Emitter {
             ExprKind::StructLiteral { id, fields } => {
                 // Fields are evaluated in declaration order into temporaries
                 // first, so the initializer itself contains no side effects.
-                let values: Vec<_> = fields.iter().map(|field| self.expression(field)).collect();
-                self.temporary(
+                let values: Vec<_> = fields
+                    .iter()
+                    .map(|field| {
+                        let value = self.expression(field);
+                        self.retained(field.ty, &value)
+                    })
+                    .collect();
+                self.store(
                     expr.ty,
                     &format!("(skuld_s{}){{{}}}", id.0, values.join(", ")),
+                    true,
                 )
             }
             ExprKind::Field { object, index } => {
@@ -282,7 +402,10 @@ impl Emitter {
                     let right_value = self.expression(right);
                     let result =
                         binary_value(*op, left.ty, &left_value, &right_value, op_span.start);
-                    self.temporary(expr.ty, &result)
+                    // Concatenation is the only binary result that owns memory,
+                    // and it is freshly allocated.
+                    let fresh = expr.ty == Type::String;
+                    self.store(expr.ty, &result, fresh)
                 }
             }
             ExprKind::Assignment {
@@ -299,7 +422,9 @@ impl Emitter {
                     None
                 };
                 let value = self.expression(value);
-                let result = if let Some(old) = old {
+                // A compound assignment computes a fresh value; a plain one
+                // copies an existing value and must retain it.
+                let (result, fresh) = if let Some(old) = old {
                     let op = match op {
                         AssignmentOp::Add => BinaryOp::Add,
                         AssignmentOp::Subtract => BinaryOp::Subtract,
@@ -307,12 +432,21 @@ impl Emitter {
                         AssignmentOp::Divide => BinaryOp::Divide,
                         AssignmentOp::Assign => unreachable!(),
                     };
-                    binary_value(op, expr.ty, &old, &value, op_span.start)
+                    (binary_value(op, expr.ty, &old, &value, op_span.start), true)
                 } else {
-                    value
+                    (value, false)
                 };
-                let result = self.temporary(expr.ty, &result);
-                self.line(&format!("{place} = {result};"));
+                // A plain assignment already holds the value in a slot of its
+                // own; only a fresh result needs one.
+                let result = if fresh {
+                    self.store(expr.ty, &result, true)
+                } else {
+                    result
+                };
+                match self.assign_function(expr.ty) {
+                    Some(assign) => self.line(&format!("{assign}(&{place}, {result});")),
+                    None => self.line(&format!("{place} = {result};")),
+                }
                 result
             }
             ExprKind::Call { target, arguments } => {
@@ -320,7 +454,7 @@ impl Emitter {
                 let call = match target {
                     CallTarget::Function(id) => format!("skuld_f{}({})", id.0, values.join(", ")),
                     CallTarget::Print if arguments.is_empty() => format!(
-                        "skuld_print_string((skuld_string){{(const unsigned char *)\"\", 0}}, {})",
+                        "skuld_print_string((skuld_string){{(const unsigned char *)\"\", 0, NULL}}, {})",
                         expr.span.start
                     ),
                     CallTarget::Print => {
@@ -338,7 +472,8 @@ impl Emitter {
                     self.line(&format!("{call};"));
                     String::new()
                 } else {
-                    self.temporary(expr.ty, &call)
+                    // A callee returns a reference of its own; adopt it.
+                    self.store(expr.ty, &call, true)
                 }
             }
         }
@@ -360,6 +495,9 @@ fn binary_value(op: BinaryOp, ty: Type, left: &str, right: &str, byte: usize) ->
     };
     if let Some(helper) = helper {
         return format!("skuld_{helper}({left}, {right}, {byte})");
+    }
+    if ty == Type::String && op == Add {
+        return format!("skuld_string_concat({left}, {right}, {byte})");
     }
     if ty == Type::String {
         let negate = if op == NotEqual { "!" } else { "" };
@@ -383,7 +521,7 @@ fn binary_value(op: BinaryOp, ty: Type, left: &str, right: &str, byte: usize) ->
     format!("({left} {operator} {right})")
 }
 
-const PRELUDE: &str = r#"/* Generated by Skuld. C11, compiled with clang. */
+const PRELUDE_HEAD: &str = r#"/* Generated by Skuld. C11, compiled with clang. */
 #include <stdint.h>
 #include <inttypes.h>
 #include <stdbool.h>
@@ -394,12 +532,17 @@ const PRELUDE: &str = r#"/* Generated by Skuld. C11, compiled with clang. */
 #include <float.h>
 _Static_assert(DBL_MANT_DIG == 53 && DBL_MAX_EXP == 1024, "Skuld requires binary64 double");
 
-typedef struct { const unsigned char *data; size_t len; } skuld_string;
-
 static inline void skuld_fail(const char *message, size_t byte) {
     fprintf(stderr, "runtime error: %s (source byte %zu)\n", message, byte);
     exit(1);
 }
+"#;
+
+/// The managed-memory runtime is real C in `runtime/`, embedded verbatim so
+/// there is one source of truth for retain and release.
+const RUNTIME: &str = include_str!("../../runtime/strings.c");
+
+const PRELUDE_TAIL: &str = r#"
 static inline int64_t skuld_add(int64_t a, int64_t b, size_t byte) {
     int64_t result;
     if (__builtin_add_overflow(a, b, &result)) skuld_fail("integer overflow", byte);

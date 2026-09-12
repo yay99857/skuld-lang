@@ -1,0 +1,25 @@
+struct Label {
+    text: string
+}
+
+struct Pair {
+    left: Label
+    right: Label
+}
+
+func joined(pair: Pair) -> string {
+    return pair.left.text + "/" + pair.right.text
+}
+
+func main() {
+    var first = Label { text: "a" + "b" }
+    // Copying the struct shares the string; changing the copy must not disturb
+    // the original.
+    var second = first
+    second.text = "c" + "d"
+    print(first.text)
+    print(second.text)
+
+    let pair = Pair { left: first, right: second }
+    print(joined(pair))
+}

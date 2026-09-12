@@ -749,7 +749,9 @@ impl Checker<'_> {
         }
         use BinaryOp::*;
         let valid = match op {
-            Add | Subtract | Multiply | Divide | Less | Greater | LessEqual | GreaterEqual => {
+            // `+` also concatenates; the result is a new string.
+            Add => left.is_numeric() || left == Type::String,
+            Subtract | Multiply | Divide | Less | Greater | LessEqual | GreaterEqual => {
                 left.is_numeric()
             }
             Modulo => left == Type::Int,

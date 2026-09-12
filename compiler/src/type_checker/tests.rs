@@ -127,10 +127,6 @@ fn void_and_unsupported_features() {
         DiagnosticCode::UnsupportedFeature,
     );
     fails(
-        "func main() { print(\"a\" + \"b\") }",
-        DiagnosticCode::InvalidOperator,
-    );
-    fails(
         "func main() { print(1.0 % 2.0) }",
         DiagnosticCode::InvalidOperator,
     );
@@ -342,5 +338,26 @@ fn method_names_cannot_collide() {
     fails(
         "struct R {\n    n: int\n    n() -> int {\n        return 1\n    }\n}\nfunc main() {}",
         DiagnosticCode::DuplicateDeclaration,
+    );
+}
+
+#[test]
+fn strings_concatenate_with_plus_only() {
+    valid("func main() { print(\"a\" + \"b\") }");
+    valid(
+        "func join(a: string, b: string) -> string { return a + b }\nfunc main() { print(join(\"x\", \"y\")) }",
+    );
+    // Only `+` is defined on strings; the rest stay arithmetic.
+    for source in [
+        "func main() { print(\"a\" - \"b\") }",
+        "func main() { print(\"a\" * \"b\") }",
+        "func main() { print(\"a\" < \"b\") }",
+    ] {
+        fails(source, DiagnosticCode::InvalidOperator);
+    }
+    // No implicit conversion joins a string to a number.
+    fails(
+        "func main() { print(\"a\" + 1) }",
+        DiagnosticCode::TypeMismatch,
     );
 }

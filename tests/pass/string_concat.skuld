@@ -1,0 +1,24 @@
+func greeting(name: string) -> string {
+    return "Hello, " + name + "!"
+}
+
+func main() {
+    print(greeting("Skuld"))
+
+    // Building in a loop reallocates every iteration; each intermediate result
+    // must be released without touching the one still in use.
+    var line = ""
+    var count = 0
+    while count < 5 {
+        line = line + "ab"
+        count += 1
+    }
+    print(line)
+
+    var same = "x"
+    same = same
+    print(same)
+
+    let literal = "static"
+    print(literal + " and heap")
+}
