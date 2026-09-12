@@ -1,0 +1,15 @@
+struct Inner {
+    value: int
+}
+
+struct Outer {
+    inner: Inner
+    label: string
+}
+
+func main() {
+    var box = Outer { inner: Inner { value: 1 }, label: "box" }
+    box.inner.value += 41
+    print(box.label)
+    print(box.inner.value)
+}

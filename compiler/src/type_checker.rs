@@ -4,7 +4,7 @@ use crate::{
     diagnostic::{Diagnostic, DiagnosticCode},
     resolver::{Resolution, SymbolId, SymbolKind},
     span::Span,
-    types::Type,
+    types::{StructId, Type},
 };
 use std::collections::BTreeMap;
 
@@ -24,6 +24,7 @@ pub struct TypedProgram {
     pub(crate) symbol_types: Vec<Type>,
     pub(crate) signatures: BTreeMap<SymbolId, Signature>,
     pub(crate) entry: SymbolId,
+    pub(crate) structs: Vec<StructInfo>,
 }
 impl TypedProgram {
     pub fn syntax(&self) -> &Program {
@@ -51,7 +52,67 @@ pub(crate) fn type_check(
         diagnostics: Vec::new(),
         return_type: Type::Void,
         loops: Vec::new(),
+        structs: Vec::new(),
+        struct_names: BTreeMap::new(),
     };
+    // Structs are collected before signatures so functions may use them, and
+    // before field types so a struct can refer to one declared later.
+    for declaration in &syntax.structs {
+        let id = StructId(checker.structs.len());
+        if checker
+            .struct_names
+            .insert(declaration.name.text.clone(), id)
+            .is_some()
+        {
+            checker.error(
+                DiagnosticCode::DuplicateDeclaration,
+                declaration.name.span,
+                format!("struct `{}` is already declared", declaration.name.text),
+            );
+        }
+        checker.structs.push(StructInfo {
+            name: declaration.name.text.clone(),
+            fields: Vec::new(),
+            span: declaration.span,
+        });
+    }
+    for (index, declaration) in syntax.structs.iter().enumerate() {
+        let mut fields: Vec<FieldInfo> = Vec::new();
+        for field in &declaration.fields {
+            let ty = checker.type_ref(&field.type_ref, false);
+            if fields
+                .iter()
+                .any(|existing| existing.name == field.name.text)
+            {
+                checker.error(
+                    DiagnosticCode::DuplicateDeclaration,
+                    field.name.span,
+                    format!(
+                        "field `{}` is already declared in `{}`",
+                        field.name.text, declaration.name.text
+                    ),
+                );
+                continue;
+            }
+            if ty == Type::Struct(StructId(index)) {
+                checker.error(
+                    DiagnosticCode::InvalidValueType,
+                    field.type_ref_span(),
+                    format!(
+                        "struct `{}` cannot contain itself; a value type has no indirection",
+                        declaration.name.text
+                    ),
+                );
+                continue;
+            }
+            fields.push(FieldInfo {
+                name: field.name.text.clone(),
+                ty,
+                span: field.span,
+            });
+        }
+        checker.structs[index].fields = fields;
+    }
     for function in &syntax.functions {
         let parameters: Vec<_> = function
             .parameters
@@ -117,6 +178,7 @@ pub(crate) fn type_check(
         return Err(checker.diagnostics);
     }
     let Checker {
+        structs,
         expressions,
         symbol_types,
         signatures,
@@ -127,6 +189,7 @@ pub(crate) fn type_check(
     Ok(TypedProgram {
         syntax,
         resolution,
+        structs,
         expressions,
         symbol_types,
         signatures,
@@ -144,6 +207,34 @@ struct Checker<'a> {
     /// One frame per enclosing loop, recording whether a `break` can exit it.
     /// Empty means a jump has no loop to bind to.
     loops: Vec<bool>,
+    /// Declared structs in declaration order; `Type::Struct` indexes this.
+    structs: Vec<StructInfo>,
+    /// Struct name to table index, for resolving type names and constructions.
+    struct_names: BTreeMap<String, StructId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructInfo {
+    pub name: String,
+    /// Field order is declaration order, which the backend layout follows.
+    pub fields: Vec<FieldInfo>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct FieldInfo {
+    pub name: String,
+    pub ty: Type,
+    pub span: Span,
+}
+
+impl StructInfo {
+    fn field(&self, name: &str) -> Option<(usize, &FieldInfo)> {
+        self.fields
+            .iter()
+            .enumerate()
+            .find(|(_, field)| field.name == name)
+    }
 }
 impl Checker<'_> {
     fn declaration(&self, name: &Name) -> SymbolId {
@@ -160,6 +251,14 @@ impl Checker<'_> {
             help: None,
         });
     }
+    /// `Display` cannot reach the struct table, so every user-facing type name
+    /// goes through here instead.
+    fn type_name(&self, ty: Type) -> String {
+        match ty {
+            Type::Struct(id) => self.structs[id.0].name.clone(),
+            other => other.to_string(),
+        }
+    }
     fn type_ref(&mut self, reference: &TypeRef, allow_void: bool) -> Type {
         let TypeRef::Named(name) = reference;
         let ty = match name.text.as_str() {
@@ -168,6 +267,9 @@ impl Checker<'_> {
             "bool" => Type::Bool,
             "string" => Type::String,
             "void" => Type::Void,
+            other if self.struct_names.contains_key(other) => {
+                Type::Struct(self.struct_names[other])
+            }
             _ => {
                 self.error(
                     DiagnosticCode::UnknownType,
@@ -193,7 +295,11 @@ impl Checker<'_> {
             self.error(
                 DiagnosticCode::TypeMismatch,
                 span,
-                format!("expected `{expected}`, found `{found}`"),
+                format!(
+                    "expected `{}`, found `{}`",
+                    self.type_name(expected),
+                    self.type_name(found)
+                ),
             );
         }
     }
@@ -297,6 +403,68 @@ impl Checker<'_> {
             }
         }
     }
+    fn struct_literal(&mut self, name: &Name, fields: &[FieldInit]) -> Type {
+        let Some(id) = self.struct_names.get(&name.text).copied() else {
+            self.error(
+                DiagnosticCode::UnknownType,
+                name.span,
+                format!("unknown struct `{}`", name.text),
+            );
+            // Still check the values so their own errors are reported.
+            for field in fields {
+                self.expression(&field.value);
+            }
+            return Type::Error;
+        };
+        let mut initialized = vec![false; self.structs[id.0].fields.len()];
+        for field in fields {
+            let found = self.expression(&field.value);
+            let Some((index, declared)) = self.structs[id.0]
+                .field(&field.name.text)
+                .map(|(index, declared)| (index, declared.clone()))
+            else {
+                self.error(
+                    DiagnosticCode::UnknownName,
+                    field.name.span,
+                    format!(
+                        "`{}` has no field `{}`",
+                        self.structs[id.0].name, field.name.text
+                    ),
+                );
+                continue;
+            };
+            if initialized[index] {
+                self.error(
+                    DiagnosticCode::DuplicateDeclaration,
+                    field.name.span,
+                    format!("field `{}` is initialized twice", field.name.text),
+                );
+            }
+            initialized[index] = true;
+            self.expect_type(declared.ty, found, field.value.span);
+        }
+        // Every field must be given a value: there are no defaults and no
+        // partially initialized values.
+        let missing: Vec<_> = self.structs[id.0]
+            .fields
+            .iter()
+            .zip(&initialized)
+            .filter(|(_, done)| !**done)
+            .map(|(field, _)| format!("`{}`", field.name))
+            .collect();
+        if !missing.is_empty() {
+            self.error(
+                DiagnosticCode::MissingField,
+                name.span,
+                format!(
+                    "`{}` is missing {}",
+                    self.structs[id.0].name,
+                    missing.join(", ")
+                ),
+            );
+        }
+        Type::Struct(id)
+    }
     fn record(&mut self, expr: &Expr, ty: Type) -> Type {
         self.expressions
             .insert((expr.span.start, expr.span.end), ty);
@@ -395,7 +563,9 @@ impl Checker<'_> {
                 op_span,
             } => {
                 let target_type = self.expression(target);
-                if let ExprKind::Identifier(name) = &target.kind {
+                // Assigning to `v.x` needs the mutability of `v`: a field of an
+                // immutable binding is immutable too.
+                if let Some(name) = assignment_root(target) {
                     let id = self.reference(name);
                     let symbol = &self.resolution.symbols[id.0];
                     match symbol.kind {
@@ -440,14 +610,38 @@ impl Checker<'_> {
             }
             ExprKind::Call { callee, arguments } => self.call(callee, arguments, expr.span),
             ExprKind::Member { object, member } => {
-                self.expression(object);
-                self.error(
-                    DiagnosticCode::UnsupportedFeature,
-                    member.span,
-                    "field and method access require a later milestone",
-                );
-                Type::Error
+                let object_type = self.expression(object);
+                match object_type {
+                    Type::Struct(id) => match self.structs[id.0].field(&member.text) {
+                        Some((_, field)) => field.ty,
+                        None => {
+                            self.error(
+                                DiagnosticCode::UnknownName,
+                                member.span,
+                                format!(
+                                    "`{}` has no field `{}`",
+                                    self.structs[id.0].name, member.text
+                                ),
+                            );
+                            Type::Error
+                        }
+                    },
+                    // A failed subexpression already reported the reason.
+                    Type::Error => Type::Error,
+                    other => {
+                        self.error(
+                            DiagnosticCode::UnsupportedFeature,
+                            member.span,
+                            format!(
+                                "`{}` has no fields; only structs support field access",
+                                self.type_name(other)
+                            ),
+                        );
+                        Type::Error
+                    }
+                }
             }
+            ExprKind::StructLiteral { name, fields } => self.struct_literal(name, fields),
         };
         self.record(expr, ty)
     }
@@ -547,6 +741,15 @@ impl Checker<'_> {
                 Type::Error
             }
         }
+    }
+}
+
+/// The local an assignment ultimately writes through, looking past field steps.
+fn assignment_root(target: &Expr) -> Option<&Name> {
+    match &target.kind {
+        ExprKind::Identifier(name) => Some(name),
+        ExprKind::Member { object, .. } => assignment_root(object),
+        _ => None,
     }
 }
 

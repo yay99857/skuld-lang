@@ -234,6 +234,13 @@ impl Resolver {
                 }
             }
             ExprKind::Member { object, .. } => self.expression(object),
+            // The type name and the field labels are not value names; only the
+            // field values are resolved here.
+            ExprKind::StructLiteral { fields, .. } => {
+                for field in fields {
+                    self.expression(&field.value);
+                }
+            }
         }
     }
 }

@@ -364,3 +364,59 @@ fn loop_break_and_continue_parse_as_statements() {
         ]
     ));
 }
+
+#[test]
+fn struct_declaration_takes_one_field_per_line() {
+    let program = program("struct Vec2 {\n    x: float\n    y: float\n}\nfunc main() {}");
+    assert_eq!(program.structs.len(), 1);
+    let declaration = &program.structs[0];
+    assert_eq!(declaration.name.text, "Vec2");
+    let names: Vec<_> = declaration
+        .fields
+        .iter()
+        .map(|field| field.name.text.as_str())
+        .collect();
+    assert_eq!(names, ["x", "y"]);
+}
+
+#[test]
+fn struct_fields_on_one_line_need_a_separator() {
+    let output = parse("struct V {\n    x: int y: int\n}\nfunc main() {}");
+    assert!(!output.diagnostics.is_empty());
+    assert_eq!(output.diagnostics[0].code, DiagnosticCode::ExpectedSyntax);
+}
+
+#[test]
+fn record_construction_parses_as_an_expression() {
+    let expression = expr("Vec2 { x: 1.0, y: 2.0 }");
+    let ExprKind::StructLiteral { name, fields } = expression.kind else {
+        panic!("struct literal")
+    };
+    assert_eq!(name.text, "Vec2");
+    assert_eq!(fields.len(), 2);
+}
+
+#[test]
+fn conditions_do_not_read_a_block_as_record_construction() {
+    // `if value { }` must stay an if with a block; a literal there would
+    // swallow the body. Parentheses make construction available again.
+    let mut parsed = program("func main() {\n    if value {\n        print(1)\n    }\n}");
+    let statement = parsed.functions.remove(0).body.statements.remove(0);
+    let StatementKind::If { condition, .. } = statement.kind else {
+        panic!("if statement")
+    };
+    assert!(matches!(condition.kind, ExprKind::Identifier(_)));
+
+    let mut parsed = program("func main() {\n    while ok {\n        print(1)\n    }\n}");
+    let statement = parsed.functions.remove(0).body.statements.remove(0);
+    let StatementKind::While { condition, .. } = statement.kind else {
+        panic!("while statement")
+    };
+    assert!(matches!(condition.kind, ExprKind::Identifier(_)));
+
+    let expression = expr("(Point { x: 1 })");
+    let ExprKind::Group(inner) = expression.kind else {
+        panic!("group")
+    };
+    assert!(matches!(inner.kind, ExprKind::StructLiteral { .. }));
+}

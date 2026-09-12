@@ -223,3 +223,76 @@ fn a_loop_without_break_diverges() {
         "func answer() -> int {\n    var i = 0\n    loop {\n        while i < 1 {\n            break\n        }\n        return 1\n    }\n}\nfunc main() { print(answer()) }",
     );
 }
+
+#[test]
+fn structs_construct_with_every_field_exactly_once() {
+    valid(
+        "struct P { a: int\nb: string }\nfunc main() { let p = P { a: 1, b: \"x\" }\nprint(p.a) }",
+    );
+    fails(
+        "struct P { a: int\nb: int }\nfunc main() { let p = P { a: 1 } }",
+        DiagnosticCode::MissingField,
+    );
+    fails(
+        "struct P { a: int }\nfunc main() { let p = P { a: 1, z: 2 } }",
+        DiagnosticCode::UnknownName,
+    );
+    fails(
+        "struct P { a: int }\nfunc main() { let p = P { a: 1, a: 2 } }",
+        DiagnosticCode::DuplicateDeclaration,
+    );
+    fails(
+        "struct P { a: int }\nfunc main() { let p = P { a: \"text\" } }",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "func main() { let p = Missing { a: 1 } }",
+        DiagnosticCode::UnknownType,
+    );
+}
+
+#[test]
+fn struct_declarations_reject_duplicates_and_self_containment() {
+    fails(
+        "struct P { a: int }\nstruct P { b: int }\nfunc main() {}",
+        DiagnosticCode::DuplicateDeclaration,
+    );
+    fails(
+        "struct P { a: int\na: int }\nfunc main() {}",
+        DiagnosticCode::DuplicateDeclaration,
+    );
+    // A value type has no indirection, so containing itself has no size.
+    fails(
+        "struct P { inner: P }\nfunc main() {}",
+        DiagnosticCode::InvalidValueType,
+    );
+}
+
+#[test]
+fn field_access_requires_a_struct_and_an_existing_field() {
+    valid(
+        "struct I { v: int }\nstruct O { i: I }\nfunc main() { let o = O { i: I { v: 1 } }\nprint(o.i.v) }",
+    );
+    fails(
+        "struct P { a: int }\nfunc main() { let p = P { a: 1 }\nprint(p.missing) }",
+        DiagnosticCode::UnknownName,
+    );
+    fails(
+        "func main() { let x = 1\nprint(x.field) }",
+        DiagnosticCode::UnsupportedFeature,
+    );
+}
+
+#[test]
+fn field_assignment_follows_the_binding_mutability() {
+    valid("struct P { n: int }\nfunc main() { var p = P { n: 1 }\np.n = 2\np.n += 3\nprint(p.n) }");
+    // The field of an immutable binding is immutable too.
+    fails(
+        "struct P { n: int }\nfunc main() { let p = P { n: 1 }\np.n = 2 }",
+        DiagnosticCode::ImmutableAssignment,
+    );
+    fails(
+        "struct P { n: int }\nfunc f(p: P) { p.n = 2 }\nfunc main() {}",
+        DiagnosticCode::ImmutableAssignment,
+    );
+}

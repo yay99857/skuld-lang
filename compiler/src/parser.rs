@@ -31,6 +31,7 @@ pub fn parse(source: &str) -> ParseOutput {
         diagnostics: Vec::new(),
         depth: 0,
         expression_start: None,
+        struct_literals: true,
     }
     .program()
 }
@@ -47,6 +48,9 @@ struct Parser<'a> {
     diagnostics: Vec<Diagnostic>,
     depth: usize,
     expression_start: Option<usize>,
+    /// False while parsing an `if`/`while` condition, where `name {` would be
+    /// ambiguous with the block that follows.
+    struct_literals: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -135,14 +139,38 @@ impl Parser<'_> {
             Err(self.expected(description))
         }
     }
+    /// `if p { }` and `while p { }` would otherwise read `p { ... }` as record
+    /// construction. Conditions forbid a bare struct literal; parentheses make
+    /// one available again, as does any nested expression context.
+    fn with_struct_literals<T>(
+        &mut self,
+        allowed: bool,
+        parse: impl FnOnce(&mut Self) -> Parsed<T>,
+    ) -> Parsed<T> {
+        let previous = std::mem::replace(&mut self.struct_literals, allowed);
+        let result = parse(self);
+        self.struct_literals = previous;
+        result
+    }
     fn type_ref(&mut self) -> Parsed<TypeRef> {
         Ok(TypeRef::Named(self.name("a type name")?))
     }
 
     fn program(mut self) -> ParseOutput {
         let mut functions = Vec::new();
+        let mut structs = Vec::new();
         while !self.at(&TokenKind::Eof) {
             let start = self.position;
+            if self.at(&TokenKind::Struct) {
+                match self.struct_declaration() {
+                    Ok(declaration) => structs.push(declaration),
+                    Err(diagnostic) => {
+                        self.diagnostics.push(diagnostic);
+                        self.recover_declaration(start);
+                    }
+                }
+                continue;
+            }
             let result = if self.at(&TokenKind::Function) {
                 self.function()
             } else {
@@ -152,16 +180,12 @@ impl Parser<'_> {
                 Ok(function) => functions.push(function),
                 Err(diagnostic) => {
                     self.diagnostics.push(diagnostic);
-                    if self.position == start {
-                        self.bump();
-                    }
-                    while !self.at(&TokenKind::Function) && !self.at(&TokenKind::Eof) {
-                        self.bump();
-                    }
+                    self.recover_declaration(start);
                 }
             }
         }
         let program = self.diagnostics.is_empty().then_some(Program {
+            structs,
             functions,
             span: Span::new(0, self.source.len()),
         });
@@ -169,6 +193,51 @@ impl Parser<'_> {
             program,
             diagnostics: self.diagnostics,
         }
+    }
+    fn recover_declaration(&mut self, start: usize) {
+        if self.position == start {
+            self.bump();
+        }
+        while !self.at(&TokenKind::Function)
+            && !self.at(&TokenKind::Struct)
+            && !self.at(&TokenKind::Eof)
+        {
+            self.bump();
+        }
+    }
+    /// One field per line, matching the statement-boundary rule elsewhere.
+    fn struct_declaration(&mut self) -> Parsed<StructDecl> {
+        let start = self.expect(&TokenKind::Struct, "`struct`")?.span.start;
+        let name = self.name("a struct name")?;
+        self.expect(&TokenKind::LeftBrace, "`{` to begin the struct body")?;
+        let mut fields = Vec::new();
+        while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
+            let field_start = self.current().span.start;
+            let name = self.name("a field name")?;
+            self.expect(&TokenKind::Colon, "`:` and a field type")?;
+            let type_ref = self.type_ref()?;
+            fields.push(FieldDecl {
+                name,
+                type_ref,
+                span: Span::new(field_start, self.previous_end()),
+            });
+            self.take(&TokenKind::Comma);
+            if !self.at(&TokenKind::RightBrace)
+                && !self.at(&TokenKind::Eof)
+                && !self.newline_before()
+            {
+                return Err(self.expected("a newline or `}` after the field"));
+            }
+        }
+        let end = self
+            .expect(&TokenKind::RightBrace, "`}` to close the struct body")?
+            .span
+            .end;
+        Ok(StructDecl {
+            name,
+            fields,
+            span: Span::new(start, end),
+        })
     }
     fn function(&mut self) -> Parsed<FunctionDecl> {
         let start = self.expect(&TokenKind::Function, "`func`")?.span.start;
@@ -330,7 +399,7 @@ impl Parser<'_> {
                 self.bump();
                 StatementKind::Continue
             }
-            Class | Struct | Impl | Interface | Enum | Match | Import | For | Static | Extern => {
+            Class | Impl | Interface | Enum | Match | Import | For | Static | Extern => {
                 return Err(self.error(
                     DiagnosticCode::UnsupportedSyntax,
                     "this syntax is reserved for a later milestone",
@@ -353,16 +422,36 @@ impl Parser<'_> {
     }
     fn while_statement(&mut self) -> Parsed<Statement> {
         let start = self.expect(&TokenKind::While, "`while`")?.span.start;
-        let condition = self.expression()?;
+        let condition = self.with_struct_literals(false, |parser| parser.expression())?;
         let body = self.block()?;
         Ok(Statement {
             kind: StatementKind::While { condition, body },
             span: Span::new(start, self.previous_end()),
         })
     }
+    fn struct_literal(&mut self, name: Name) -> Parsed<ExprKind> {
+        self.expect(&TokenKind::LeftBrace, "`{` to begin the fields")?;
+        let mut fields = Vec::new();
+        while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
+            let start = self.current().span.start;
+            let field = self.name("a field name")?;
+            self.expect(&TokenKind::Colon, "`:` and a field value")?;
+            let value = self.with_struct_literals(true, |parser| parser.expression())?;
+            fields.push(FieldInit {
+                name: field,
+                value,
+                span: Span::new(start, self.previous_end()),
+            });
+            if self.take(&TokenKind::Comma).is_none() {
+                break;
+            }
+        }
+        self.expect(&TokenKind::RightBrace, "`}` after the fields")?;
+        Ok(ExprKind::StructLiteral { name, fields })
+    }
     fn if_statement(&mut self) -> Parsed<Statement> {
         let start = self.expect(&TokenKind::If, "`if`")?.span.start;
-        let condition = self.expression()?;
+        let condition = self.with_struct_literals(false, |parser| parser.expression())?;
         let then_block = self.block()?;
         let else_branch = if self.take(&TokenKind::Else).is_some() {
             if self.at(&TokenKind::If) {
@@ -440,14 +529,19 @@ impl Parser<'_> {
             }
             TokenKind::Identifier(text) => {
                 self.bump();
-                ExprKind::Identifier(Name {
+                let name = Name {
                     text,
                     span: token.span,
-                })
+                };
+                if self.struct_literals && self.at(&TokenKind::LeftBrace) {
+                    self.struct_literal(name)?
+                } else {
+                    ExprKind::Identifier(name)
+                }
             }
             TokenKind::LeftParen => {
                 self.bump();
-                let value = self.expression()?;
+                let value = self.with_struct_literals(true, |parser| parser.expression())?;
                 self.expect(&TokenKind::RightParen, "`)` after the grouped expression")?;
                 ExprKind::Group(Box::new(value))
             }
@@ -478,7 +572,7 @@ impl Parser<'_> {
                 let mut arguments = Vec::new();
                 if !self.at(&TokenKind::RightParen) {
                     loop {
-                        arguments.push(self.expression()?);
+                        arguments.push(self.with_struct_literals(true, |p| p.expression())?);
                         if self.take(&TokenKind::Comma).is_none() || self.at(&TokenKind::RightParen)
                         {
                             break;

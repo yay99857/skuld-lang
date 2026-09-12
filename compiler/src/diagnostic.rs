@@ -27,6 +27,7 @@ pub enum DiagnosticCode {
     ImmutableAssignment,
     InvalidAssignment,
     JumpOutsideLoop,
+    MissingField,
 }
 
 impl DiagnosticCode {
@@ -57,6 +58,7 @@ impl DiagnosticCode {
             Self::ImmutableAssignment => "E0203",
             Self::InvalidAssignment => "E0204",
             Self::JumpOutsideLoop => "E0111",
+            Self::MissingField => "E0112",
         }
     }
 }

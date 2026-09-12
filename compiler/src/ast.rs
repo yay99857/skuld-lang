@@ -3,8 +3,30 @@ use crate::span::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
+    pub structs: Vec<StructDecl>,
     pub functions: Vec<FunctionDecl>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StructDecl {
+    pub name: Name,
+    pub fields: Vec<FieldDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldDecl {
+    pub name: Name,
+    pub type_ref: TypeRef,
+    pub span: Span,
+}
+
+impl FieldDecl {
+    pub fn type_ref_span(&self) -> Span {
+        let TypeRef::Named(name) = &self.type_ref;
+        name.span
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +144,19 @@ pub enum ExprKind {
         object: Box<Expr>,
         member: Name,
     },
+    /// Record construction, e.g. `Vec2 { x: 1.0, y: 2.0 }`. The name is a type,
+    /// not a value, so it is never resolved as one.
+    StructLiteral {
+        name: Name,
+        fields: Vec<FieldInit>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldInit {
+    pub name: Name,
+    pub value: Expr,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1,6 +1,10 @@
 //! Semantic types, independent of source spellings and backend representations.
 use std::fmt;
 
+/// Index into the checked program's struct table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StructId(pub usize);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Type {
     Int,
@@ -8,6 +12,8 @@ pub enum Type {
     Bool,
     String,
     Void,
+    /// A value-semantics record; copied on assignment and argument passing.
+    Struct(StructId),
     /// Recovery only; never present in a successfully checked program.
     Error,
 }
@@ -24,6 +30,8 @@ impl fmt::Display for Type {
             Self::Bool => "bool",
             Self::String => "string",
             Self::Void => "void",
+            // Only the checker knows struct names; it renders them itself.
+            Self::Struct(_) => "<struct>",
             Self::Error => "<error>",
         })
     }

@@ -1,0 +1,25 @@
+struct Rectangle {
+    width: int
+    height: int
+}
+
+func area(shape: Rectangle) -> int {
+    return shape.width * shape.height
+}
+
+func grown(shape: Rectangle, by: int) -> Rectangle {
+    return Rectangle { width: shape.width + by, height: shape.height + by }
+}
+
+func main() {
+    var base = Rectangle { width: 3, height: 4 }
+    print(area(base))
+
+    // Structs copy on assignment, so `base` keeps its own values.
+    let bigger = grown(base, 2)
+    print(area(bigger))
+    print(area(base))
+
+    base.width = 10
+    print(area(base))
+}

@@ -7,6 +7,29 @@ pub fn emit_c(program: &Program) -> String {
         indent: 0,
         next_temp: 0,
     };
+    // Declaration order is a valid definition order: a value type cannot
+    // contain itself, and the checker rejects any cycle.
+    for (index, declaration) in program.structs.iter().enumerate() {
+        emitter.line("");
+        emitter.line(&format!(
+            "/* struct {}: source bytes {}..{} */",
+            declaration.name, declaration.span.start, declaration.span.end
+        ));
+        emitter.line("typedef struct {");
+        emitter.indent += 1;
+        for (position, field) in declaration.fields.iter().enumerate() {
+            emitter.line(&format!(
+                "{} f{position}; /* {} */",
+                c_type(field.ty),
+                field.name
+            ));
+        }
+        emitter.indent -= 1;
+        emitter.line(&format!("}} skuld_s{index};"));
+    }
+    if !program.structs.is_empty() {
+        emitter.line("");
+    }
     for function in &program.functions {
         emitter.line(&format!("{};", signature(function)));
     }
@@ -37,13 +60,22 @@ pub fn emit_c(program: &Program) -> String {
     emitter.line("}");
     emitter.output
 }
-fn c_type(ty: Type) -> &'static str {
+fn place_expression(place: &Place) -> String {
+    let mut rendered = format!("skuld_v{}", place.base.0);
+    for index in &place.fields {
+        rendered.push_str(&format!(".f{index}"));
+    }
+    rendered
+}
+fn c_type(ty: Type) -> String {
     match ty {
-        Type::Int => "int64_t",
-        Type::Float => "double",
-        Type::Bool => "bool",
-        Type::String => "skuld_string",
-        Type::Void => "void",
+        Type::Int => "int64_t".into(),
+        Type::Float => "double".into(),
+        Type::Bool => "bool".into(),
+        Type::String => "skuld_string".into(),
+        Type::Void => "void".into(),
+        // C struct assignment copies, which is exactly value semantics.
+        Type::Struct(id) => format!("skuld_s{}", id.0),
         Type::Error => unreachable!("internal compiler bug: error type in HIR"),
     }
 }
@@ -196,6 +228,19 @@ impl Emitter {
                 )
             }
             ExprKind::Local(id) => self.temporary(expr.ty, &format!("skuld_v{}", id.0)),
+            ExprKind::StructLiteral { id, fields } => {
+                // Fields are evaluated in declaration order into temporaries
+                // first, so the initializer itself contains no side effects.
+                let values: Vec<_> = fields.iter().map(|field| self.expression(field)).collect();
+                self.temporary(
+                    expr.ty,
+                    &format!("(skuld_s{}){{{}}}", id.0, values.join(", ")),
+                )
+            }
+            ExprKind::Field { object, index } => {
+                let value = self.expression(object);
+                self.temporary(expr.ty, &format!("{value}.f{index}"))
+            }
             ExprKind::Unary {
                 op,
                 operand,
@@ -246,9 +291,10 @@ impl Emitter {
                 value,
                 op_span,
             } => {
+                let place = place_expression(target);
                 // Compound assignment snapshots the old value before its RHS.
                 let old = if *op != AssignmentOp::Assign {
-                    Some(self.temporary(expr.ty, &format!("skuld_v{}", target.0)))
+                    Some(self.temporary(expr.ty, &place))
                 } else {
                     None
                 };
@@ -266,7 +312,7 @@ impl Emitter {
                     value
                 };
                 let result = self.temporary(expr.ty, &result);
-                self.line(&format!("skuld_v{} = {result};", target.0));
+                self.line(&format!("{place} = {result};"));
                 result
             }
             ExprKind::Call { target, arguments } => {

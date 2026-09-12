@@ -1,0 +1,8 @@
+struct Point {
+    x: int
+}
+
+func main() {
+    let point = Point { x: 1 }
+    point.x = 2
+}

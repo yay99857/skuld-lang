@@ -1,0 +1,20 @@
+struct Point {
+    x: int
+    y: int
+}
+
+func shifted(origin: Point, by: int) -> Point {
+    return Point { x: origin.x + by, y: origin.y + by }
+}
+
+func main() {
+    var first = Point { x: 1, y: 2 }
+    var second = first
+    second.x = 99
+    print(first.x)
+    print(second.x)
+    let moved = shifted(first, 10)
+    print(moved.x)
+    print(moved.y)
+    print(first.x)
+}

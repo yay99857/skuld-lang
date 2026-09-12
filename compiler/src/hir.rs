@@ -1,9 +1,16 @@
 //! Typed, resolved high-level IR. Constructed only from successful checking.
 //! Groups and source-level call/member syntax do not reach the C backend.
-use crate::{resolver::SymbolId, span::Span, types::Type};
+use crate::{
+    resolver::SymbolId,
+    span::Span,
+    type_checker::StructInfo,
+    types::{StructId, Type},
+};
 
 #[derive(Debug)]
 pub struct Program {
+    /// Declaration order, which is also the emitted field layout.
+    pub(crate) structs: Vec<StructInfo>,
     pub(crate) functions: Vec<Function>,
     pub(crate) entry: SymbolId,
     pub(crate) span: Span,
@@ -88,7 +95,7 @@ pub(crate) enum ExprKind {
         right: Box<Expr>,
     },
     Assignment {
-        target: SymbolId,
+        target: Place,
         op: AssignmentOp,
         op_span: Span,
         value: Box<Expr>,
@@ -97,6 +104,21 @@ pub(crate) enum ExprKind {
         target: CallTarget,
         arguments: Vec<Expr>,
     },
+    /// Field values in declaration order, not source order.
+    StructLiteral {
+        id: StructId,
+        fields: Vec<Expr>,
+    },
+    Field {
+        object: Box<Expr>,
+        index: usize,
+    },
+}
+/// An assignable location: a local, optionally followed by field steps.
+#[derive(Debug)]
+pub(crate) struct Place {
+    pub base: SymbolId,
+    pub fields: Vec<usize>,
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum CallTarget {
