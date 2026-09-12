@@ -277,12 +277,15 @@ and NaNs possible during arithmetic; literal parsing still rejects non-finite
 literals. Float printing uses 17 significant digits. Bool prints `true` or
 `false`; int prints decimal. Every print appends a newline.
 
-Current strings contain immutable UTF-8 literal bytes and a length. Values copy
-that view; backing literal storage lives for the program duration. Printing and
-equality preserve embedded NUL bytes. There is no dynamic string allocation,
-mutation, concatenation, interpolation or ARC. Small printing, comparison and
-checked-arithmetic helpers are emitted with the C; no separate runtime library
-is required yet. Integer checks use clang overflow builtins.
+A string is a pointer, a length and an owner. Literals keep the owner null and
+point at static bytes that live for the program duration; concatenation
+allocates and reference counts the result. Printing and equality preserve
+embedded NUL bytes. There is no string mutation or interpolation yet.
+
+Printing, comparison and checked-arithmetic helpers are emitted with the C;
+integer checks use clang overflow builtins. Retain and release come from
+`runtime/strings.c`, embedded verbatim rather than restated by the code
+generator.
 
 `skuld check file.skuld` succeeds silently with code 0 or renders diagnostics
 with code 1, and never invokes clang. `skuld emit-c file.skuld` emits C after all
