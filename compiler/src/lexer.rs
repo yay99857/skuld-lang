@@ -1,0 +1,279 @@
+use crate::{
+    diagnostic::{Diagnostic, DiagnosticCode},
+    span::Span,
+    token::{Token, TokenKind},
+};
+
+#[derive(Debug)]
+pub struct LexOutput {
+    pub tokens: Vec<Token>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+pub fn lex(source: &str) -> LexOutput {
+    Lexer {
+        source,
+        offset: 0,
+        tokens: Vec::new(),
+        diagnostics: Vec::new(),
+    }
+    .run()
+}
+
+struct Lexer<'a> {
+    source: &'a str,
+    offset: usize,
+    tokens: Vec<Token>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl Lexer<'_> {
+    fn peek(&self) -> Option<char> {
+        self.source[self.offset..].chars().next()
+    }
+    fn advance(&mut self) -> Option<char> {
+        let c = self.peek()?;
+        self.offset += c.len_utf8();
+        Some(c)
+    }
+    fn emit(&mut self, start: usize, kind: TokenKind) {
+        self.tokens.push(Token {
+            kind,
+            span: Span::new(start, self.offset),
+        });
+    }
+    fn error(&mut self, start: usize, code: DiagnosticCode, message: impl Into<String>) {
+        self.diagnostics.push(Diagnostic {
+            code,
+            message: message.into(),
+            span: Span::new(start, self.offset),
+            help: None,
+        });
+    }
+    fn run(mut self) -> LexOutput {
+        use TokenKind::*;
+        while let Some(c) = self.peek() {
+            let start = self.offset;
+            if c.is_ascii_whitespace() {
+                self.advance();
+                continue;
+            }
+            if self.source[start..].starts_with("//") {
+                while self.peek().is_some_and(|c| c != '\n' && c != '\r') {
+                    self.advance();
+                }
+                continue;
+            }
+            if c.is_ascii_alphabetic() || c == '_' {
+                self.identifier(start);
+                continue;
+            }
+            if c.is_ascii_digit() {
+                self.number(start);
+                continue;
+            }
+            if c == '"' || c == '\'' {
+                self.quoted(start, c);
+                continue;
+            }
+            self.advance();
+            let pair = match (c, self.peek()) {
+                ('-', Some('>')) => Some(Arrow),
+                ('=', Some('=')) => Some(EqualEqual),
+                ('!', Some('=')) => Some(BangEqual),
+                ('<', Some('=')) => Some(LessEqual),
+                ('>', Some('=')) => Some(GreaterEqual),
+                ('&', Some('&')) => Some(AndAnd),
+                ('|', Some('|')) => Some(OrOr),
+                ('+', Some('=')) => Some(PlusEqual),
+                ('-', Some('=')) => Some(MinusEqual),
+                ('*', Some('=')) => Some(StarEqual),
+                ('/', Some('=')) => Some(SlashEqual),
+                _ => None,
+            };
+            if let Some(kind) = pair {
+                self.advance();
+                self.emit(start, kind);
+                continue;
+            }
+            let kind = match c {
+                '(' => LeftParen,
+                ')' => RightParen,
+                '{' => LeftBrace,
+                '}' => RightBrace,
+                '[' => LeftBracket,
+                ']' => RightBracket,
+                ',' => Comma,
+                '.' => Dot,
+                ':' => Colon,
+                '+' => Plus,
+                '-' => Minus,
+                '*' => Star,
+                '/' => Slash,
+                '%' => Percent,
+                '=' => Equal,
+                '<' => Less,
+                '>' => Greater,
+                '!' => Bang,
+                _ => {
+                    self.error(
+                        start,
+                        DiagnosticCode::InvalidCharacter,
+                        format!("invalid character `{}`", c.escape_default()),
+                    );
+                    continue;
+                }
+            };
+            self.emit(start, kind);
+        }
+        self.emit(self.source.len(), Eof);
+        LexOutput {
+            tokens: self.tokens,
+            diagnostics: self.diagnostics,
+        }
+    }
+    fn identifier(&mut self, start: usize) {
+        use TokenKind::*;
+        while self
+            .peek()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            self.advance();
+        }
+        let text = &self.source[start..self.offset];
+        let kind = match text {
+            "func" => Function,
+            "let" => Let,
+            "var" => Var,
+            "return" => Return,
+            "if" => If,
+            "else" => Else,
+            "while" => While,
+            "loop" => Loop,
+            "class" => Class,
+            "struct" => Struct,
+            "impl" => Impl,
+            "interface" => Interface,
+            "enum" => Enum,
+            "match" => Match,
+            "import" => Import,
+            "for" => For,
+            "in" => In,
+            "static" => Static,
+            "extern" => Extern,
+            "true" => Boolean(true),
+            "false" => Boolean(false),
+            _ => Identifier(text.into()),
+        };
+        self.emit(start, kind);
+    }
+    fn number(&mut self, start: usize) {
+        while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+            self.advance();
+        }
+        let float = self.peek() == Some('.')
+            && self.source[self.offset + 1..].starts_with(|c: char| c.is_ascii_digit());
+        if float {
+            self.advance();
+            while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                self.advance();
+            }
+        }
+        let text = &self.source[start..self.offset];
+        if float {
+            match text.parse::<f64>() {
+                Ok(value) if value.is_finite() => self.emit(start, TokenKind::Float(value)),
+                _ => self.error(
+                    start,
+                    DiagnosticCode::InvalidNumber,
+                    "float literal is outside the finite f64 range",
+                ),
+            }
+        } else {
+            match text.parse::<u64>() {
+                Ok(value) => self.emit(start, TokenKind::Integer(value)),
+                Err(_) => self.error(
+                    start,
+                    DiagnosticCode::InvalidNumber,
+                    "integer literal exceeds the maximum magnitude 18446744073709551615",
+                ),
+            }
+        }
+    }
+    fn quoted(&mut self, start: usize, quote: char) {
+        self.advance();
+        let mut value = String::new();
+        let mut valid = true;
+        let mut closed = false;
+        while let Some(c) = self.peek() {
+            if c == '\n' || c == '\r' {
+                break;
+            }
+            self.advance();
+            if c == quote {
+                closed = true;
+                break;
+            }
+            if c != '\\' {
+                value.push(c);
+                continue;
+            }
+            let escape_start = self.offset - 1;
+            let Some(escaped) = self.peek() else {
+                break;
+            };
+            if escaped == '\n' || escaped == '\r' {
+                break;
+            }
+            self.advance();
+            match escaped {
+                '\\' => value.push('\\'),
+                '"' => value.push('"'),
+                '\'' => value.push('\''),
+                'n' => value.push('\n'),
+                'r' => value.push('\r'),
+                't' => value.push('\t'),
+                '0' => value.push('\0'),
+                _ => {
+                    valid = false;
+                    self.error(
+                        escape_start,
+                        DiagnosticCode::InvalidEscape,
+                        format!("unknown escape sequence `\\{escaped}`"),
+                    );
+                }
+            }
+        }
+        if !closed {
+            self.error(
+                start,
+                DiagnosticCode::UnterminatedLiteral,
+                if quote == '"' {
+                    "unterminated string literal"
+                } else {
+                    "unterminated char literal"
+                },
+            );
+            return;
+        }
+        if !valid {
+            return;
+        }
+        if quote == '"' {
+            self.emit(start, TokenKind::String(value));
+        } else {
+            let mut chars = value.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => self.emit(start, TokenKind::Char(c)),
+                _ => self.error(
+                    start,
+                    DiagnosticCode::InvalidChar,
+                    "char literal must contain exactly one Unicode scalar value",
+                ),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

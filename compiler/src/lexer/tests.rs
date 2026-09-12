@@ -1,0 +1,265 @@
+use super::*;
+use TokenKind::*;
+
+fn kinds(source: &str) -> Vec<TokenKind> {
+    let output = lex(source);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    output.tokens.into_iter().map(|t| t.kind).collect()
+}
+
+#[test]
+fn keywords_and_identifiers() {
+    assert_eq!(
+        kinds(
+            "func let var return if else while loop class struct impl interface enum match import for in static extern true false main _x x2 fnx"
+        ),
+        vec![
+            Function,
+            Let,
+            Var,
+            Return,
+            If,
+            Else,
+            While,
+            Loop,
+            Class,
+            Struct,
+            Impl,
+            Interface,
+            Enum,
+            Match,
+            Import,
+            For,
+            In,
+            Static,
+            Extern,
+            Boolean(true),
+            Boolean(false),
+            Identifier("main".into()),
+            Identifier("_x".into()),
+            Identifier("x2".into()),
+            Identifier("fnx".into()),
+            Eof
+        ]
+    );
+}
+
+#[test]
+fn operators_and_delimiters() {
+    assert_eq!(
+        kinds("( ) { } [ ] , . : -> + - * / % = == != < > <= >= ! && || += -= *= /="),
+        vec![
+            LeftParen,
+            RightParen,
+            LeftBrace,
+            RightBrace,
+            LeftBracket,
+            RightBracket,
+            Comma,
+            Dot,
+            Colon,
+            Arrow,
+            Plus,
+            Minus,
+            Star,
+            Slash,
+            Percent,
+            Equal,
+            EqualEqual,
+            BangEqual,
+            Less,
+            Greater,
+            LessEqual,
+            GreaterEqual,
+            Bang,
+            AndAnd,
+            OrOr,
+            PlusEqual,
+            MinusEqual,
+            StarEqual,
+            SlashEqual,
+            Eof
+        ]
+    );
+    assert_eq!(
+        kinds("===!==+++="),
+        vec![
+            EqualEqual, Equal, BangEqual, Equal, Plus, Plus, PlusEqual, Eof
+        ]
+    );
+}
+
+#[test]
+fn numbers_and_separate_signs() {
+    assert_eq!(
+        kinds("0 27 001 10.5 -9223372036854775808 18446744073709551615 1.foo .5 1."),
+        vec![
+            Integer(0),
+            Integer(27),
+            Integer(1),
+            Float(10.5),
+            Minus,
+            Integer(9223372036854775808),
+            Integer(u64::MAX),
+            Integer(1),
+            Dot,
+            Identifier("foo".into()),
+            Dot,
+            Integer(5),
+            Integer(1),
+            Dot,
+            Eof
+        ]
+    );
+}
+
+#[test]
+fn strings_chars_and_escapes() {
+    assert_eq!(
+        kinds(r#""Hello, 世界" "" "\n\r\t\0\\\"\'" 'é' '\n' '\'' '🦀'"#),
+        vec![
+            String("Hello, 世界".into()),
+            String("".into()),
+            String("\n\r\t\0\\\"'".into()),
+            Char('é'),
+            Char('\n'),
+            Char('\''),
+            Char('🦀'),
+            Eof
+        ]
+    );
+}
+
+#[test]
+fn comments_whitespace_and_eof() {
+    assert_eq!(kinds("// hello\r\n func // end"), vec![Function, Eof]);
+    assert_eq!(kinds(" \t\r\n"), vec![Eof]);
+    assert_eq!(
+        lex("").tokens,
+        vec![Token {
+            kind: Eof,
+            span: Span::new(0, 0)
+        }]
+    );
+    assert_eq!(
+        kinds("\"// text\" /"),
+        vec![String("// text".into()), Slash, Eof]
+    );
+}
+
+#[test]
+fn spans_are_utf8_byte_ranges() {
+    let output = lex("\"é\"\r\nlet x");
+    let spans: Vec<_> = output.tokens.iter().map(|t| t.span).collect();
+    assert_eq!(
+        spans,
+        vec![
+            Span::new(0, 4),
+            Span::new(6, 9),
+            Span::new(10, 11),
+            Span::new(11, 11)
+        ]
+    );
+}
+
+#[test]
+fn invalid_characters_recover() {
+    let output = lex("@ é & | ; let");
+    assert_eq!(output.diagnostics.len(), 5);
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .all(|d| d.code == DiagnosticCode::InvalidCharacter)
+    );
+    assert_eq!(output.diagnostics[1].span, Span::new(2, 4));
+    assert_eq!(output.tokens[0].kind, Let);
+    assert_eq!(output.tokens.last().map(|t| &t.kind), Some(&Eof));
+}
+
+#[test]
+fn malformed_literals_recover() {
+    for (source, code) in [
+        ("\"abc", DiagnosticCode::UnterminatedLiteral),
+        ("'x", DiagnosticCode::UnterminatedLiteral),
+        ("\"abc\\", DiagnosticCode::UnterminatedLiteral),
+        (r#""\q""#, DiagnosticCode::InvalidEscape),
+        ("''", DiagnosticCode::InvalidChar),
+        ("'ab'", DiagnosticCode::InvalidChar),
+        ("'é'", DiagnosticCode::InvalidChar),
+        ("18446744073709551616", DiagnosticCode::InvalidNumber),
+    ] {
+        let output = lex(source);
+        assert_eq!(output.diagnostics[0].code, code, "{source}");
+        assert_eq!(output.tokens.len(), 1, "{source}");
+        assert_eq!(output.tokens[0].kind, Eof);
+    }
+    let output = lex("\"broken\nlet x");
+    assert_eq!(output.diagnostics.len(), 1);
+    assert_eq!(output.tokens[0].kind, Let);
+    let output = lex(&format!("{}.0", "9".repeat(400)));
+    assert_eq!(output.diagnostics[0].code, DiagnosticCode::InvalidNumber);
+}
+
+#[test]
+fn hello_tokens() {
+    assert_eq!(
+        kinds(include_str!("../../../examples/hello.skuld")),
+        vec![
+            Function,
+            Identifier("main".into()),
+            LeftParen,
+            RightParen,
+            LeftBrace,
+            Identifier("print".into()),
+            LeftParen,
+            String("Hello from Skuld!".into()),
+            RightParen,
+            RightBrace,
+            Eof
+        ]
+    );
+}
+
+#[test]
+fn arbitrary_small_inputs_preserve_span_invariants() {
+    let alphabet = [
+        'a', '0', '.', '"', '\'', '\\', '\n', '\r', 'é', '🦀', '@', '/', '=',
+    ];
+    for a in alphabet {
+        for b in alphabet {
+            for c in alphabet {
+                let source: std::string::String = [a, b, c].into_iter().collect();
+                let output = lex(&source);
+                assert_eq!(output.tokens.iter().filter(|t| t.kind == Eof).count(), 1);
+                for span in output
+                    .tokens
+                    .iter()
+                    .map(|t| t.span)
+                    .chain(output.diagnostics.iter().map(|d| d.span))
+                {
+                    assert!(span.start <= span.end && span.end <= source.len());
+                    assert!(
+                        source.is_char_boundary(span.start) && source.is_char_boundary(span.end)
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn func_is_keyword_print_and_old_spellings_are_identifiers() {
+    assert_eq!(
+        kinds("func print fn function println func_name"),
+        vec![
+            Function,
+            Identifier("print".into()),
+            Identifier("fn".into()),
+            Identifier("function".into()),
+            Identifier("println".into()),
+            Identifier("func_name".into()),
+            Eof
+        ]
+    );
+}
