@@ -173,3 +173,25 @@ fn old_spellings_are_not_implicit_aliases() {
     fails("fn main() {}", DiagnosticCode::ExpectedDeclaration);
     fails("func main() { println() }", DiagnosticCode::UnknownName);
 }
+
+#[test]
+fn while_requires_a_bool_condition() {
+    valid("func main() { var i = 0\nwhile i < 3 { i += 1 } }");
+    fails(
+        "func main() { var i = 0\nwhile i { i += 1 } }",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "func main() { while \"yes\" { } }",
+        DiagnosticCode::TypeMismatch,
+    );
+}
+
+#[test]
+fn while_never_satisfies_a_return_type() {
+    // The condition can be false on entry, so the body is not guaranteed to run.
+    fails(
+        "func answer() -> int {\n    while true {\n        return 1\n    }\n}\nfunc main() { print(answer()) }",
+        DiagnosticCode::MissingReturn,
+    );
+}

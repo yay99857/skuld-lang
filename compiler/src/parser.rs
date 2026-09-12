@@ -255,6 +255,7 @@ impl Parser<'_> {
                     | TokenKind::Var
                     | TokenKind::Return
                     | TokenKind::If
+                    | TokenKind::While
                     | TokenKind::LeftBrace
             ) || self.newline_before()
             {
@@ -309,8 +310,9 @@ impl Parser<'_> {
                 });
             }
             If => return self.if_statement(),
-            While | Loop | Class | Struct | Impl | Interface | Enum | Match | Import | For
-            | Static | Extern => {
+            While => return self.while_statement(),
+            Loop | Class | Struct | Impl | Interface | Enum | Match | Import | For | Static
+            | Extern => {
                 return Err(self.error(
                     DiagnosticCode::UnsupportedSyntax,
                     "this syntax is reserved for a later milestone",
@@ -330,6 +332,15 @@ impl Parser<'_> {
             diagnostic.help = Some("put separate statements on separate lines; expressions may continue across lines with operators, calls or member access".into());
             Err(diagnostic)
         }
+    }
+    fn while_statement(&mut self) -> Parsed<Statement> {
+        let start = self.expect(&TokenKind::While, "`while`")?.span.start;
+        let condition = self.expression()?;
+        let body = self.block()?;
+        Ok(Statement {
+            kind: StatementKind::While { condition, body },
+            span: Span::new(start, self.previous_end()),
+        })
     }
     fn if_statement(&mut self) -> Parsed<Statement> {
         let start = self.expect(&TokenKind::If, "`if`")?.span.start;

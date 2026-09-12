@@ -53,6 +53,10 @@ pub(crate) enum StatementKind {
         then_block: Block,
         else_branch: Option<Box<Statement>>,
     },
+    While {
+        condition: Expr,
+        body: Block,
+    },
 }
 #[derive(Debug)]
 pub(crate) struct Expr {

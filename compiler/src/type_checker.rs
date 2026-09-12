@@ -252,6 +252,14 @@ impl Checker<'_> {
                     .is_some_and(|branch| self.statement(branch));
                 then_returns && else_returns
             }
+            StatementKind::While { condition, body } => {
+                let ty = self.expression(condition);
+                self.expect_type(Type::Bool, ty, condition.span);
+                self.block(body);
+                // The condition may be false on entry, so a `while` never
+                // guarantees that its body runs, let alone that it returns.
+                false
+            }
         }
     }
     fn record(&mut self, expr: &Expr, ty: Type) -> Type {

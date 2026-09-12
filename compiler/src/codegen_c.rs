@@ -142,6 +142,19 @@ impl Emitter {
                     self.line("}");
                 }
             }
+            StatementKind::While { condition, body } => {
+                // Evaluating the condition can emit temporaries, so it cannot be
+                // hoisted the way `if` does: emit it inside the loop and exit
+                // with a break. `continue` then re-tests the condition, which is
+                // what a `while` must do.
+                self.line("for (;;) {");
+                self.indent += 1;
+                let condition = self.expression(condition);
+                self.line(&format!("if (!({condition})) break;"));
+                self.block_contents(body);
+                self.indent -= 1;
+                self.line("}");
+            }
         }
     }
     fn expression(&mut self, expr: &Expr) -> String {

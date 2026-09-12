@@ -201,6 +201,12 @@ impl Resolver {
                     self.statement(branch);
                 }
             }
+            StatementKind::While { condition, body } => {
+                // The condition is evaluated in the enclosing scope; the body
+                // gets its own child scope, like any other block.
+                self.expression(condition);
+                self.block(body);
+            }
         }
     }
     fn expression(&mut self, expr: &Expr) {

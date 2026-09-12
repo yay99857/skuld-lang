@@ -71,6 +71,10 @@ fn statement(source: &ast::Statement, typed: &TypedProgram) -> h::Statement {
             then_block: block(then_block, typed),
             else_branch: else_branch.as_ref().map(|s| Box::new(statement(s, typed))),
         },
+        ast::StatementKind::While { condition, body } => h::StatementKind::While {
+            condition: expression(condition, typed),
+            body: block(body, typed),
+        },
     };
     h::Statement {
         kind,

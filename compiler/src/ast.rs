@@ -60,6 +60,10 @@ pub enum StatementKind {
         /// Either a block or another if statement.
         else_branch: Option<Box<Statement>>,
     },
+    While {
+        condition: Expr,
+        body: Block,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

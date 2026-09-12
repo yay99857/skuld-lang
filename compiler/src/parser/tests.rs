@@ -235,7 +235,7 @@ fn invalid_sources_produce_specific_diagnostics() {
             "begin a block",
         ),
         (
-            "func f() { while true {} }",
+            "func f() { loop {} }",
             DiagnosticCode::UnsupportedSyntax,
             "later milestone",
         ),
@@ -320,4 +320,24 @@ fn malformed_token_combinations_terminate_and_keep_valid_spans() {
             }
         }
     }
+}
+
+#[test]
+fn while_statement_takes_a_condition_and_body() {
+    let mut program = program("func main() {\n    while a < 2 {\n        b = 1\n    }\n}");
+    let statement = program.functions.remove(0).body.statements.remove(0);
+    let StatementKind::While { condition, body } = statement.kind else {
+        panic!("while statement")
+    };
+    // The condition is a plain expression: no parentheses are required and none
+    // are consumed as a call.
+    assert!(matches!(condition.kind, ExprKind::Binary { .. }));
+    assert_eq!(body.statements.len(), 1);
+}
+
+#[test]
+fn while_recovers_without_swallowing_the_next_statement() {
+    let output = parse("func main() {\n    while {\n    }\n    let x = 1\n}");
+    assert!(!output.diagnostics.is_empty());
+    assert!(output.program.is_none());
 }

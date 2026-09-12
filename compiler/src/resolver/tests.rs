@@ -161,3 +161,14 @@ fn results_are_deterministic_and_do_not_require_main() {
     assert_eq!(valid(source), valid(source));
     valid("");
 }
+
+#[test]
+fn while_body_is_a_child_scope() {
+    // A binding declared in the body may shadow an outer one without leaking,
+    // exactly like a plain block.
+    let resolution = valid(
+        "func main() {\n    let x = 1\n    while x < 0 {\n        let x = 2\n        print(x)\n    }\n    print(x)\n}",
+    );
+    let declarations = resolution.declarations.len();
+    assert_eq!(declarations, 3, "main, outer x and shadowing x");
+}
