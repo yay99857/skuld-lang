@@ -254,3 +254,71 @@ fn function_hello_and_empty_print() {
         b"\nHello\n",
     );
 }
+
+/// `build` writes into the working directory, so every test below pins it to
+/// the fixture directory instead of the crate root.
+fn build_in(fixture: &Fixture, name: &str) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_skuld"));
+    command
+        .arg("build")
+        .arg(name)
+        .current_dir(&fixture.dir)
+        .env("TMPDIR", &fixture.dir);
+    command.output().expect("build CLI")
+}
+
+#[test]
+fn build_produces_a_standalone_executable() {
+    let fixture = Fixture::new("func main() {\n    print(7)\n}");
+    let source = fixture.dir.join("program.skuld");
+    fs::copy(&fixture.source, &source).expect("named source");
+
+    let output = build_in(&fixture, "program.skuld");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The artifact survives the CLI and runs on its own, unlike `run`, which
+    // keeps nothing.
+    let executable = fixture.dir.join(if cfg!(windows) {
+        "program.exe"
+    } else {
+        "program"
+    });
+    assert!(executable.is_file(), "executable was not created");
+    let executed = Command::new(&executable).output().expect("execute build");
+    assert_eq!(executed.stdout, b"7\n");
+}
+
+#[test]
+fn build_rejects_invalid_source_without_writing_an_executable() {
+    let fixture = Fixture::new("func main() {\n    let x: int = \"text\"\n}");
+    let source = fixture.dir.join("broken.skuld");
+    fs::copy(&fixture.source, &source).expect("named source");
+
+    let output = build_in(&fixture, "broken.skuld");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("E0102"));
+    assert!(
+        !fixture.dir.join("broken").exists(),
+        "a rejected program must leave no executable"
+    );
+}
+
+#[test]
+fn build_refuses_to_overwrite_the_source() {
+    // Without a `.skuld` extension the stem names the source itself.
+    let fixture = Fixture::new("func main() {\n    print(1)\n}");
+    let source = fixture.dir.join("noextension");
+    fs::copy(&fixture.source, &source).expect("named source");
+
+    let output = build_in(&fixture, "noextension");
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("would overwrite"));
+    assert_eq!(
+        fs::read_to_string(&source).expect("source survives"),
+        "func main() {\n    print(1)\n}"
+    );
+}

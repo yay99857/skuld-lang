@@ -46,15 +46,9 @@ impl Drop for TempDir {
     }
 }
 
-pub fn run(c_source: &str) -> Result<u8, String> {
-    let temp = TempDir::create()
-        .map_err(|error| format!("cannot create temporary build directory: {error}"))?;
-    let source = temp.path.join("generated.c");
-    let executable = temp.path.join(if cfg!(windows) {
-        "program.exe"
-    } else {
-        "program"
-    });
+/// Write the generated C into `directory` and compile it to `executable`.
+fn emit_and_compile(c_source: &str, directory: &Path, executable: &Path) -> Result<(), String> {
+    let source = directory.join("generated.c");
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -63,7 +57,26 @@ pub fn run(c_source: &str) -> Result<u8, String> {
     file.write_all(c_source.as_bytes())
         .map_err(|error| format!("cannot write generated C: {error}"))?;
     drop(file);
-    compile(&source, &executable)?;
+    compile(&source, executable)
+}
+
+/// Compile to a persistent executable. Only the C stays in the temporary
+/// directory; the executable is the one artifact the user keeps.
+pub fn build(c_source: &str, executable: &Path) -> Result<(), String> {
+    let temp = TempDir::create()
+        .map_err(|error| format!("cannot create temporary build directory: {error}"))?;
+    emit_and_compile(c_source, &temp.path, executable)
+}
+
+pub fn run(c_source: &str) -> Result<u8, String> {
+    let temp = TempDir::create()
+        .map_err(|error| format!("cannot create temporary build directory: {error}"))?;
+    let executable = temp.path.join(if cfg!(windows) {
+        "program.exe"
+    } else {
+        "program"
+    });
+    emit_and_compile(c_source, &temp.path, &executable)?;
     let status = Command::new(&executable)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())

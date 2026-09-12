@@ -36,20 +36,20 @@ fn invalid_arguments() {
         vec!["run"],
         vec!["lex"],
         vec!["unknown-command", "x.skuld"],
+        vec!["build"],
         vec!["lex", "x", "y"],
     ] {
         let output = cli().args(args).output().expect("start CLI");
         assert_eq!(output.status.code(), Some(2));
         assert!(String::from_utf8_lossy(&output.stderr).contains("Usage:"));
     }
-    assert!(
-        cli()
-            .arg("--help")
-            .output()
-            .expect("start CLI")
-            .status
-            .success()
-    );
+    let help = cli().arg("--help").output().expect("start CLI");
+    assert!(help.status.success());
+    // Every accepted action must be discoverable from the usage line.
+    let text = String::from_utf8_lossy(&help.stdout);
+    for action in ["lex", "parse", "resolve", "check", "emit-c", "build", "run"] {
+        assert!(text.contains(action), "`{action}` missing from: {text}");
+    }
 }
 
 #[test]

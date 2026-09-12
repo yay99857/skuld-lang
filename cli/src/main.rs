@@ -3,10 +3,11 @@ use skuld_compiler::{check, compile_to_c, lex, parse, resolve, span::SourceFile}
 use std::{
     env, fs,
     io::{self, Write},
+    path::{Path, PathBuf},
     process::ExitCode,
 };
 
-const USAGE: &str = "Usage: skuld <lex|parse|resolve|check|emit-c|run> <file.skuld>";
+const USAGE: &str = "Usage: skuld <lex|parse|resolve|check|emit-c|build|run> <file.skuld>";
 #[derive(Clone, Copy)]
 enum Action {
     Lex,
@@ -14,6 +15,7 @@ enum Action {
     Resolve,
     Check,
     EmitC,
+    Build,
     Run,
 }
 fn main() -> ExitCode {
@@ -31,6 +33,7 @@ fn main() -> ExitCode {
         Some("resolve") => Action::Resolve,
         Some("check") => Action::Check,
         Some("emit-c") => Action::EmitC,
+        Some("build") => Action::Build,
         Some("run") => Action::Run,
         _ => {
             eprintln!("{USAGE}");
@@ -79,7 +82,7 @@ fn main() -> ExitCode {
             }
         }
         Action::Check => check(&source.text).map(|_| String::new()),
-        Action::EmitC | Action::Run => compile_to_c(&source.text),
+        Action::EmitC | Action::Build | Action::Run => compile_to_c(&source.text),
     };
     match result {
         Err(diagnostics) => {
@@ -95,9 +98,59 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Ok(output) if matches!(action, Action::Build) => {
+            let executable = match executable_path(Path::new(&args[1])) {
+                Ok(path) => path,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            match native::build(&output, &executable) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Ok(output) => write_output(&output),
     }
 }
+/// The executable lands in the working directory under the source file's stem,
+/// so building never writes next to the source or into a directory the user did
+/// not choose.
+fn executable_path(source: &Path) -> Result<PathBuf, String> {
+    let stem = source
+        .file_stem()
+        .ok_or_else(|| format!("`{}` has no file name to build from", source.display()))?;
+    if stem.is_empty() {
+        return Err(format!("`{}` has an empty file name", source.display()));
+    }
+    let mut name = stem.to_os_string();
+    if cfg!(windows) {
+        name.push(".exe");
+    }
+    let executable = PathBuf::from(&name);
+    // Without an extension the stem is the source itself; refuse rather than
+    // overwrite the program being compiled.
+    if same_file(&executable, source) {
+        return Err(format!(
+            "building `{}` would overwrite it; rename the source to end in `.skuld`",
+            source.display()
+        ));
+    }
+    Ok(executable)
+}
+
+fn same_file(left: &Path, right: &Path) -> bool {
+    match (fs::canonicalize(left), fs::canonicalize(right)) {
+        (Ok(left), Ok(right)) => left == right,
+        // A missing output cannot be the source that was just read.
+        _ => false,
+    }
+}
+
 fn write_output(output: &str) -> ExitCode {
     let mut stdout = io::BufWriter::new(io::stdout().lock());
     if let Err(error) = stdout
