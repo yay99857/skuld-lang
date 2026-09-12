@@ -290,7 +290,13 @@ checks. `skuld run file.skuld` creates an exclusive temporary build directory
 the binary with inherited stdin/stdout/stderr and cleans the directory on normal
 completion or error. Child exit codes propagate; Unix signals map to 128 +
 signal. A killed CLI may leave temporary files. Missing clang and tool/process
-failures produce friendly CLI errors. `build` is not implemented yet.
+failures produce friendly CLI errors.
+
+`skuld build file.skuld` runs the same checks and clang invocation, but writes
+the executable to the working directory under the source file stem (with `.exe`
+on Windows) and keeps it; only the generated C stays in the temporary
+directory. A source path without an extension has a stem equal to the file
+itself, so building it is refused rather than overwriting the source.
 
 Compiler diagnostics added in this milestone: E0101 unknown/unsupported type,
 E0102 type mismatch, E0103 invalid value type, E0104 invalid operator,

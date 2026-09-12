@@ -65,7 +65,8 @@ accurate; documenting a future feature is not a request to implement it.
   conditionals, `while`, `loop`, `break` and `continue` execute. Parameters and `let` bindings are immutable.
 - `lex`, `parse`, `resolve` inspect individual stages. `check` performs full
   static checking without clang; `emit-c` emits checked C; `run` builds and
-  executes in a private temporary directory. `build` remains unimplemented.
+  executes in a private temporary directory, keeping nothing; `build` keeps the
+  executable in the working directory under the source stem.
 - The resolver uses single-source declaration/use tables; keep them with their
   exact AST revision. Functions are predeclared; parameters share the function
   body scope; locals become visible after initializers; child scopes shadow.

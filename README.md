@@ -62,6 +62,8 @@ exit code 1; invalid CLI usage returns 2. `run` checks first, generates C in a
 private temporary directory, invokes clang, executes the binary and cleans up.
 Program stdin/stdout/stderr are inherited and its exit status is propagated
 (Unix signals map to 128 + signal). No persistent build artifacts are produced.
+`build` performs the same checks and clang invocation but keeps the executable
+instead of running it; a rejected program leaves no executable behind.
 
 Debugging and inspecting generated code:
 
@@ -77,7 +79,9 @@ clang -std=c11 -O2 generated.c -o generated-program
 `lex`, `parse` and `resolve` inspect their respective stages; they do not perform
 a full type check. `emit-c` does run every compiler stage through C generation.
 The debug AST and resolution output are not stable serialization formats.
-`build`, `new`, `fmt`, `test` and `doc` remain future CLI commands.
+`build` compiles to a native executable in the working directory, named after
+the source file stem, and keeps only that artifact. `new`, `fmt`, `test` and
+`doc` remain future CLI commands.
 
 ## Implemented language core
 
