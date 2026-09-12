@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: Format, lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Edition 2024 needs a recent stable; the runner's rustup provides it.
+      - name: Install the stable toolchain
+        run: |
+          rustup update --no-self-update stable
+          rustup default stable
+          rustup component add rustfmt clippy
+
+      # `run` and `trap` fixtures compile generated C, so clang is required
+      # rather than optional: a missing clang must fail the suite, not skip it.
+      - name: Report tool versions
+        run: |
+          rustc --version
+          cargo --version
+          clang --version
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      # The README tells readers these commands work; keep that honest.
+      - name: Run the documented examples
+        run: |
+          for example in examples/*.skuld; do
+            echo "== $example"
+            cargo run --quiet -p skuld-cli -- run "$example"
+          done
