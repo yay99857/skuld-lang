@@ -16,6 +16,8 @@ pub enum TokenKind {
     Else,
     While,
     Loop,
+    Break,
+    Continue,
     Class,
     Struct,
     Impl,

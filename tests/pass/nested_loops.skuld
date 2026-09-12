@@ -1,0 +1,16 @@
+func main() {
+    var outer = 0
+    var total = 0
+    while outer < 3 {
+        outer += 1
+        var inner = 0
+        while inner < 9 {
+            inner += 1
+            if inner == 2 {
+                break
+            }
+        }
+        total += inner
+    }
+    print(total)
+}

@@ -155,6 +155,18 @@ impl Emitter {
                 self.indent -= 1;
                 self.line("}");
             }
+            StatementKind::Loop { body } => {
+                self.line("for (;;) {");
+                self.indent += 1;
+                self.block_contents(body);
+                self.indent -= 1;
+                self.line("}");
+            }
+            // C binds these to the innermost enclosing loop, which is exactly
+            // how they are checked. In a while, `continue` reaches the emitted
+            // condition test at the top of the loop.
+            StatementKind::Break => self.line("break;"),
+            StatementKind::Continue => self.line("continue;"),
         }
     }
     fn expression(&mut self, expr: &Expr) -> String {

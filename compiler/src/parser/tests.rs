@@ -235,7 +235,7 @@ fn invalid_sources_produce_specific_diagnostics() {
             "begin a block",
         ),
         (
-            "func f() { loop {} }",
+            "func f() { for i in xs {} }",
             DiagnosticCode::UnsupportedSyntax,
             "later milestone",
         ),
@@ -340,4 +340,27 @@ fn while_recovers_without_swallowing_the_next_statement() {
     let output = parse("func main() {\n    while {\n    }\n    let x = 1\n}");
     assert!(!output.diagnostics.is_empty());
     assert!(output.program.is_none());
+}
+
+#[test]
+fn loop_break_and_continue_parse_as_statements() {
+    let mut program =
+        program("func main() {\n    loop {\n        break\n        continue\n    }\n}");
+    let statement = program.functions.remove(0).body.statements.remove(0);
+    let StatementKind::Loop { body } = statement.kind else {
+        panic!("loop statement")
+    };
+    assert!(matches!(
+        body.statements.as_slice(),
+        [
+            Statement {
+                kind: StatementKind::Break,
+                ..
+            },
+            Statement {
+                kind: StatementKind::Continue,
+                ..
+            }
+        ]
+    ));
 }

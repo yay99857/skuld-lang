@@ -64,6 +64,11 @@ pub enum StatementKind {
         condition: Expr,
         body: Block,
     },
+    Loop {
+        body: Block,
+    },
+    Break,
+    Continue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

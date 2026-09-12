@@ -1,0 +1,12 @@
+func main() {
+    var index = 0
+    var kept = 0
+    while index < 5 {
+        index += 1
+        if index == 3 {
+            continue
+        }
+        kept += 1
+    }
+    print(kept)
+}

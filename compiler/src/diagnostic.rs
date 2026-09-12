@@ -26,6 +26,7 @@ pub enum DiagnosticCode {
     UnsupportedFeature,
     ImmutableAssignment,
     InvalidAssignment,
+    JumpOutsideLoop,
 }
 
 impl DiagnosticCode {
@@ -55,6 +56,7 @@ impl DiagnosticCode {
             Self::UnsupportedFeature => "E0110",
             Self::ImmutableAssignment => "E0203",
             Self::InvalidAssignment => "E0204",
+            Self::JumpOutsideLoop => "E0111",
         }
     }
 }

@@ -256,6 +256,9 @@ impl Parser<'_> {
                     | TokenKind::Return
                     | TokenKind::If
                     | TokenKind::While
+                    | TokenKind::Loop
+                    | TokenKind::Break
+                    | TokenKind::Continue
                     | TokenKind::LeftBrace
             ) || self.newline_before()
             {
@@ -311,8 +314,23 @@ impl Parser<'_> {
             }
             If => return self.if_statement(),
             While => return self.while_statement(),
-            Loop | Class | Struct | Impl | Interface | Enum | Match | Import | For | Static
-            | Extern => {
+            Loop => {
+                let start = self.bump().span.start;
+                let body = self.block()?;
+                return Ok(Statement {
+                    kind: StatementKind::Loop { body },
+                    span: Span::new(start, self.previous_end()),
+                });
+            }
+            Break => {
+                self.bump();
+                StatementKind::Break
+            }
+            Continue => {
+                self.bump();
+                StatementKind::Continue
+            }
+            Class | Struct | Impl | Interface | Enum | Match | Import | For | Static | Extern => {
                 return Err(self.error(
                     DiagnosticCode::UnsupportedSyntax,
                     "this syntax is reserved for a later milestone",

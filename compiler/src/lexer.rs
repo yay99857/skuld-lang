@@ -150,6 +150,8 @@ impl Lexer<'_> {
             "else" => Else,
             "while" => While,
             "loop" => Loop,
+            "break" => Break,
+            "continue" => Continue,
             "class" => Class,
             "struct" => Struct,
             "impl" => Impl,

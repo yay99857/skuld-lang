@@ -207,6 +207,9 @@ impl Resolver {
                 self.expression(condition);
                 self.block(body);
             }
+            StatementKind::Loop { body } => self.block(body),
+            // Jumps bind to the innermost loop; they introduce no names.
+            StatementKind::Break | StatementKind::Continue => {}
         }
     }
     fn expression(&mut self, expr: &Expr) {

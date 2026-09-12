@@ -50,6 +50,7 @@ pub(crate) fn type_check(
         signatures: BTreeMap::new(),
         diagnostics: Vec::new(),
         return_type: Type::Void,
+        loops: Vec::new(),
     };
     for function in &syntax.functions {
         let parameters: Vec<_> = function
@@ -140,6 +141,9 @@ struct Checker<'a> {
     signatures: BTreeMap<SymbolId, Signature>,
     diagnostics: Vec<Diagnostic>,
     return_type: Type,
+    /// One frame per enclosing loop, recording whether a `break` can exit it.
+    /// Empty means a jump has no loop to bind to.
+    loops: Vec<bool>,
 }
 impl Checker<'_> {
     fn declaration(&self, name: &Name) -> SymbolId {
@@ -255,9 +259,40 @@ impl Checker<'_> {
             StatementKind::While { condition, body } => {
                 let ty = self.expression(condition);
                 self.expect_type(Type::Bool, ty, condition.span);
+                self.loops.push(false);
                 self.block(body);
+                self.loops.pop();
                 // The condition may be false on entry, so a `while` never
                 // guarantees that its body runs, let alone that it returns.
+                false
+            }
+            StatementKind::Loop { body } => {
+                self.loops.push(false);
+                self.block(body);
+                let escapes = self.loops.pop().unwrap_or(true);
+                // A loop nobody breaks out of never falls through, so the code
+                // after it is unreachable and the function needs no further
+                // return. `break` reintroduces the fall-through path.
+                !escapes
+            }
+            StatementKind::Break | StatementKind::Continue => {
+                let keyword = if matches!(statement.kind, StatementKind::Break) {
+                    "break"
+                } else {
+                    "continue"
+                };
+                match self.loops.last_mut() {
+                    Some(escapes) => {
+                        if keyword == "break" {
+                            *escapes = true;
+                        }
+                    }
+                    None => self.error(
+                        DiagnosticCode::JumpOutsideLoop,
+                        statement.span,
+                        format!("`{keyword}` is only valid inside a loop"),
+                    ),
+                }
                 false
             }
         }

@@ -75,6 +75,11 @@ fn statement(source: &ast::Statement, typed: &TypedProgram) -> h::Statement {
             condition: expression(condition, typed),
             body: block(body, typed),
         },
+        ast::StatementKind::Loop { body } => h::StatementKind::Loop {
+            body: block(body, typed),
+        },
+        ast::StatementKind::Break => h::StatementKind::Break,
+        ast::StatementKind::Continue => h::StatementKind::Continue,
     };
     h::Statement {
         kind,

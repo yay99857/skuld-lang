@@ -195,3 +195,31 @@ fn while_never_satisfies_a_return_type() {
         DiagnosticCode::MissingReturn,
     );
 }
+
+#[test]
+fn jumps_require_an_enclosing_loop() {
+    valid("func main() { loop { break } }");
+    valid("func main() { var i = 0\nwhile i < 1 { i += 1\ncontinue } }");
+    fails("func main() { break }", DiagnosticCode::JumpOutsideLoop);
+    fails(
+        "func main() { if true { continue } }",
+        DiagnosticCode::JumpOutsideLoop,
+    );
+}
+
+#[test]
+fn a_loop_without_break_diverges() {
+    // Nothing follows an unbroken loop, so no further return is required.
+    valid(
+        "func answer() -> int {\n    loop {\n        return 1\n    }\n}\nfunc main() { print(answer()) }",
+    );
+    // A break restores the fall-through path, so the return is required again.
+    fails(
+        "func answer() -> int {\n    loop {\n        break\n    }\n}\nfunc main() { print(answer()) }",
+        DiagnosticCode::MissingReturn,
+    );
+    // The break belongs to the inner while, so the outer loop still diverges.
+    valid(
+        "func answer() -> int {\n    var i = 0\n    loop {\n        while i < 1 {\n            break\n        }\n        return 1\n    }\n}\nfunc main() { print(answer()) }",
+    );
+}

@@ -263,3 +263,17 @@ fn func_is_keyword_print_and_old_spellings_are_identifiers() {
         ]
     );
 }
+
+#[test]
+fn break_and_continue_are_keywords() {
+    assert_eq!(
+        kinds("break continue breaks continued"),
+        vec![
+            Break,
+            Continue,
+            Identifier("breaks".into()),
+            Identifier("continued".into()),
+            Eof
+        ]
+    );
+}
