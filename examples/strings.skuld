@@ -1,0 +1,29 @@
+struct Person {
+    name: string
+    city: string
+
+    greeting() -> string {
+        return "Hi, I am " + this.name + " from " + this.city + "."
+    }
+}
+
+func repeated(text: string, times: int) -> string {
+    var result = ""
+    var count = 0
+    while count < times {
+        result = result + text
+        count += 1
+    }
+    return result
+}
+
+func main() {
+    let person = Person { name: "Ada", city: "London" }
+    print(person.greeting())
+
+    // Each iteration allocates a new string and releases the previous one.
+    print(repeated("ab", 4))
+
+    // Literals never allocate; only values built at run time do.
+    print("static" + " and " + "heap")
+}
