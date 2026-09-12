@@ -2,8 +2,9 @@
 
 Status labels: **Implemented** means available now; **Planned** describes future
 intent, not accepted/executable programs; **Experimental** denotes provisional
-choices. The complete single-file native pipeline, Demos 0–2 and loops are implemented.
-Classes, managed allocation and self-hosting remain planned.
+choices. The complete single-file native pipeline, Demos 0–2, loops, structs and
+reference-counted strings are implemented. Classes, arrays and self-hosting
+remain planned.
 
 ## Philosophy — Planned
 
@@ -367,6 +368,41 @@ argument, so methods cost no more than a call.
 
 Classes remain planned below.
 
+## Memory — Implemented for strings
+
+Skuld manages memory with **reference counting, not a garbage collector**. A
+value is freed when its last reference goes away, at a point the programmer can
+predict.
+
+Counts are **not atomic**: the language has no threads, so paying for atomic
+operations on every copy would cost without buying anything. Introducing
+threads means revisiting the runtime, not the code generator.
+
+There is **no cycle collector**, by design. Strings are immutable and cannot
+form cycles. Aggregates that can will need `weak` references when they arrive;
+that is a language feature, not a collector.
+
+String literals keep pointing at static bytes and never allocate. Only values
+built at run time, such as concatenation results, are heap allocated.
+
+```skuld
+func greeting(name: string) -> string {
+    return "Hello, " + name + "!"
+}
+```
+
+`+` concatenates strings and produces a new one; no other operator is defined
+on them, and there is no implicit conversion, so `"a" + 1` is a type error.
+Interpolation is still future work.
+
+Generated code releases every owning slot on every exit path, including
+`return`, `break` and `continue`. Structs that hold strings are managed too:
+copying one retains its fields and dropping one releases them. See
+[runtime/README.md](runtime/README.md) for the emitted ownership rules.
+
+Classes will reuse this runtime; they add reference semantics and the cycle
+problem that comes with them.
+
 ## Classes and memory — Planned
 
 The user's [test.skuld](test.skuld) is the living reference for syntax proposals.
@@ -404,8 +440,8 @@ Skuld must not expose uninitialized field reads as JavaScript-style undefined.
 The sketch's lowercase `address` does not declare a type or establish an alias;
 the specification uses `Address` as a placeholder for a separately declared type.
 
-The example's string `+` is planned concatenation, not implemented arithmetic
-on strings. String interpolation remains a separate future capability.
+The example's string `+` is implemented concatenation. String interpolation
+remains a separate future capability.
 
 Structs are implemented with fields and methods; see the section below. They
 adopt the class receiver shape: no `func`, no explicit receiver, `this` for

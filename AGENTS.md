@@ -62,7 +62,8 @@ accurate; documenting a future feature is not a request to implement it.
 - Implemented: the entire source → lexer → parser → AST → resolver → type
   checker → HIR → C → clang pipeline, native Demos 0–2 and loops. Scalar types
   are int, float, bool, string and void; functions, locals, calls, returns,
-  conditionals, `while`, `loop`, `break`, `continue` and structs execute. Parameters and `let` bindings are immutable.
+  conditionals, `while`, `loop`, `break`, `continue`, structs and
+  reference-counted string concatenation execute. Parameters and `let` bindings are immutable.
 - `lex`, `parse`, `resolve` inspect individual stages. `check` performs full
   static checking without clang; `emit-c` emits checked C; `run` builds and
   executes in a private temporary directory, keeping nothing; `build` keeps the
@@ -85,12 +86,18 @@ accurate; documenting a future feature is not a request to implement it.
   functions with a leading receiver. Struct names live in a type namespace
   owned by the checker, and method names in a scope of their own, so neither
   resolves as an ordinary value name.
-- Next milestone: the planned Demo 3 showcase, which needs a heap allocation
-  and reference-counting decision before classes. Members
+- Memory is reference counted with non-atomic counts, no garbage collector and
+  no cycle collector. The runtime is `runtime/strings.c`, embedded verbatim in
+  generated C; do not restate retain/release in the code generator. Ownership
+  is emitted with cleanup attributes: fresh values are adopted, borrowed values
+  retained on entry, arguments borrowed, returns retained.
+- Next milestone: the planned Demo 3 showcase, which reuses this runtime and
+  adds reference semantics plus the cycle problem. Members
   are parser syntax only and are rejected by checking until their milestone.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
-  Full workspace testing requires clang (including UBSan for a native test).
+  Full workspace testing requires clang: every `tests/pass` fixture is built
+  with address, leak and UB detection, so a leak or double free fails the suite.
   `runtime/` stays minimal until managed allocation needs it.
 - Report status as completed milestones and verified behavior. Do not introduce
   completion percentages or progress scores; they imply a precision the project

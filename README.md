@@ -110,8 +110,9 @@ all paths. `print()` emits a blank line; `print(value)` accepts one int, float, 
 string and appends a newline. The previous `fn`, `function` and `println` spellings are not aliases.
 
 Integer overflow and division/remainder by zero produce runtime errors instead
-of C undefined behavior. Strings currently reference immutable static literal
-bytes; Unicode and embedded NUL are preserved. There is no string allocation,
+of C undefined behavior. String literals reference immutable static bytes;
+Unicode and embedded NUL are preserved. Concatenation allocates and is
+reference counted. There is no string mutation,
 concatenation, interpolation, array support, class support or ARC yet. See
 [LANGUAGE.md](LANGUAGE.md) for the complete implemented/planned distinction.
 
@@ -147,8 +148,12 @@ diverges, so it satisfies a non-void return type.
 field assignment. Values copy on assignment, so two bindings never share
 state. Methods take an implicit, immutable `this`.
 
-Next: the planned class/object/interpolation showcase (Demo 3), which still
-needs a decision on heap allocation and reference counting. Structs, managed memory, modules, standard library, official
+Strings are reference counted: `+` concatenates and the result is freed when
+its last reference goes away. Counts are not atomic, there is no garbage
+collector and no cycle collector; literals never allocate.
+
+Next: the planned class/object/interpolation showcase (Demo 3), which reuses
+this runtime and adds reference semantics. Structs, managed memory, modules, standard library, official
 formatter, broader tooling, portability and eventual self-hosting remain ahead.
 Status is reported as completed milestones, not as a completion percentage, and
 implies neither production readiness nor measured Go/Rust performance.
