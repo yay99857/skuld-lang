@@ -304,7 +304,42 @@ E0105 integer range, E0106 argument count, E0107 non-callable value,
 E0108 missing return, E0109 invalid entrypoint, E0110 unsupported feature,
 E0203 immutable assignment and E0204 invalid assignment destination.
 
-## Classes, structs and memory — Planned
+## Structs — Implemented
+
+```skuld
+struct Vec2 {
+    x: float
+    y: float
+}
+
+var point = Vec2 { x: 10.0, y: 20.0 }
+point.x = 1.0
+print(point.y)
+```
+
+Fields are declared one per line, following the statement-boundary rule.
+Record construction names every field exactly once: there are no defaults and
+no partial initialization, so a missing field is `E0112` and a repeated one is
+a duplicate declaration. Field order in construction is free; the backend lays
+fields out in declaration order.
+
+A struct cannot contain itself. A value type has no indirection, so the size
+would not exist; the checker rejects it rather than the C compiler.
+
+Values copy on assignment, argument passing and return. Assigning to `v.x` or
+`v.i.x` requires the binding it is rooted in to be a `var`; a field of a `let`
+or of a parameter is immutable.
+
+Struct names live in a type namespace. The value resolver never sees them,
+which is why resolution still reports only value names.
+
+`if value { }` and `while value { }` read as a condition followed by a block,
+never as record construction. Parentheses make a literal available again, as
+does any nested expression context such as a call argument or a field value.
+
+Structs have no methods yet, and classes remain planned below.
+
+## Classes and memory — Planned
 
 The user's [test.skuld](test.skuld) is the living reference for syntax proposals.
 The planned class syntax below follows that direction; it is not supported by
@@ -344,16 +379,9 @@ the specification uses `Address` as a placeholder for a separately declared type
 The example's string `+` is planned concatenation, not implemented arithmetic
 on strings. String interpolation remains a separate future capability.
 
-Structs retain their planned value semantics and record construction, e.g.
-`Vec2 { x: 10.0, y: 20.0 }`. Their earlier method/impl syntax remains provisional;
-the class-method update does not settle all struct receiver rules.
-
-```skuld
-struct Vec2 {
-    x: float
-    y: float
-}
-```
+Structs are implemented; see the section below. Their method/impl syntax
+remains provisional, and the class-method update does not settle struct
+receiver rules, so structs currently have fields but no methods.
 
 Structs have value/copy semantics. Classes are managed reference types with
 future ARC. No inheritance, garbage collector, borrow checker or Rust ownership

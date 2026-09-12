@@ -62,7 +62,7 @@ accurate; documenting a future feature is not a request to implement it.
 - Implemented: the entire source → lexer → parser → AST → resolver → type
   checker → HIR → C → clang pipeline, native Demos 0–2 and loops. Scalar types
   are int, float, bool, string and void; functions, locals, calls, returns,
-  conditionals, `while`, `loop`, `break` and `continue` execute. Parameters and `let` bindings are immutable.
+  conditionals, `while`, `loop`, `break`, `continue` and structs execute. Parameters and `let` bindings are immutable.
 - `lex`, `parse`, `resolve` inspect individual stages. `check` performs full
   static checking without clang; `emit-c` emits checked C; `run` builds and
   executes in a private temporary directory, keeping nothing; `build` keeps the
@@ -79,7 +79,12 @@ accurate; documenting a future feature is not a request to implement it.
   Compound assignments snapshot the old value before the RHS. Integer overflow
   and invalid integer division trap; never introduce signed C overflow UB.
   Strings are length-aware views of static literal bytes, including NUL.
-- Next milestone: the planned Demo 3 showcase. Members
+- Structs are implemented with value/copy semantics: fields, record
+  construction, field access and field assignment through places. They have no
+  methods. Struct names live in a type namespace owned by the checker, not the
+  value resolver.
+- Next milestone: struct methods, then the planned Demo 3 showcase, which needs
+  a heap allocation and reference-counting decision before classes. Members
   are parser syntax only and are rejected by checking until their milestone.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.

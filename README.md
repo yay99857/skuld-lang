@@ -143,7 +143,11 @@ natively without JavaScript or a VM.
 `while`, `loop`, `break` and `continue` execute. A `loop` with no `break`
 diverges, so it satisfies a non-void return type.
 
-Next: the planned class/object/method/interpolation showcase (Demo 3). Structs, managed memory, modules, standard library, official
+`struct` declares a value type with fields, record construction and field
+assignment. Values copy on assignment, so two bindings never share state.
+
+Next: methods, then the planned class/object/interpolation showcase (Demo 3),
+which still needs a decision on heap allocation and reference counting. Structs, managed memory, modules, standard library, official
 formatter, broader tooling, portability and eventual self-hosting remain ahead.
 Status is reported as completed milestones, not as a completion percentage, and
 implies neither production readiness nor measured Go/Rust performance.
