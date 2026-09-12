@@ -262,6 +262,13 @@ impl Resolver {
                 }
             }
             ExprKind::Member { object, .. } => self.expression(object),
+            ExprKind::Interpolation(parts) => {
+                for part in parts {
+                    if let InterpolationPart::Value(value) = part {
+                        self.expression(value);
+                    }
+                }
+            }
             // The type name and the field labels are not value names; only the
             // field values are resolved here.
             ExprKind::StructLiteral { fields, .. } => {

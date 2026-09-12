@@ -66,3 +66,43 @@ static inline skuld_string skuld_string_concat(skuld_string a, skuld_string b, s
     }
     return (skuld_string){buffer->data, len, buffer};
 }
+
+/* Conversions for interpolation. Each returns a string that owns itself,
+ * except booleans, whose two spellings are static and never allocate. */
+
+static skuld_string skuld_string_from_bytes(const char *bytes, size_t len) {
+    skuld_buffer *buffer = malloc(sizeof(skuld_buffer) + len);
+    if (buffer == NULL) {
+        skuld_fail("out of memory", 0);
+    }
+    buffer->count = 1;
+    buffer->len = len;
+    if (len != 0) {
+        memcpy(buffer->data, bytes, len);
+    }
+    return (skuld_string){buffer->data, len, buffer};
+}
+
+static inline skuld_string skuld_string_from_int(int64_t value) {
+    char digits[32];
+    int len = snprintf(digits, sizeof digits, "%" PRId64, value);
+    if (len < 0) {
+        skuld_fail("could not format an integer", 0);
+    }
+    return skuld_string_from_bytes(digits, (size_t)len);
+}
+
+/* Matches `print`, so a value reads the same interpolated or printed. */
+static inline skuld_string skuld_string_from_float(double value) {
+    char digits[64];
+    int len = snprintf(digits, sizeof digits, "%.17g", value);
+    if (len < 0) {
+        skuld_fail("could not format a float", 0);
+    }
+    return skuld_string_from_bytes(digits, (size_t)len);
+}
+
+static inline skuld_string skuld_string_from_bool(bool value) {
+    return value ? (skuld_string){(const unsigned char *)"true", 4, NULL}
+                 : (skuld_string){(const unsigned char *)"false", 5, NULL};
+}

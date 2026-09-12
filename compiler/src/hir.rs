@@ -113,6 +113,13 @@ pub(crate) enum ExprKind {
         object: Box<Expr>,
         index: usize,
     },
+    Interpolation(Vec<InterpolationPart>),
+}
+
+#[derive(Debug)]
+pub(crate) enum InterpolationPart {
+    Text(String),
+    Value(Expr),
 }
 /// An assignable location: a local, optionally followed by field steps.
 #[derive(Debug)]

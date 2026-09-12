@@ -458,6 +458,26 @@ impl Parser<'_> {
             span: Span::new(start, self.previous_end()),
         })
     }
+    /// The lexer already split the text; only the expressions are parsed here.
+    fn interpolation(&mut self, first: String) -> Parsed<ExprKind> {
+        let mut parts = vec![InterpolationPart::Text(first)];
+        loop {
+            let value = self.with_struct_literals(true, |parser| parser.expression())?;
+            parts.push(InterpolationPart::Value(value));
+            match self.current().kind.clone() {
+                TokenKind::InterpolationPart(text) => {
+                    self.bump();
+                    parts.push(InterpolationPart::Text(text));
+                }
+                TokenKind::InterpolationEnd(text) => {
+                    self.bump();
+                    parts.push(InterpolationPart::Text(text));
+                    return Ok(ExprKind::Interpolation(parts));
+                }
+                _ => return Err(self.expected("`}` to close the interpolation")),
+            }
+        }
+    }
     fn struct_literal(&mut self, name: Name) -> Parsed<ExprKind> {
         self.expect(&TokenKind::LeftBrace, "`{` to begin the fields")?;
         let mut fields = Vec::new();
@@ -567,6 +587,10 @@ impl Parser<'_> {
                 } else {
                     ExprKind::Identifier(name)
                 }
+            }
+            TokenKind::InterpolationBegin(text) => {
+                self.bump();
+                self.interpolation(text)?
             }
             TokenKind::LeftParen => {
                 self.bump();

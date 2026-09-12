@@ -16,8 +16,15 @@ pub fn lex(source: &str) -> LexOutput {
         offset: 0,
         tokens: Vec::new(),
         diagnostics: Vec::new(),
+        interpolations: Vec::new(),
     }
     .run()
+}
+
+/// How a run of string text ended.
+enum Scanned {
+    Closed(String),
+    Interpolated(String),
 }
 
 struct Lexer<'a> {
@@ -25,6 +32,9 @@ struct Lexer<'a> {
     offset: usize,
     tokens: Vec<Token>,
     diagnostics: Vec<Diagnostic>,
+    /// Brace depth inside each open `${ ... }`. A `}` at depth zero ends the
+    /// expression and returns to scanning string text.
+    interpolations: Vec<usize>,
 }
 
 impl Lexer<'_> {
@@ -50,6 +60,8 @@ impl Lexer<'_> {
             help: None,
         });
     }
+    /// Brace depth inside each open `${ ... }`. A `}` at depth zero ends the
+    /// expression and returns to scanning string text.
     fn run(mut self) -> LexOutput {
         use TokenKind::*;
         while let Some(c) = self.peek() {
@@ -95,6 +107,20 @@ impl Lexer<'_> {
                 self.advance();
                 self.emit(start, kind);
                 continue;
+            }
+            // Inside `${ ... }` braces are counted, so a struct literal in an
+            // interpolation does not end it early.
+            if c == '{' && !self.interpolations.is_empty() {
+                *self.interpolations.last_mut().expect("open interpolation") += 1;
+            }
+            if c == '}' && !self.interpolations.is_empty() {
+                let depth = self.interpolations.last_mut().expect("open interpolation");
+                if *depth == 0 {
+                    self.interpolations.pop();
+                    self.resume_interpolation(start);
+                    continue;
+                }
+                *depth -= 1;
             }
             let kind = match c {
                 '(' => LeftParen,
@@ -204,12 +230,40 @@ impl Lexer<'_> {
     }
     fn quoted(&mut self, start: usize, quote: char) {
         self.advance();
+        match self.scan_text(start, quote) {
+            Some(Scanned::Closed(value)) => self.finish_literal(start, quote, value),
+            Some(Scanned::Interpolated(value)) => {
+                self.emit(start, TokenKind::InterpolationBegin(value));
+                self.interpolations.push(0);
+            }
+            None => {}
+        }
+    }
+    /// Continue the string that an interpolation expression interrupted.
+    fn resume_interpolation(&mut self, start: usize) {
+        match self.scan_text(start, '"') {
+            Some(Scanned::Closed(value)) => self.emit(start, TokenKind::InterpolationEnd(value)),
+            Some(Scanned::Interpolated(value)) => {
+                self.emit(start, TokenKind::InterpolationPart(value));
+                self.interpolations.push(0);
+            }
+            None => {}
+        }
+    }
+    /// Collect literal text up to the closing quote or the next `${`.
+    /// Returns None when the literal is invalid; the diagnostic is emitted here.
+    fn scan_text(&mut self, start: usize, quote: char) -> Option<Scanned> {
         let mut value = String::new();
         let mut valid = true;
         let mut closed = false;
         while let Some(c) = self.peek() {
             if c == '\n' || c == '\r' {
                 break;
+            }
+            if c == '$' && quote == '"' && self.source[self.offset + 1..].starts_with('{') {
+                self.advance();
+                self.advance();
+                return valid.then_some(Scanned::Interpolated(value));
             }
             self.advance();
             if c == quote {
@@ -236,6 +290,8 @@ impl Lexer<'_> {
                 'r' => value.push('\r'),
                 't' => value.push('\t'),
                 '0' => value.push('\0'),
+                // Without this a literal `${` could not be written.
+                '$' => value.push('$'),
                 _ => {
                     valid = false;
                     self.error(
@@ -256,11 +312,11 @@ impl Lexer<'_> {
                     "unterminated char literal"
                 },
             );
-            return;
+            return None;
         }
-        if !valid {
-            return;
-        }
+        valid.then_some(Scanned::Closed(value))
+    }
+    fn finish_literal(&mut self, start: usize, quote: char, value: String) {
         if quote == '"' {
             self.emit(start, TokenKind::String(value));
         } else {

@@ -108,7 +108,7 @@ func main() {
     print(s == "olá\0世界")
     print(s != "olá")
     print("" == "")
-    print("\"\\??/ %s ${literal}")
+    print("\"\\??/ %s \${literal}")
 }"#,
         "olá\0世界\ntrue\ntrue\ntrue\n\"\\??/ %s ${literal}\n".as_bytes(),
     );

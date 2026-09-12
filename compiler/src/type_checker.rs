@@ -736,6 +736,30 @@ impl Checker<'_> {
                 }
             }
             ExprKind::StructLiteral { name, fields } => self.struct_literal(name, fields),
+            ExprKind::Interpolation(parts) => {
+                for part in parts {
+                    let InterpolationPart::Value(value) = part else {
+                        continue;
+                    };
+                    let ty = self.expression(value);
+                    // The same set `print` accepts: anything with an obvious
+                    // textual form, and no implicit conversion beyond that.
+                    if !matches!(
+                        ty,
+                        Type::Int | Type::Float | Type::Bool | Type::String | Type::Error
+                    ) {
+                        self.error(
+                            DiagnosticCode::InvalidValueType,
+                            value.span,
+                            format!(
+                                "cannot interpolate `{}`; only int, float, bool and string have a textual form",
+                                self.type_name(ty)
+                            ),
+                        );
+                    }
+                }
+                Type::String
+            }
         };
         self.record(expr, ty)
     }

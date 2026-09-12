@@ -361,3 +361,23 @@ fn strings_concatenate_with_plus_only() {
         DiagnosticCode::TypeMismatch,
     );
 }
+
+#[test]
+fn interpolation_accepts_what_print_accepts() {
+    valid("func main() { let n = 1\nprint(\"a ${n} b ${n > 0} c ${1.5} d ${\"s\"}\") }");
+    valid("func main() { print(\"${1 + 2}\") }");
+    // A struct has no textual form.
+    fails(
+        "struct P { n: int }\nfunc main() { let p = P { n: 1 }\nprint(\"${p}\") }",
+        DiagnosticCode::InvalidValueType,
+    );
+    fails(
+        "func main() { print(\"${print(1)}\") }",
+        DiagnosticCode::InvalidValueType,
+    );
+    // An interpolation is a string, so it type checks as one.
+    fails(
+        "func main() { let x: int = \"${1}\" }",
+        DiagnosticCode::TypeMismatch,
+    );
+}

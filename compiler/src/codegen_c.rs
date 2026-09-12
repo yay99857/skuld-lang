@@ -106,6 +106,19 @@ pub fn emit_c(program: &Program) -> String {
     emitter.line("}");
     emitter.output
 }
+fn string_literal(value: &str) -> String {
+    // Fixed-width octal for every byte: no injection, NUL truncation, trigraphs
+    // or dependence on the C source character set.
+    let escaped: String = value
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("\\{byte:03o}"))
+        .collect();
+    format!(
+        "((skuld_string){{(const unsigned char *)\"{escaped}\", {}, NULL}})",
+        value.len()
+    )
+}
 fn place_expression(place: &Place) -> String {
     let mut rendered = format!("skuld_v{}", place.base.0);
     for index in &place.fields {
@@ -356,6 +369,61 @@ impl Emitter {
                     &format!("(skuld_s{}){{{}}}", id.0, values.join(", ")),
                     true,
                 )
+            }
+            ExprKind::Interpolation(parts) => {
+                // Folded left into concatenations. Each piece becomes a string
+                // that owns itself, and each intermediate result is released by
+                // its own slot.
+                let mut result: Option<String> = None;
+                for part in parts {
+                    let piece = match part {
+                        InterpolationPart::Text(text) => {
+                            if text.is_empty() {
+                                continue;
+                            }
+                            self.store(Type::String, &string_literal(text), true)
+                        }
+                        InterpolationPart::Value(value) => {
+                            let rendered = self.expression(value);
+                            match value.ty {
+                                Type::String => rendered,
+                                Type::Int => self.store(
+                                    Type::String,
+                                    &format!("skuld_string_from_int({rendered})"),
+                                    true,
+                                ),
+                                Type::Float => self.store(
+                                    Type::String,
+                                    &format!("skuld_string_from_float({rendered})"),
+                                    true,
+                                ),
+                                Type::Bool => self.store(
+                                    Type::String,
+                                    &format!("skuld_string_from_bool({rendered})"),
+                                    true,
+                                ),
+                                _ => unreachable!(
+                                    "internal compiler bug: uncheckable interpolation part"
+                                ),
+                            }
+                        }
+                    };
+                    result = Some(match result {
+                        None => {
+                            self.store(Type::String, &self.retained(Type::String, &piece), true)
+                        }
+                        Some(left) => self.store(
+                            Type::String,
+                            &format!("skuld_string_concat({left}, {piece}, {})", expr.span.start),
+                            true,
+                        ),
+                    });
+                }
+                // An interpolation with no pieces at all is the empty string.
+                match result {
+                    Some(value) => value,
+                    None => self.store(Type::String, &string_literal(""), true),
+                }
             }
             ExprKind::Field { object, index } => {
                 let value = self.expression(object);

@@ -145,6 +145,17 @@ fn strip_groups(mut expr: &ast::Expr) -> &ast::Expr {
 }
 fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
     let kind = match &source.kind {
+        ast::ExprKind::Interpolation(parts) => h::ExprKind::Interpolation(
+            parts
+                .iter()
+                .map(|part| match part {
+                    ast::InterpolationPart::Text(text) => h::InterpolationPart::Text(text.clone()),
+                    ast::InterpolationPart::Value(value) => {
+                        h::InterpolationPart::Value(expression(value, typed))
+                    }
+                })
+                .collect(),
+        ),
         ast::ExprKind::StructLiteral { fields, .. } => {
             let Some(Type::Struct(id)) = typed.expression_type(source.span) else {
                 unreachable!("internal compiler bug: unchecked struct literal")

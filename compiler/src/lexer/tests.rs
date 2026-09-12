@@ -277,3 +277,52 @@ fn break_and_continue_are_keywords() {
         ]
     );
 }
+
+#[test]
+fn interpolation_splits_text_from_expressions() {
+    assert_eq!(
+        kinds("\"a ${x} b\""),
+        vec![
+            InterpolationBegin("a ".into()),
+            Identifier("x".into()),
+            InterpolationEnd(" b".into()),
+            Eof
+        ]
+    );
+    assert_eq!(
+        kinds("\"${a}-${b}\""),
+        vec![
+            InterpolationBegin("".into()),
+            Identifier("a".into()),
+            InterpolationPart("-".into()),
+            Identifier("b".into()),
+            InterpolationEnd("".into()),
+            Eof
+        ]
+    );
+    // Braces inside the expression are counted, so a record literal does not
+    // end the interpolation early.
+    assert_eq!(
+        kinds("\"${P { n: 1 }}\""),
+        vec![
+            InterpolationBegin("".into()),
+            Identifier("P".into()),
+            LeftBrace,
+            Identifier("n".into()),
+            Colon,
+            Integer(1),
+            RightBrace,
+            InterpolationEnd("".into()),
+            Eof
+        ]
+    );
+    // A string with no `${` is still one plain literal.
+    assert_eq!(kinds("\"plain\""), vec![String("plain".into()), Eof]);
+    // `\$` writes a literal `${`.
+    assert_eq!(
+        kinds("\"\\${literal}\""),
+        vec![String("${literal}".into()), Eof]
+    );
+    // A lone `$` is ordinary text.
+    assert_eq!(kinds("\"5$\""), vec![String("5$".into()), Eof]);
+}

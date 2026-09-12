@@ -1,0 +1,27 @@
+struct Person {
+    name: string
+    age: int
+
+    label() -> string {
+        return "${this.name} (${this.age})"
+    }
+}
+
+func main() {
+    let person = Person { name: "Ada", age: 36 }
+    print(person.label())
+
+    let count = 3
+    print("${count} item(s), empty: ${count == 0}, ratio: ${0.5}")
+
+    // Building in a loop through interpolation allocates every iteration.
+    var line = ""
+    var index = 0
+    while index < 4 {
+        line = "${line}${index},"
+        index += 1
+    }
+    print(line)
+
+    print("\${literal} stays text")
+}

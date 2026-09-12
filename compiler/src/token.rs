@@ -62,6 +62,12 @@ pub enum TokenKind {
     Integer(u64),
     Float(f64),
     String(String),
+    /// Text before the first `${` of an interpolated string.
+    InterpolationBegin(String),
+    /// Text between one `}` and the next `${`.
+    InterpolationPart(String),
+    /// Text after the last `}`, up to the closing quote.
+    InterpolationEnd(String),
     Char(char),
     Boolean(bool),
     Eof,

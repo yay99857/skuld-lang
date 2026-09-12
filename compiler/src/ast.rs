@@ -153,6 +153,14 @@ pub enum ExprKind {
         name: Name,
         fields: Vec<FieldInit>,
     },
+    /// `"text ${value} more"`. Always yields a string.
+    Interpolation(Vec<InterpolationPart>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum InterpolationPart {
+    Text(String),
+    Value(Expr),
 }
 
 #[derive(Debug, Clone, PartialEq)]
