@@ -1,0 +1,323 @@
+use super::*;
+
+fn program(source: &str) -> Program {
+    let output = parse(source);
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+    output.program.expect("valid AST")
+}
+fn expr(source: &str) -> Expr {
+    let mut program = program(&format!("func main() {{ {source} }}"));
+    let statement = program.functions.remove(0).body.statements.remove(0);
+    let StatementKind::Expression(expr) = statement.kind else {
+        panic!("expression statement")
+    };
+    expr
+}
+fn shape(expr: &Expr) -> String {
+    match &expr.kind {
+        ExprKind::Identifier(name) => name.text.clone(),
+        ExprKind::Literal(Literal::Integer(value)) => value.to_string(),
+        ExprKind::Binary {
+            left, op, right, ..
+        } => format!("({} {op:?} {})", shape(left), shape(right)),
+        ExprKind::Assignment {
+            target, op, value, ..
+        } => format!("({} {op:?} {})", shape(target), shape(value)),
+        ExprKind::Unary { op, operand, .. } => format!("({op:?} {})", shape(operand)),
+        ExprKind::Group(value) => format!("(group {})", shape(value)),
+        ExprKind::Call { callee, arguments } => format!(
+            "{}({})",
+            shape(callee),
+            arguments.iter().map(shape).collect::<Vec<_>>().join(",")
+        ),
+        ExprKind::Member { object, member } => format!("{}.{}", shape(object), member.text),
+        _ => panic!("unexpected shape: {expr:?}"),
+    }
+}
+
+#[test]
+fn precedence_and_associativity() {
+    for (source, expected) in [
+        ("1 + 2 * 3", "(1 Add (2 Multiply 3))"),
+        ("1 - 2 - 3", "((1 Subtract 2) Subtract 3)"),
+        ("a = b = 3", "(a Assign (b Assign 3))"),
+        ("a += b *= 3", "(a Add (b Multiply 3))"),
+        (
+            "a = b || c && d == e < f + g * -h",
+            "(a Assign (b Or (c And (d Equal (e Less (f Add (g Multiply (Negative h))))))))",
+        ),
+        ("(1 + 2) * 3", "((group (1 Add 2)) Multiply 3)"),
+        ("!user.greet(1, 2).ready", "(Not user.greet(1,2).ready)"),
+        ("+a / b % c", "(((Positive a) Divide b) Modulo c)"),
+        ("a != b >= c", "(a NotEqual (b GreaterEqual c))"),
+        ("a <= b", "(a LessEqual b)"),
+        ("a > b", "(a Greater b)"),
+        ("a -= b /= 2", "(a Subtract (b Divide 2))"),
+    ] {
+        assert_eq!(shape(&expr(source)), expected, "{source}");
+    }
+}
+
+#[test]
+fn parses_existing_examples_and_signatures() {
+    let hello = program(include_str!("../../../examples/hello.skuld"));
+    assert_eq!(hello.functions[0].name.text, "main");
+    assert!(hello.functions[0].return_type.is_none());
+    let functions = program(include_str!("../../../examples/functions.skuld"));
+    assert_eq!(functions.functions.len(), 2);
+    let add = &functions.functions[0];
+    assert_eq!(add.parameters.len(), 2);
+    let Some(TypeRef::Named(name)) = &add.return_type else {
+        panic!("return type")
+    };
+    assert_eq!(name.text, "int");
+    assert!(matches!(
+        add.body.statements[0].kind,
+        StatementKind::Return(Some(_))
+    ));
+    program("func f(a: int, b: bool,) -> void {} func main() { f(1, true,) }");
+}
+
+#[test]
+fn variables_preserve_mutability_and_source_types_without_type_checking() {
+    let p = program("func main() {\nlet age: int = \"hello\"\nvar x = 1\nage = 28\nunknown(x)\n}");
+    let statements = &p.functions[0].body.statements;
+    let StatementKind::Variable(age) = &statements[0].kind else {
+        panic!("variable")
+    };
+    assert_eq!(age.mutability, Mutability::Immutable);
+    assert!(age.type_ref.is_some());
+    let StatementKind::Variable(x) = &statements[1].kind else {
+        panic!("variable")
+    };
+    assert_eq!(x.mutability, Mutability::Mutable);
+    assert!(x.type_ref.is_none());
+    program("func f() -> Unknown { return \"wrong\" }");
+}
+
+#[test]
+fn blocks_and_else_if() {
+    let p = program(
+        "func main() {\nvar age = 17\nage += 10\nif age >= 18 { print(\"Adult\") } else if age == 0 { return } else { print(\"Minor\") }\n{ let age = 30 }\n}",
+    );
+    let statements = &p.functions[0].body.statements;
+    let StatementKind::If {
+        else_branch: Some(branch),
+        ..
+    } = &statements[2].kind
+    else {
+        panic!("if")
+    };
+    assert!(matches!(branch.kind, StatementKind::If { .. }));
+    assert!(matches!(statements[3].kind, StatementKind::Block(_)));
+}
+
+#[test]
+fn multiline_expressions_comments_and_return_boundaries() {
+    let p = program(
+        "func main() {\r\nlet result =\r\n foo(\n1,\n2\n) // keep adding\n + bar()\nprint(result)\nreturn // bare\nfoo()\n}",
+    );
+    let statements = &p.functions[0].body.statements;
+    assert_eq!(statements.len(), 4);
+    let StatementKind::Variable(variable) = &statements[0].kind else {
+        panic!("variable")
+    };
+    assert_eq!(shape(&variable.initializer), "(foo(1,2) Add bar())");
+    assert!(matches!(statements[2].kind, StatementKind::Return(None)));
+    assert_eq!(shape(&expr("user\n .greet\n (1)")), "user.greet(1)");
+    program("func main() { return (\n1 +\n2\n) }");
+    assert_eq!(shape(&expr("foo\n(bar)")), "foo(bar)");
+    assert_eq!(shape(&expr("a\n-b")), "(a Subtract b)");
+}
+
+#[test]
+fn spans_cover_names_types_operators_and_groups() {
+    let source = "func add(a: int) -> int { return (a + 2) }";
+    let p = program(source);
+    assert_eq!(p.span, Span::new(0, source.len()));
+    let f = &p.functions[0];
+    assert_eq!(&source[f.name.span.start..f.name.span.end], "add");
+    assert_eq!(
+        &source[f.parameters[0].span.start..f.parameters[0].span.end],
+        "a: int"
+    );
+    let StatementKind::Return(Some(group)) = &f.body.statements[0].kind else {
+        panic!("return")
+    };
+    assert_eq!(&source[group.span.start..group.span.end], "(a + 2)");
+    let ExprKind::Group(inner) = &group.kind else {
+        panic!("group")
+    };
+    let ExprKind::Binary { op_span, .. } = inner.kind else {
+        panic!("binary")
+    };
+    assert_eq!(&source[op_span.start..op_span.end], "+");
+    let p = program("func main() { let text = \"é\" }");
+    let StatementKind::Variable(v) = &p.functions[0].body.statements[0].kind else {
+        panic!("variable")
+    };
+    assert_eq!(v.initializer.span.end - v.initializer.span.start, 4);
+}
+
+#[test]
+fn literals_are_ast_owned_variants() {
+    for source in ["42", "3.5", "true", "false", "'é'", "\"hello\""] {
+        assert!(matches!(expr(source).kind, ExprKind::Literal(_)));
+    }
+}
+
+#[test]
+fn invalid_sources_produce_specific_diagnostics() {
+    for (source, code, text) in [
+        (
+            "let x = 1",
+            DiagnosticCode::ExpectedDeclaration,
+            "function declaration",
+        ),
+        (
+            "func f(a) {}",
+            DiagnosticCode::ExpectedSyntax,
+            "explicit parameter type",
+        ),
+        (
+            "func f(a: ) {}",
+            DiagnosticCode::ExpectedSyntax,
+            "type name",
+        ),
+        (
+            "func f( {}",
+            DiagnosticCode::ExpectedSyntax,
+            "parameter name",
+        ),
+        (
+            "func f() { let x }",
+            DiagnosticCode::ExpectedSyntax,
+            "initializer",
+        ),
+        (
+            "func f() { foo(1 2) }",
+            DiagnosticCode::ExpectedSyntax,
+            "call arguments",
+        ),
+        (
+            "func f() { user. }",
+            DiagnosticCode::ExpectedSyntax,
+            "member name",
+        ),
+        (
+            "func f() { (1 + 2 }",
+            DiagnosticCode::ExpectedSyntax,
+            "grouped expression",
+        ),
+        (
+            "func f() { 1 = 2 }",
+            DiagnosticCode::InvalidAssignmentTarget,
+            "assignment target",
+        ),
+        (
+            "func f() { foo() = 2 }",
+            DiagnosticCode::InvalidAssignmentTarget,
+            "assignment target",
+        ),
+        (
+            "func f() { let x = 1 let y = 2 }",
+            DiagnosticCode::ExpectedSyntax,
+            "newline",
+        ),
+        (
+            "func f() { let x = 1e3 }",
+            DiagnosticCode::ExpectedSyntax,
+            "newline",
+        ),
+        (
+            "func f() { if true {} else 1 }",
+            DiagnosticCode::ExpectedSyntax,
+            "begin a block",
+        ),
+        (
+            "func f() { while true {} }",
+            DiagnosticCode::UnsupportedSyntax,
+            "later milestone",
+        ),
+        (
+            "func f() {",
+            DiagnosticCode::ExpectedSyntax,
+            "close the block",
+        ),
+        (
+            "func f() { @ }",
+            DiagnosticCode::InvalidCharacter,
+            "invalid character",
+        ),
+    ] {
+        let output = parse(source);
+        assert!(output.program.is_none(), "{source}");
+        assert_eq!(
+            output.diagnostics[0].code, code,
+            "{source}: {:?}",
+            output.diagnostics
+        );
+        assert!(
+            output.diagnostics[0].message.contains(text),
+            "{source}: {:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn recovery_reports_independent_errors() {
+    let output = parse("func bad() {\nlet = 1\nlet x =\n}\nfunc other(a) {}\nfunc valid() {}\n");
+    assert!(output.program.is_none());
+    assert_eq!(output.diagnostics.len(), 3, "{:?}", output.diagnostics);
+    let output = parse("func first() {\nreturn 1\nfunc second(a) {}\n");
+    assert_eq!(output.diagnostics.len(), 2, "{:?}", output.diagnostics);
+    assert!(output.diagnostics[0].message.contains("next function"));
+}
+
+#[test]
+fn empty_source_is_syntactically_valid_without_entrypoint_checking() {
+    assert!(program("").functions.is_empty());
+}
+
+#[test]
+fn deeply_nested_and_long_expressions_are_diagnosed() {
+    for body in [
+        format!("{}1{}", "(".repeat(200), ")".repeat(200)),
+        format!("{}true", "!".repeat(200)),
+        format!("{}1", "1+".repeat(400)),
+        format!("{}{}", "{".repeat(100), "}".repeat(100)),
+        format!("{}{{}}", "if true {} else ".repeat(100)),
+    ] {
+        let output = parse(&format!("func main() {{ {body} }}"));
+        assert!(output.program.is_none());
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::SyntaxLimit),
+            "{:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn malformed_token_combinations_terminate_and_keep_valid_spans() {
+    let fragments = [
+        "function", "x", "(", ")", "{", "}", "let", "=", "1", "return", "if", "else", ",", ".",
+        "+", "\n",
+    ];
+    for a in fragments {
+        for b in fragments {
+            for c in fragments {
+                let source = format!("func main() {{ {a} {b} {c} }}");
+                let output = parse(&source);
+                for diagnostic in output.diagnostics {
+                    assert!(diagnostic.span.start <= diagnostic.span.end);
+                    assert!(diagnostic.span.end <= source.len());
+                }
+            }
+        }
+    }
+}
