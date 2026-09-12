@@ -1,14 +1,41 @@
 //! AST-to-HIR lowering after resolution and checking, with no code generation.
-use crate::{ast, hir as h, resolver::SymbolKind, type_checker::TypedProgram, types::Type};
+use crate::{
+    ast, hir as h, resolver::SymbolKind, span::Span, type_checker::TypedProgram, types::Type,
+};
 
 pub fn lower(typed: TypedProgram) -> h::Program {
-    let functions = typed
-        .syntax
-        .functions
-        .iter()
-        .map(|function| {
+    let mut functions = Vec::new();
+    for declaration in &typed.syntax.structs {
+        for method in &declaration.methods {
+            let id = typed.resolution.declarations[&method.name.span.start];
+            let this = typed.resolution.declarations[&method.body.span.start];
+            let mut parameters = vec![h::Parameter {
+                id: this,
+                ty: typed.symbol_types[this.0],
+                span: Span::new(method.body.span.start, method.body.span.start),
+            }];
+            parameters.extend(method.parameters.iter().map(|parameter| {
+                let id = typed.resolution.declarations[&parameter.name.span.start];
+                h::Parameter {
+                    id,
+                    ty: typed.symbol_types[id.0],
+                    span: parameter.span,
+                }
+            }));
+            functions.push(h::Function {
+                id,
+                name: format!("{}.{}", declaration.name.text, method.name.text),
+                parameters,
+                return_type: typed.signatures[&id].return_type,
+                body: block(&method.body, &typed),
+                span: method.span,
+            });
+        }
+    }
+    for function in &typed.syntax.functions {
+        {
             let id = typed.resolution.declarations[&function.name.span.start];
-            h::Function {
+            functions.push(h::Function {
                 id,
                 name: function.name.text.clone(),
                 parameters: function
@@ -26,9 +53,9 @@ pub fn lower(typed: TypedProgram) -> h::Program {
                 return_type: typed.signatures[&id].return_type,
                 body: block(&function.body, &typed),
                 span: function.span,
-            }
-        })
-        .collect();
+            });
+        }
+    }
     h::Program {
         structs: typed.structs.clone(),
         functions,
@@ -213,6 +240,28 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
             value: Box::new(expression(value, typed)),
         },
         ast::ExprKind::Call { callee, arguments } => {
+            if let ast::ExprKind::Member { object, member } = &strip_groups(callee).kind {
+                let Some(Type::Struct(id)) = typed.expression_type(object.span) else {
+                    unreachable!("internal compiler bug: unchecked method call")
+                };
+                let method = typed.structs[id.0]
+                    .methods
+                    .iter()
+                    .find(|method| method.name == member.text)
+                    .expect("internal compiler bug: checked call to a missing method");
+                // The receiver is an ordinary leading argument, copied like any
+                // other value-typed argument.
+                let mut values = vec![expression(object, typed)];
+                values.extend(arguments.iter().map(|e| expression(e, typed)));
+                return h::Expr {
+                    kind: h::ExprKind::Call {
+                        target: h::CallTarget::Function(method.id),
+                        arguments: values,
+                    },
+                    ty: typed.expressions[&(source.span.start, source.span.end)],
+                    span: source.span,
+                };
+            }
             let ast::ExprKind::Identifier(name) = &strip_groups(callee).kind else {
                 unreachable!("internal compiler bug: indirect checked call")
             };

@@ -296,3 +296,51 @@ fn field_assignment_follows_the_binding_mutability() {
         DiagnosticCode::ImmutableAssignment,
     );
 }
+
+#[test]
+fn methods_take_an_implicit_immutable_receiver() {
+    valid(
+        "struct R {\n    w: int\n    h: int\n    area() -> int {\n        return this.w * this.h\n    }\n}\nfunc main() { let r = R { w: 3, h: 4 }\nprint(r.area()) }",
+    );
+    valid(
+        "struct R {\n    w: int\n    scaled(by: int) -> int {\n        return this.w * by\n    }\n}\nfunc main() { let r = R { w: 2 }\nprint(r.scaled(3)) }",
+    );
+    // `this` is a parameter, and parameters are immutable.
+    fails(
+        "struct R {\n    n: int\n    bump() {\n        this.n = 1\n    }\n}\nfunc main() {}",
+        DiagnosticCode::ImmutableAssignment,
+    );
+}
+
+#[test]
+fn method_calls_are_checked_like_calls() {
+    fails(
+        "struct R { n: int }\nfunc main() { let r = R { n: 1 }\nprint(r.missing()) }",
+        DiagnosticCode::NotCallable,
+    );
+    fails(
+        "struct R { n: int }\nfunc main() { let r = R { n: 1 }\nprint(r.n()) }",
+        DiagnosticCode::NotCallable,
+    );
+    fails(
+        "struct R {\n    n: int\n    add(a: int) -> int {\n        return this.n + a\n    }\n}\nfunc main() { let r = R { n: 1 }\nprint(r.add(1, 2)) }",
+        DiagnosticCode::ArgumentCount,
+    );
+    // A method is not a value.
+    fails(
+        "struct R {\n    n: int\n    get() -> int {\n        return this.n\n    }\n}\nfunc main() { let r = R { n: 1 }\nprint(r.get) }",
+        DiagnosticCode::UnknownName,
+    );
+    fails(
+        "func main() { let x = 1\nprint(x.method()) }",
+        DiagnosticCode::UnsupportedFeature,
+    );
+}
+
+#[test]
+fn method_names_cannot_collide() {
+    fails(
+        "struct R {\n    n: int\n    n() -> int {\n        return 1\n    }\n}\nfunc main() {}",
+        DiagnosticCode::DuplicateDeclaration,
+    );
+}

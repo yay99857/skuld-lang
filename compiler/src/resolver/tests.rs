@@ -172,3 +172,31 @@ fn while_body_is_a_child_scope() {
     let declarations = resolution.declarations.len();
     assert_eq!(declarations, 3, "main, outer x and shadowing x");
 }
+
+#[test]
+fn methods_bind_this_and_do_not_leak_as_bare_names() {
+    valid(
+        "struct R {\n    n: int\n    get() -> int {\n        return this.n\n    }\n}\nfunc main() {}",
+    );
+    // A sibling method needs a receiver: method names are not in scope as
+    // ordinary identifiers.
+    let result = output(
+        "struct R {\n    a() -> int {\n        return 1\n    }\n    b() -> int {\n        return a()\n    }\n}\nfunc main() {}",
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::UnknownName)
+    );
+    // Methods are equally invisible from a plain function.
+    let result = output(
+        "struct R {\n    a() -> int {\n        return 1\n    }\n}\nfunc main() { print(a()) }",
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::UnknownName)
+    );
+}

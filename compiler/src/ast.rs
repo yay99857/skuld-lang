@@ -12,6 +12,9 @@ pub struct Program {
 pub struct StructDecl {
     pub name: Name,
     pub fields: Vec<FieldDecl>,
+    /// Declared without `func` and without an explicit receiver; `this` is
+    /// bound implicitly inside the body.
+    pub methods: Vec<FunctionDecl>,
     pub span: Span,
 }
 

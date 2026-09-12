@@ -1,25 +1,27 @@
 struct Rectangle {
     width: int
     height: int
-}
 
-func area(shape: Rectangle) -> int {
-    return shape.width * shape.height
-}
+    // Methods carry no `func` keyword and no receiver parameter; `this` is the
+    // current value, and it is a copy, so a method cannot modify the caller.
+    area() -> int {
+        return this.width * this.height
+    }
 
-func grown(shape: Rectangle, by: int) -> Rectangle {
-    return Rectangle { width: shape.width + by, height: shape.height + by }
+    grown(by: int) -> Rectangle {
+        return Rectangle { width: this.width + by, height: this.height + by }
+    }
 }
 
 func main() {
     var base = Rectangle { width: 3, height: 4 }
-    print(area(base))
+    print(base.area())
 
     // Structs copy on assignment, so `base` keeps its own values.
-    let bigger = grown(base, 2)
-    print(area(bigger))
-    print(area(base))
+    let bigger = base.grown(2)
+    print(bigger.area())
+    print(base.area())
 
     base.width = 10
-    print(area(base))
+    print(base.area())
 }

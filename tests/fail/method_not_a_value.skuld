@@ -1,0 +1,12 @@
+struct Counter {
+    total: int
+
+    value() -> int {
+        return this.total
+    }
+}
+
+func main() {
+    let counter = Counter { total: 1 }
+    print(counter.value)
+}

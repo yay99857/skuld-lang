@@ -1,0 +1,27 @@
+struct Rectangle {
+    width: int
+    height: int
+
+    area() -> int {
+        return this.width * this.height
+    }
+
+    scaled(factor: int) -> Rectangle {
+        return Rectangle { width: this.width * factor, height: this.height * factor }
+    }
+
+    describe() {
+        print(this.area())
+    }
+}
+
+func main() {
+    let base = Rectangle { width: 3, height: 4 }
+    print(base.area())
+    base.describe()
+
+    // The receiver is a copy, so the original is untouched.
+    let bigger = base.scaled(2)
+    print(bigger.area())
+    print(base.area())
+}

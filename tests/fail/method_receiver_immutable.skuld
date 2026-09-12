@@ -1,0 +1,12 @@
+struct Counter {
+    total: int
+
+    bump() {
+        this.total += 1
+    }
+}
+
+func main() {
+    let counter = Counter { total: 1 }
+    counter.bump()
+}

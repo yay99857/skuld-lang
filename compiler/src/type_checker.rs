@@ -73,6 +73,7 @@ pub(crate) fn type_check(
         checker.structs.push(StructInfo {
             name: declaration.name.text.clone(),
             fields: Vec::new(),
+            methods: Vec::new(),
             span: declaration.span,
         });
     }
@@ -112,6 +113,72 @@ pub(crate) fn type_check(
             });
         }
         checker.structs[index].fields = fields;
+    }
+    // Method signatures come after fields so a method can use any field type,
+    // and after every struct exists so signatures may mention other structs.
+    for (index, declaration) in syntax.structs.iter().enumerate() {
+        let receiver = Type::Struct(StructId(index));
+        let mut methods: Vec<MethodInfo> = Vec::new();
+        for method in &declaration.methods {
+            let id = checker.declaration(&method.name);
+            if methods
+                .iter()
+                .any(|existing| existing.name == method.name.text)
+            {
+                checker.error(
+                    DiagnosticCode::DuplicateDeclaration,
+                    method.name.span,
+                    format!(
+                        "method `{}` is already declared in `{}`",
+                        method.name.text, declaration.name.text
+                    ),
+                );
+            }
+            if checker.structs[index]
+                .fields
+                .iter()
+                .any(|field| field.name == method.name.text)
+            {
+                checker.error(
+                    DiagnosticCode::DuplicateDeclaration,
+                    method.name.span,
+                    format!(
+                        "`{}` already has a field named `{}`",
+                        declaration.name.text, method.name.text
+                    ),
+                );
+            }
+            let parameters: Vec<_> = method
+                .parameters
+                .iter()
+                .map(|p| {
+                    let ty = checker.type_ref(&p.type_ref, false);
+                    let parameter = checker.declaration(&p.name);
+                    checker.symbol_types[parameter.0] = ty;
+                    ty
+                })
+                .collect();
+            let return_type = method
+                .return_type
+                .as_ref()
+                .map(|r| checker.type_ref(r, true))
+                .unwrap_or(Type::Void);
+            checker.signatures.insert(
+                id,
+                Signature {
+                    parameters,
+                    return_type,
+                },
+            );
+            // `this` is an immutable parameter, like every other parameter.
+            let this = checker.resolution.declarations[&method.body.span.start];
+            checker.symbol_types[this.0] = receiver;
+            methods.push(MethodInfo {
+                name: method.name.text.clone(),
+                id,
+            });
+        }
+        checker.structs[index].methods = methods;
     }
     for function in &syntax.functions {
         let parameters: Vec<_> = function
@@ -160,7 +227,12 @@ pub(crate) fn type_check(
             "missing entrypoint `func main()`",
         ),
     }
-    for function in &syntax.functions {
+    for function in syntax
+        .structs
+        .iter()
+        .flat_map(|declaration| declaration.methods.iter())
+        .chain(syntax.functions.iter())
+    {
         checker.return_type = checker.signatures[&checker.declaration(&function.name)].return_type;
         let returns = checker.block(&function.body);
         if checker.return_type != Type::Void && checker.return_type != Type::Error && !returns {
@@ -218,7 +290,15 @@ pub struct StructInfo {
     pub name: String,
     /// Field order is declaration order, which the backend layout follows.
     pub fields: Vec<FieldInfo>,
+    pub methods: Vec<MethodInfo>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+pub struct MethodInfo {
+    pub name: String,
+    /// Methods are ordinary functions with an implicit leading receiver.
+    pub id: SymbolId,
 }
 
 #[derive(Debug, Clone)]
@@ -615,14 +695,28 @@ impl Checker<'_> {
                     Type::Struct(id) => match self.structs[id.0].field(&member.text) {
                         Some((_, field)) => field.ty,
                         None => {
-                            self.error(
-                                DiagnosticCode::UnknownName,
-                                member.span,
-                                format!(
-                                    "`{}` has no field `{}`",
-                                    self.structs[id.0].name, member.text
-                                ),
-                            );
+                            let is_method = self.structs[id.0]
+                                .methods
+                                .iter()
+                                .any(|method| method.name == member.text);
+                            let mut diagnostic = Diagnostic {
+                                code: DiagnosticCode::UnknownName,
+                                span: member.span,
+                                message: if is_method {
+                                    format!("`{}` is a method, not a field", member.text)
+                                } else {
+                                    format!(
+                                        "`{}` has no field `{}`",
+                                        self.structs[id.0].name, member.text
+                                    )
+                                },
+                                help: None,
+                            };
+                            if is_method {
+                                diagnostic.help =
+                                    Some("call it with `()`; methods are not values".into());
+                            }
+                            self.diagnostics.push(diagnostic);
                             Type::Error
                         }
                     },
@@ -675,10 +769,77 @@ impl Checker<'_> {
             _ => left,
         }
     }
+    fn method_call(
+        &mut self,
+        object: &Expr,
+        member: &Name,
+        arguments: &[Expr],
+        span: Span,
+    ) -> Type {
+        let receiver = self.expression(object);
+        let arg_types: Vec<_> = arguments.iter().map(|arg| self.expression(arg)).collect();
+        let Type::Struct(id) = receiver else {
+            if receiver != Type::Error {
+                self.error(
+                    DiagnosticCode::UnsupportedFeature,
+                    member.span,
+                    format!(
+                        "`{}` has no methods; only structs support method calls",
+                        self.type_name(receiver)
+                    ),
+                );
+            }
+            return Type::Error;
+        };
+        let Some(method) = self.structs[id.0]
+            .methods
+            .iter()
+            .find(|method| method.name == member.text)
+            .cloned()
+        else {
+            let is_field = self.structs[id.0].field(&member.text).is_some();
+            self.error(
+                DiagnosticCode::NotCallable,
+                member.span,
+                if is_field {
+                    format!("field `{}` is not callable", member.text)
+                } else {
+                    format!(
+                        "`{}` has no method `{}`",
+                        self.structs[id.0].name, member.text
+                    )
+                },
+            );
+            return Type::Error;
+        };
+        let signature = self.signatures[&method.id].clone();
+        if signature.parameters.len() != arguments.len() {
+            self.error(
+                DiagnosticCode::ArgumentCount,
+                span,
+                format!(
+                    "method `{}` expects {} arguments, found {}",
+                    member.text,
+                    signature.parameters.len(),
+                    arguments.len()
+                ),
+            );
+            return signature.return_type;
+        }
+        for ((expected, found), argument) in
+            signature.parameters.iter().zip(arg_types).zip(arguments)
+        {
+            self.expect_type(*expected, found, argument.span);
+        }
+        signature.return_type
+    }
     fn call(&mut self, callee: &Expr, arguments: &[Expr], span: Span) -> Type {
         let mut direct = callee;
         while let ExprKind::Group(inner) = &direct.kind {
             direct = inner;
+        }
+        if let ExprKind::Member { object, member } = &direct.kind {
+            return self.method_call(object, member, arguments, span);
         }
         let id = if let ExprKind::Identifier(name) = &direct.kind {
             Some(self.reference(name))

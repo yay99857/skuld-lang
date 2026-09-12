@@ -73,6 +73,34 @@ pub fn resolve(program: &Program) -> ResolveOutput {
     for function in &program.functions {
         resolver.declare(&function.name, SymbolKind::Function);
     }
+    // Methods get symbols, but in a scope of their own so they never resolve as
+    // bare identifiers: a method is reached through `this` or a value.
+    let program_scope = resolver.current;
+    for declaration in &program.structs {
+        resolver.enter(declaration.span);
+        for method in &declaration.methods {
+            resolver.declare(&method.name, SymbolKind::Function);
+        }
+        let method_scope = resolver.current;
+        for method in &declaration.methods {
+            // Bodies resolve from the program scope, so a sibling method is not
+            // visible without a receiver.
+            resolver.current = program_scope;
+            resolver.enter(method.body.span);
+            resolver.insert(
+                "this",
+                SymbolKind::Parameter,
+                Some(Span::new(method.body.span.start, method.body.span.start)),
+            );
+            for parameter in &method.parameters {
+                resolver.declare(&parameter.name, SymbolKind::Parameter);
+            }
+            resolver.statements(&method.body);
+            resolver.leave();
+            resolver.current = method_scope;
+        }
+        resolver.leave();
+    }
     for function in &program.functions {
         resolver.enter(function.body.span);
         for parameter in &function.parameters {

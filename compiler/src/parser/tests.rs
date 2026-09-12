@@ -420,3 +420,21 @@ fn conditions_do_not_read_a_block_as_record_construction() {
     };
     assert!(matches!(inner.kind, ExprKind::StructLiteral { .. }));
 }
+
+#[test]
+fn struct_bodies_mix_fields_and_methods() {
+    let program = program(
+        "struct R {\n    w: int\n    area() -> int {\n        return this.w\n    }\n    h: int\n}\nfunc main() {}",
+    );
+    let declaration = &program.structs[0];
+    let fields: Vec<_> = declaration
+        .fields
+        .iter()
+        .map(|field| field.name.text.as_str())
+        .collect();
+    assert_eq!(fields, ["w", "h"]);
+    assert_eq!(declaration.methods.len(), 1);
+    // Methods carry no `func` keyword and no receiver parameter.
+    assert_eq!(declaration.methods[0].name.text, "area");
+    assert!(declaration.methods[0].parameters.is_empty());
+}

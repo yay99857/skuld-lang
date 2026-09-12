@@ -211,9 +211,15 @@ impl Parser<'_> {
         let name = self.name("a struct name")?;
         self.expect(&TokenKind::LeftBrace, "`{` to begin the struct body")?;
         let mut fields = Vec::new();
+        let mut methods = Vec::new();
         while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
             let field_start = self.current().span.start;
-            let name = self.name("a field name")?;
+            let name = self.name("a field or method name")?;
+            // `name(` is a method; `name:` is a field.
+            if self.at(&TokenKind::LeftParen) {
+                methods.push(self.nested(|parser| parser.method(name.clone(), field_start))?);
+                continue;
+            }
             self.expect(&TokenKind::Colon, "`:` and a field type")?;
             let type_ref = self.type_ref()?;
             fields.push(FieldDecl {
@@ -236,13 +242,30 @@ impl Parser<'_> {
         Ok(StructDecl {
             name,
             fields,
+            methods,
             span: Span::new(start, end),
         })
     }
-    fn function(&mut self) -> Parsed<FunctionDecl> {
-        let start = self.expect(&TokenKind::Function, "`func`")?.span.start;
-        let name = self.name("a function name")?;
-        self.expect(&TokenKind::LeftParen, "`(` after the function name")?;
+    /// The name and `(` are already known; methods carry no `func` keyword.
+    fn method(&mut self, name: Name, start: usize) -> Parsed<FunctionDecl> {
+        let parameters = self.parameter_list()?;
+        let return_type = if self.take(&TokenKind::Arrow).is_some() {
+            Some(self.type_ref()?)
+        } else {
+            None
+        };
+        let body = self.block()?;
+        let span = Span::new(start, body.span.end);
+        Ok(FunctionDecl {
+            name,
+            parameters,
+            return_type,
+            body,
+            span,
+        })
+    }
+    fn parameter_list(&mut self) -> Parsed<Vec<Parameter>> {
+        self.expect(&TokenKind::LeftParen, "`(` after the name")?;
         let mut parameters = Vec::new();
         if !self.at(&TokenKind::RightParen) {
             loop {
@@ -261,6 +284,12 @@ impl Parser<'_> {
             }
         }
         self.expect(&TokenKind::RightParen, "`)` after parameters")?;
+        Ok(parameters)
+    }
+    fn function(&mut self) -> Parsed<FunctionDecl> {
+        let start = self.expect(&TokenKind::Function, "`func`")?.span.start;
+        let name = self.name("a function name")?;
+        let parameters = self.parameter_list()?;
         let return_type = if self.take(&TokenKind::Arrow).is_some() {
             Some(self.type_ref()?)
         } else {
