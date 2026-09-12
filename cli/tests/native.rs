@@ -1,7 +1,7 @@
 //! End-to-end tests require clang. Missing clang must fail this suite, not skip it.
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Output},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -193,20 +193,28 @@ fn invalid_source_never_reaches_clang() {
         }
     }
 }
-#[test]
-fn emitted_c_compiles_and_runs_independently() {
-    let fixture = Fixture::new(include_str!("../../examples/functions.skuld"));
+/// Build one program's generated C under the sanitizers and run it.
+/// Address and leak detection matter as soon as the runtime allocates: a leak
+/// or a double free must fail the suite, not pass quietly.
+fn sanitized(source: &str, expected: &[u8]) {
+    let fixture = Fixture::new(source);
     let output = fixture.command("emit-c").output().expect("emit C");
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let c = fixture.dir.join("generated.c");
     let binary = fixture.dir.join("standalone");
     fs::write(&c, &output.stdout).expect("C source");
     let status = Command::new("clang")
         .args([
             "-std=c11",
-            "-O2",
-            "-fsanitize=undefined",
+            "-O1",
+            "-g",
+            "-fsanitize=undefined,address",
             "-fno-sanitize-recover=all",
+            "-fno-omit-frame-pointer",
         ])
         .arg(&c)
         .arg("-o")
@@ -218,10 +226,52 @@ fn emitted_c_compiles_and_runs_independently() {
         "{}",
         String::from_utf8_lossy(&status.stderr)
     );
-    let output = Command::new(binary).output().expect("standalone program");
-    assert!(output.status.success());
-    assert_eq!(output.stdout, b"42\n");
-    assert!(output.stderr.is_empty());
+    let output = Command::new(binary)
+        .env("ASAN_OPTIONS", "detect_leaks=1")
+        .output()
+        .expect("standalone program");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, expected);
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn emitted_c_compiles_and_runs_independently() {
+    sanitized(include_str!("../../examples/functions.skuld"), b"42\n");
+}
+
+#[test]
+fn every_language_fixture_is_sanitizer_clean() {
+    // The golden fixtures are the broadest sample of real programs; running all
+    // of them under the sanitizers is what will catch a memory-management
+    // mistake the moment the runtime starts allocating.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("tests")
+        .join("pass");
+    let mut sources: Vec<_> = fs::read_dir(&root)
+        .expect("fixture directory")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.extension().is_some_and(|e| e == "skuld"))
+        .collect();
+    sources.sort();
+    assert!(!sources.is_empty(), "no fixtures found");
+    for source in sources {
+        let expected = fs::read(source.with_extension("out")).expect("expected output");
+        sanitized(
+            &fs::read_to_string(&source).expect("fixture source"),
+            &expected,
+        );
+    }
 }
 #[cfg(unix)]
 #[test]
