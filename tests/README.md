@@ -19,11 +19,16 @@ runs anywhere, since static checking never invokes external tools.
 Fixtures cover only implemented behavior. Reserved syntax belongs in `fail/`
 with its diagnostic code until its milestone arrives.
 
-`reserved_loops` (`E1003`) is deliberately a tripwire: when `while` and `loop`
-land, that fixture stops failing and the suite goes red. That is the signal to
-move it to `pass/` with a `.out`, not to delete it. `reserved_members`
-(`E0110`) and `reserved_declaration` (`E1002`) hold the reserved-syntax
-coverage until Demo 3, so it does not disappear when loops arrive.
+Reserved-syntax fixtures are deliberate tripwires: when a milestone lands, the
+fixture stops failing and the suite goes red. That is the signal to promote it
+to `pass/` with a `.out`, not to delete it. Loops went through exactly that:
+`reserved_loops` became `pass/while_loop`, and `reserved_iteration` (`E1003`),
+`reserved_members` (`E0110`) and `reserved_declaration` (`E1002`) now hold the
+reserved-syntax coverage until their own milestones.
+
+A promoted fixture must terminate. `loop` with no `break` never returns, so it
+belongs in `fail/` or must carry an exit; never park an unbounded loop in
+`pass/`, which would hang the suite instead of failing it.
 
 `pass/` also pins the semantics `AGENTS.md` requires preserving —
 left-to-right evaluation, boolean short-circuiting, compound assignment

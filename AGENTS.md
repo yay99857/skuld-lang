@@ -60,9 +60,9 @@ accurate; documenting a future feature is not a request to implement it.
   package exposing the `skuld` binary. There are currently no external crate
   dependencies. Add dependencies only for a concrete need.
 - Implemented: the entire source → lexer → parser → AST → resolver → type
-  checker → HIR → C → clang pipeline and native Demos 0–2. Scalar types are
-  int, float, bool, string and void; functions, locals, calls, returns and
-  conditionals execute. Parameters and `let` bindings are immutable.
+  checker → HIR → C → clang pipeline, native Demos 0–2 and loops. Scalar types
+  are int, float, bool, string and void; functions, locals, calls, returns,
+  conditionals, `while`, `loop`, `break` and `continue` execute. Parameters and `let` bindings are immutable.
 - `lex`, `parse`, `resolve` inspect individual stages. `check` performs full
   static checking without clang; `emit-c` emits checked C; `run` builds and
   executes in a private temporary directory. `build` remains unimplemented.
@@ -78,7 +78,7 @@ accurate; documenting a future feature is not a request to implement it.
   Compound assignments snapshot the old value before the RHS. Integer overflow
   and invalid integer division trap; never introduce signed C overflow UB.
   Strings are length-aware views of static literal bytes, including NUL.
-- Next milestone: `while` and `loop`, then the planned Demo 3 showcase. Members
+- Next milestone: the planned Demo 3 showcase. Members
   are parser syntax only and are rejected by checking until their milestone.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.

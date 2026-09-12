@@ -2,8 +2,8 @@
 
 Status labels: **Implemented** means available now; **Planned** describes future
 intent, not accepted/executable programs; **Experimental** denotes provisional
-choices. The complete single-file native pipeline and Demos 0–2 are implemented.
-Classes, loops, managed allocation and self-hosting remain planned.
+choices. The complete single-file native pipeline, Demos 0–2 and loops are implemented.
+Classes, managed allocation and self-hosting remain planned.
 
 ## Philosophy — Planned
 
@@ -53,7 +53,8 @@ Function declarations use `func`, replacing the earlier `fn` and `function` spel
 The builtin is `print`, replacing `println`; neither old spelling is an alias.
 The old words are ordinary identifiers and can be explicitly declared by users.
 
-Keywords: `function let var return if else while loop class struct impl`.
+Keywords: `func let var return if else while loop break continue class struct
+impl`.
 Reserved future keywords: `interface enum match import for in static extern`.
 `true` and `false` produce boolean literal tokens. Type names and `print` are
 identifiers. Recognizing a keyword does not implement its syntax or semantics.
@@ -148,9 +149,25 @@ argument lists. Local declarations require an initializer; annotations are
 optional, but function parameters require types. AST type references preserve
 source names, including unknown names; these are not semantic type values.
 
-Blocks, return, expression statements, variables and `if`/`else` (including
-`else if`) are parsed. `while` and `loop` remain planned after Demo 2. Later: `for item in items`, `0..10`, `0..=10` and arrays `[1, 2, 3]`
-with type syntax `[]int`.
+Blocks, return, expression statements, variables, `if`/`else` (including
+`else if`), `while`, `loop`, `break` and `continue` are parsed. Later:
+`for item in items`, `0..10`, `0..=10` and arrays `[1, 2, 3]` with type
+syntax `[]int`.
+
+### Loops — Implemented
+
+`while condition { }` requires a `bool` condition, with no truthiness and no
+parentheses around it. The body is a child scope like any other block, and the
+condition is re-evaluated before every iteration, including after `continue`.
+
+`loop { }` repeats until a `break` leaves it. `break` and `continue` bind to
+the innermost enclosing loop; outside any loop they are `E0111`.
+
+A `loop` that no `break` can leave never falls through, so it satisfies a
+non-void return type and any code after it is unreachable. Adding a `break`
+restores the fall-through path and the return requirement returns with it. A
+`while` never satisfies a return type, because its condition may be false on
+entry.
 
 ## Statement boundaries and parser API — Implemented
 

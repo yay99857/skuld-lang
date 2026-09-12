@@ -132,12 +132,14 @@ Language fixtures are documented in [tests/README.md](tests/README.md).
 
 ## Progress and next milestone
 
-The verified milestone is the complete native pipeline and Demos 0–2. Rust
-builds the compiler, and clang compiles the emitted C. Programs execute
+The verified milestone is the complete native pipeline, Demos 0–2 and loops.
+Rust builds the compiler, and clang compiles the emitted C. Programs execute
 natively without JavaScript or a VM.
 
-Next: `while` and `loop`, then the planned class/object/method/interpolation
-showcase (Demo 3). Structs, managed memory, modules, standard library, official
+`while`, `loop`, `break` and `continue` execute. A `loop` with no `break`
+diverges, so it satisfies a non-void return type.
+
+Next: the planned class/object/method/interpolation showcase (Demo 3). Structs, managed memory, modules, standard library, official
 formatter, broader tooling, portability and eventual self-hosting remain ahead.
 Status is reported as completed milestones, not as a completion percentage, and
 implies neither production readiness nor measured Go/Rust performance.
