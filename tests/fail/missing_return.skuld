@@ -1,0 +1,6 @@
+func answer() -> int {
+}
+
+func main() {
+    print(answer())
+}

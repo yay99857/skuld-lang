@@ -1,0 +1,9 @@
+func loud() -> bool {
+    print("evaluated")
+    return true
+}
+
+func main() {
+    print(false && loud())
+    print(true || loud())
+}

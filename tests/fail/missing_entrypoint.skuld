@@ -1,0 +1,3 @@
+func helper() {
+    print("no main here")
+}

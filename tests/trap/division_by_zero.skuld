@@ -1,0 +1,4 @@
+func main() {
+    var divisor = 0
+    print(10 / divisor)
+}

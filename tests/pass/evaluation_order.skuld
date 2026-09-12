@@ -1,0 +1,13 @@
+func first() -> int {
+    print("first")
+    return 1
+}
+
+func second() -> int {
+    print("second")
+    return 2
+}
+
+func main() {
+    print(first() + second())
+}

@@ -1,0 +1,7 @@
+func main() {
+    let flag: bool = 3 == 3
+    let ratio: float = 1.5
+    print(flag)
+    print(ratio)
+    print("a" == "b")
+}

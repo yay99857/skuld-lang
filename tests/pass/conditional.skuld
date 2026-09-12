@@ -1,0 +1,12 @@
+func classify(value: int) -> int {
+    if value > 0 {
+        return 1
+    } else {
+        return 0
+    }
+}
+
+func main() {
+    print(classify(7))
+    print(classify(-7))
+}

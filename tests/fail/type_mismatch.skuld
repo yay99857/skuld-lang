@@ -1,0 +1,4 @@
+func main() {
+    let label: int = "not an int"
+    print(label)
+}
