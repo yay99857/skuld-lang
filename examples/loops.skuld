@@ -1,0 +1,25 @@
+func sum_to(limit: int) -> int {
+    var total = 0
+    var value = 1
+    while value <= limit {
+        total += value
+        value += 1
+    }
+    return total
+}
+
+func first_multiple(of: int, above: int) -> int {
+    var candidate = above
+    loop {
+        candidate += 1
+        if candidate % of != 0 {
+            continue
+        }
+        return candidate
+    }
+}
+
+func main() {
+    print(sum_to(5))
+    print(first_multiple(7, 20))
+}
