@@ -80,11 +80,13 @@ accurate; documenting a future feature is not a request to implement it.
   and invalid integer division trap; never introduce signed C overflow UB.
   Strings are length-aware views of static literal bytes, including NUL.
 - Structs are implemented with value/copy semantics: fields, record
-  construction, field access and field assignment through places. They have no
-  methods. Struct names live in a type namespace owned by the checker, not the
-  value resolver.
-- Next milestone: struct methods, then the planned Demo 3 showcase, which needs
-  a heap allocation and reference-counting decision before classes. Members
+  construction, field access and field assignment through places. Methods are
+  declared without `func`, take an implicit immutable `this`, and lower to
+  functions with a leading receiver. Struct names live in a type namespace
+  owned by the checker, and method names in a scope of their own, so neither
+  resolves as an ordinary value name.
+- Next milestone: the planned Demo 3 showcase, which needs a heap allocation
+  and reference-counting decision before classes. Members
   are parser syntax only and are rejected by checking until their milestone.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.

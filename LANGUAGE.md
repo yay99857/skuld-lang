@@ -337,7 +337,35 @@ which is why resolution still reports only value names.
 never as record construction. Parentheses make a literal available again, as
 does any nested expression context such as a call argument or a field value.
 
-Structs have no methods yet, and classes remain planned below.
+### Methods
+
+```skuld
+struct Rectangle {
+    width: int
+    height: int
+
+    area() -> int {
+        return this.width * this.height
+    }
+}
+```
+
+Methods are declared in the type body without `func` and without an explicit
+receiver, matching the planned class syntax. `this` is the current value.
+
+`this` is bound as an ordinary parameter, so it is immutable: a method cannot
+assign to `this.field`, and since structs copy, the receiver is a copy and a
+method never modifies its caller. Mutating methods await the receiver rules
+that the class work will settle.
+
+A method name is not in ordinary scope. A sibling method is reached through
+`this`, and a plain function cannot see methods at all. A method is not a
+value either: `r.area` is an error and `r.area()` is the call.
+
+Lowering turns a method into a function with the receiver as a leading
+argument, so methods cost no more than a call.
+
+Classes remain planned below.
 
 ## Classes and memory — Planned
 
@@ -379,9 +407,9 @@ the specification uses `Address` as a placeholder for a separately declared type
 The example's string `+` is planned concatenation, not implemented arithmetic
 on strings. String interpolation remains a separate future capability.
 
-Structs are implemented; see the section below. Their method/impl syntax
-remains provisional, and the class-method update does not settle struct
-receiver rules, so structs currently have fields but no methods.
+Structs are implemented with fields and methods; see the section below. They
+adopt the class receiver shape: no `func`, no explicit receiver, `this` for
+the current value. Mutating receivers remain unsettled.
 
 Structs have value/copy semantics. Classes are managed reference types with
 future ARC. No inheritance, garbage collector, borrow checker or Rust ownership
