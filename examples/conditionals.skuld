@@ -1,0 +1,10 @@
+func main() {
+    var age = 17
+    age += 10
+
+    if age >= 18 {
+        print("Adult")
+    } else {
+        print("Minor")
+    }
+}

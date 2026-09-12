@@ -1,0 +1,8 @@
+func hello() {
+    print()
+}
+
+func main() {
+    hello()
+    print("Hello from Skuld!")
+}
