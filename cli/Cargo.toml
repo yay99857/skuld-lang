@@ -1,0 +1,12 @@
+[package]
+name = "skuld-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "skuld"
+path = "src/main.rs"
+
+[dependencies]
+skuld-compiler = { path = "../compiler" }
