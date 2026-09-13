@@ -224,34 +224,42 @@ import "net/socket"
   module, the private value, the private type, the undeclared name, the
   unqualified use, the misplaced `import` and the escaping path.
 
-## M7 — A minimal standard library — Planned
+## M7 — A minimal standard library — Implemented
 
-The first code that ships with the compiler instead of inside it. It only
-becomes possible once M6 says where it lives, and it is the natural owner of
-the error types the language has so far been unable to name.
+The first code that ships with the compiler instead of inside it, and the owner
+of the error types the language had no way to name.
 
-- **In scope:** a `std` written in Skuld, small on purpose — an error type for
-  `bytes_to_string()` to return instead of a `string`, string helpers built on
-  `[]u8`, and whatever M6 and M8 prove they need.
-- **Out of scope:** collections beyond arrays (no map, no set — a hash map is
-  its own milestone), formatting beyond interpolation, time, randomness,
-  filesystem traversal, threads.
-- **Decision taken:** `std` is a **reserved import prefix** resolved to sources
-  embedded in the compiler binary, never to the filesystem. `import "std/utf8"`
-  therefore works from any directory with no installation step, and a user
-  directory named `std` in the program root neither shadows it nor is reachable
-  as it; every other path keeps M6's rule of resolving under the program root.
-  A compiler-supplied search path was rejected for creating a real installation
-  step and making a program's compilability depend on its environment; the cost
-  accepted in exchange is that updating the library means rebuilding the
-  compiler, which is the right trade while the library is small and moves with
-  the language.
-- **Depends on:** M6 for module boundaries, M5 for anything touching the OS.
-- **Open risk:** a standard library written before its users exist becomes a
-  museum of guesses. Each entry needs a caller in a milestone already planned,
-  or it stays out.
-- **Marker:** `bytes_to_string()` returns `Result<string, Utf8Error>` and the
-  provisional string error side of M4 disappears.
+- **Implemented:** `std` as a reserved import prefix over modules written in
+  Skuld and embedded in the compiler binary; `std/utf8` with a real `Utf8Error`
+  and strict validation; `std/strings` with byte-offset helpers; `std/cstring`
+  building the NUL-terminated buffer C expects.
+- **Decision taken, by the user:** the library is rooted at a reserved prefix
+  rather than a search path. `import "std/utf8"` never reaches the caller's
+  loader, so a program compiles the same from any directory with no
+  installation step, and a `std` directory beside a program is unreachable —
+  a language rule, which is why the reservation lives in the compiler and not
+  in the CLI's loader. A reserved path naming no module is an error listing the
+  ones that exist, never a fallback to disk. The accepted cost is that changing
+  the library means rebuilding the compiler.
+- **Decision taken:** the builtin `bytes_to_string` was left alone. Making it
+  return `Result<string, Utf8Error>` would have the checker depend on a name the
+  library chose, inverting the dependency for the sake of a tidier marker.
+  `std/utf8.decode` is the call with a real error beside it, and M4's
+  provisional message stays where it is, now with something better next to it.
+- **Open risk, held to:** a standard library written before its users exist
+  becomes a museum of guesses. Every entry here has a caller in a milestone
+  already planned — a response parser needs `trim`, `split` and `index_of`; the
+  FFI needs `to_c`; bytes from a socket need `decode` — and nothing was added
+  because it looked useful.
+- **Validation:** `tests/pass/std_library.skuld` exercises all three modules
+  under the address, leak and UB sanitizers; `tests/fail/std_shadow` proves a
+  user `std` directory cannot replace the embedded one, and
+  `tests/fail/std_unknown_module` that a reserved path never falls back to
+  disk. A compiler unit test compiles every embedded module on its own, so a
+  library that ships with the compiler cannot ship broken.
+- **Out of scope, and still out:** collections beyond arrays, a map, formatting
+  beyond interpolation, time, randomness, filesystem traversal, threads,
+  networking, and any way to add to the library except by changing the compiler.
 
 ## M8 — Function values, callbacks and interfaces — Planned
 
@@ -347,5 +355,7 @@ above.
    and can capture `this`, which the reference counter cannot collect.
 8. Whether interfaces are part of the callback milestone or a milestone of
    their own.
-9. Where NUL-terminated C strings are built — a language helper, or a standard
-   library function over `[]u8`. M5 left it to the caller.
+9. ~~Where NUL-terminated C strings are built — a language helper, or a
+   standard library function over `[]u8`?~~ Answered by M7: `std/cstring.to_c`,
+   in the library. The language keeps knowing nothing about C's terminator, and
+   a string that already contains a NUL is refused rather than truncated.

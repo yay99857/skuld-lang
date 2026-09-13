@@ -93,3 +93,13 @@ calls, construction and enum patterns, and an import shadowed by a local; the
 `import_*` fixtures in `fail/` pin the cycle, the missing module, the private
 value, the private type, the undeclared name, the unqualified use, the
 misplaced `import` and the path that tries to escape the program root.
+
+Standard library fixtures cover the reserved `std` prefix: `std_library`
+imports all three modules and does the work they exist for — trimming and
+splitting a status line, decoding bytes and naming where a bad sequence starts,
+counting code points and building a NUL-terminated buffer — under the
+sanitizers with the rest of `pass/`. `std_shadow` is the reservation itself: a
+real `std/utf8` directory sits beside it offering a name the embedded module
+does not have, and the program is rejected because the embedded module is what
+it imported. `std_unknown_module` pins that a reserved path naming nothing is
+an error rather than a look on disk.

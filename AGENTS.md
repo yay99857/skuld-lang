@@ -69,7 +69,8 @@ accurate; documenting a future feature is not a request to implement it.
   reference-counted string concatenation and interpolation execute. Weak class
   references, homogeneous arrays, builtin Option values, builtin `Result<T, E>`
   with `?` propagation, the sized integers, byte-level string access and
-  `extern "C"` foreign calls and programs made of several modules execute
+  `extern "C"` foreign calls, programs made of several modules and the embedded
+  standard library execute
   too. Parameters and `let` bindings are immutable.
 - `lex`, `parse`, `resolve` inspect individual stages. `check` performs full
   static checking without clang; `emit-c` emits checked C; `run` builds and
@@ -171,20 +172,21 @@ accurate; documenting a future feature is not a request to implement it.
 - Completed: classes, weak references, dynamic arrays (push, insert, pop, remove),
   colon return type syntax, Option with null, safe weak promotion, M1 (Enums and match),
   M2 (`for` and iteration), M5 (`extern "C"` FFI and linking, authorized by the
-  user in the session that implemented it), and M3 (`Result<T, E>` and propagation), which the user
+  user in the session that implemented it), M7 (a minimal standard library,
+  authorized by the same user decision that settled where `std` is rooted), and M3 (`Result<T, E>` and propagation), which the user
   authorized as a builtin following the Option precedent rather than through general
   generics. M4 (bytes, sized integers and string slices) is complete — the user
   authorized the full set of sized integers, type-name conversion calls, and
   delivering the primitives before the milestone's closing marker, and that
   marker is now met: `tests/pass/json_parser.skuld` is a complete
-  JSON parser in pure Skuld over `[]u8`, so M4 is closed. It exposed one rough
-  edge left unfixed — the expected width of a conversion call reaches into its
-  whole argument expression, so `u8(128 + n % 64)` is rejected and needs a named
-  intermediate. M6 (modules and `import`) is complete, by explicit user
+  JSON parser in pure Skuld over `[]u8`, so M4 is closed. The rough edge it
+  exposed is fixed: a conversion's expected width reaches an integer literal,
+  possibly signed or parenthesised, and stops there, so `u8(128 + n % 64)`
+  compiles and a computed argument is checked when it is converted. M6 (modules and `import`) is complete, by explicit user
   decision on its three open questions: a module is a directory whose `.skuld`
   files share a namespace, export is an explicit `pub`, imported names are
   always qualified by the module's last path segment, and an import cycle is a
-  diagnostic. Its rules are set out in their own entry below. M6 was selected
+  diagnostic. Its rules are set out in their own entry below, as are M7's. M6 was selected
   without waiting for M5, which modules do not depend on; M5 landed
   concurrently in another session (`2606206`, `e3d84c2`) and owns its own
   status entry. No milestone is active. Do not infer authorization for further
@@ -208,7 +210,21 @@ accurate; documenting a future feature is not a request to implement it.
   qualifier. An import cycle, a duplicate qualifier in one file, a private name
   and a missing module are diagnostics. The compiler performs no I/O: the graph
   asks a `ModuleLoader` the caller supplies, and the CLI's reads directories.
-  A reserved `std` prefix is *not* implemented; it belongs to M7.
+- The standard library is implemented: `std` is a reserved import prefix whose
+  modules are written in Skuld under `std/` and embedded in the compiler binary
+  by `compiler/src/std_lib.rs`. A reserved path is intercepted in
+  `Loader::module_for` and never reaches the caller's `ModuleLoader`, so a
+  directory named `std` is unreachable — keep that reservation in the compiler,
+  since it is a language rule and not a filesystem one — and a reserved path
+  naming no module is an error listing the ones that exist, never a fallback to
+  disk. The library is `std/utf8` (a real `Utf8Error` with byte offsets, strict
+  `validate`, `decode`, `count`, `describe`), `std/strings` (`starts_with`,
+  `ends_with`, `index_of`, `contains`, `trim`, `split`, `join`, all in byte
+  offsets) and `std/cstring` (`to_c`, refusing an embedded NUL). It stays small
+  on purpose: every entry needs a caller in a milestone already planned, and
+  adding one means changing the compiler, which is the intended brake. The
+  builtin `bytes_to_string` keeps returning `Result<string, string>`: making it
+  return a library type would invert the dependency.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built
@@ -261,7 +277,8 @@ before Demo 3. Interfaces and the official formatter remain future work
 unless explicitly included in the active task. The FFI arrived with M5 and
 authorizes nothing beyond itself: no standard library, no sockets, no wrapper
 around a C library shipped with the compiler.
-Do not build a standard library or memory-management runtime ahead of need.
+Do not build the standard library or a memory-management runtime ahead of need:
+an addition to `std/` needs a caller in a milestone already planned.
 
 The milestones proposed in `ROADMAP.md` do not relax any of the above.
 HTTP and JSON are Planned and each needs its own
@@ -272,9 +289,10 @@ decision. M4's closing marker was met by `tests/pass/json_parser.skuld`, a
 parser written in Skuld — it is a fixture, never a JSON facility in the
 compiler, and nothing about it authorizes one. Modules and `import` landed by
 explicit user decision, under the shape recorded in the status section above;
-the reserved `std` prefix recorded in `ROADMAP.md` belongs to M7 and is not
-implemented. Nothing in that document authorizes a standard library, a
-networking runtime or process execution from the compiler library.
+the reserved `std` prefix arrived with M7, whose library is small by design.
+Nothing in that document authorizes extending it beyond an entry with a caller
+in a planned milestone, nor a networking runtime or process execution from the
+compiler library.
 
 ## Diagnostics and validation
 

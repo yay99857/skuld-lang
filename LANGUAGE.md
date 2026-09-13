@@ -988,6 +988,66 @@ compiler still reads every source of a program on every build. The entry file
 is the root module on its own, so a directory full of unrelated programs — as
 `tests/pass` is — does not become one module by sitting together.
 
+## The standard library — Implemented
+
+`std` is a **reserved import prefix**, not a directory. Its modules are written
+in Skuld and embedded in the compiler binary, so `import "std/utf8"` works from
+any directory, needs no installation step, and cannot be replaced by a `std`
+directory sitting next to the program — that directory is simply unreachable.
+A reserved path naming no module is an error that lists the modules that exist;
+it never falls back to disk. Everything else keeps the ordinary rule and
+resolves under the program root.
+
+```skuld
+import "std/utf8"
+import "std/strings"
+
+func main() {
+    let line = strings.trim("  HTTP/1.1 200 OK \r\n")
+    print(strings.starts_with(line, "HTTP/"))
+    match utf8.decode(bytes) {
+        Ok(text): print(text)
+        Err(error): print(utf8.describe(error))
+    }
+}
+```
+
+The library is deliberately small, and each entry exists because something
+already planned calls it. Adding to it is not a licence to build a general
+library ahead of its users.
+
+**`std/utf8`** owns the error type the language had no way to name.
+`Utf8Error` is `Truncated`, `Overlong`, `Surrogate`, `TooLarge` or `Invalid`,
+each carrying the byte offset where the faulty sequence starts; `describe` and
+`offset` read it. `validate(bytes) -> Result<int, Utf8Error>` applies the strict
+rules and returns the number of code points, `count` is its name when that
+count is the point, and `decode(bytes) -> Result<string, Utf8Error>` is what a
+caller reaches for.
+
+The builtin `bytes_to_string` is unchanged and still returns
+`Result<string, string>`. Making it return a library type would invert the
+dependency — the checker would have to know a name the library chose — so the
+provisional message stays where it is, and `utf8.decode` is the call with a
+real error beside it.
+
+**`std/strings`** works in byte offsets, which is what the language already
+speaks: `starts_with`, `ends_with`, `index_of` (an `Option<int>`), `contains`,
+`trim`, `split` and `join`. `trim` removes spaces, tabs, carriage returns and
+newlines — the set a header field needs, not a Unicode whitespace table, which
+would need code points. `split` keeps empty fields, so its result is never
+shorter than one element.
+
+**`std/cstring`** closes the gap the FFI left open. A Skuld string is
+length-aware and not NUL-terminated, so `to_c(text) -> Result<[]u8,
+CStringError>` copies the bytes and appends the terminator, refusing a string
+that already contains a NUL, since a C string would end there.
+
+**What the library is not.** There is no collection beyond arrays, no map, no
+time, no randomness, no filesystem traversal and no networking. It is not a
+package registry, and there is no way to add to it except by changing the
+compiler — which is the price of embedding, and a deliberate brake while the
+library is small enough to move with the language.
+
 ## Demonstration proposals — Experimental
 
 `test.skuld` may contain incomplete examples and comments asking for redesign.
@@ -1027,9 +1087,9 @@ self-hosting remain long-term possibilities.
 enums and `match`, then `for`, then `Result` and `?`, then bytes and string
 slices, then the FFI, then modules — together with the design questions each one
 depends on.
-Everything up to and including modules has landed. A standard library and
-everything after it are a plan, not a commitment, and none of it is
-implemented.
+Everything up to and including the standard library has landed. Function
+values, callbacks, interfaces and everything after them are a plan, not a
+commitment, and none of it is implemented.
 
 ## Unsupported features and experimental status
 
@@ -1040,10 +1100,10 @@ variables, conditional execution and classes with methods/interpolation
 
 Loops (`while`, `loop`, `for`), structs, classes, interpolation, weak class references, arrays, Option,
 `Result` with `?`, enums, pattern matching, the sized integers, `[]u8`, string indexing and slicing,
-foreign `extern "C"` declarations with raw pointers,
-modules with `import` and `pub`,
-and reference-counted runtime behavior are **Implemented**. Interfaces,
-a standard library and the remaining capabilities above are **Planned**. No generics, macros, async/await, threads, channels,
+foreign `extern "C"` declarations with raw pointers, modules with `import` and
+`pub`, the embedded standard library,
+and reference-counted runtime behavior are **Implemented**. Interfaces and the
+remaining capabilities above are **Planned**. No generics, macros, async/await, threads, channels,
 reflection, decorators, annotations, package registry, compiler plugins,
 compile-time execution, operator overloading or user-defined conversions will
 be implemented before Demo 3. Inheritance is excluded from the core design.

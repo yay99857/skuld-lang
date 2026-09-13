@@ -154,6 +154,20 @@ func main() {
 }
 ```
 
+`std` is a reserved import prefix: the standard library is written in Skuld and
+embedded in the compiler binary, so it needs no installation and a directory
+named `std` beside a program cannot replace it. It is deliberately small —
+`std/utf8` decodes bytes with a real error type, `std/strings` has byte-offset
+helpers, `std/cstring` builds the NUL-terminated buffer C expects.
+
+```skuld
+import "std/strings"
+
+func main() {
+    print(strings.trim("  HTTP/1.1 200 OK \r\n"))
+}
+```
+
 ## Architecture and verification
 
 One Cargo workspace contains the `skuld-compiler` library and `skuld-cli` binary
@@ -285,12 +299,13 @@ func emit(text: string) -> int {
 }
 ```
 
-This closes M6 (modules and `import`), M5 (`extern "C"` FFI and linking), M4
+This closes M7 (a minimal standard library), M6 (modules and `import`),
+M5 (`extern "C"` FFI and linking), M4
 (bytes, sized integers and string slices, closed by
 `tests/pass/json_parser.skuld`), M3 (`Result<T, E>` and propagation), M2 (`for`
 and iteration) and M1 (Enums and `match`), alongside
 Option, classes, weak references and arrays.
-A standard library, the official
+Function values and callbacks, interfaces, sockets, the official
 formatter, broader tooling, portability and eventual self-hosting remain ahead;
 `ROADMAP.md` proposes an ordering for those milestones and records the design
 questions they depend on.
