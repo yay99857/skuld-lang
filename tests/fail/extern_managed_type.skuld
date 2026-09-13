@@ -1,0 +1,9 @@
+// Managed values never cross the boundary: C knows nothing about retain and
+// release, so a string, an array or a class is rejected in a signature.
+unsafe extern "C" {
+    func puts(text: string) -> i32
+    func take(bytes: []u8) -> i32
+}
+
+func main() {
+}

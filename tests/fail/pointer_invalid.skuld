@@ -1,0 +1,9 @@
+// A pointer may only point at a scalar or `void`, and `ptr` only borrows the
+// bytes of a string or an array of scalars.
+unsafe extern "C" {
+    func bad(text: *string) -> i32
+}
+
+func main() {
+    let p = ptr(42)
+}

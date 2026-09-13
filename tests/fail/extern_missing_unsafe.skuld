@@ -1,0 +1,8 @@
+// The `unsafe` marker is required: nothing can check a foreign signature
+// against the library that is eventually linked.
+extern "C" {
+    func abs(value: i32) -> i32
+}
+
+func main() {
+}

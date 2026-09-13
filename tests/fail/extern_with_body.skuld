@@ -1,0 +1,9 @@
+// An extern function is a declaration; its definition comes from the library.
+unsafe extern "C" {
+    func abs(value: i32) -> i32 {
+        return value
+    }
+}
+
+func main() {
+}
