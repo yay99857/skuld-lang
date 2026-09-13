@@ -233,15 +233,6 @@ impl Parser<'_> {
                 span: Span::new(start, end),
             });
         }
-        if self.at(&TokenKind::Star) {
-            let start = self.bump().span.start;
-            let pointee = self.type_ref()?;
-            let end = pointee.span().end;
-            return Ok(TypeRef::Pointer {
-                pointee: Box::new(pointee),
-                span: Span::new(start, end),
-            });
-        }
         if self.at(&TokenKind::LeftBracket) {
             let start = self.bump().span.start;
             self.expect(&TokenKind::RightBracket, "`]` after `[` in an array type")?;
