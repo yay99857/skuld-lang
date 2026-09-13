@@ -23,8 +23,7 @@ come before expanding the type system or changing the backend.
   definition, find-references and rename.
 - **Current limits:** required named fields at construction; no user-defined
   constructors or field defaults; no maps or general generics; a file API that
-  is whole-file and by path only, with no `errno`; `skuld run` does not forward
-  arguments to the program it runs. Network
+  is whole-file and by path only, with no `errno`. Network
   access has no host-name resolution, errno detail or TLS. Linux x86_64 is the
   currently tested native target; Go/Rust-level performance remains unmeasured.
 - **Syntax reference:** `test.skuld` remains an untouched design sketch.
@@ -548,6 +547,13 @@ The tool that makes Skuld code consistent and keeps review discussions on behavi
   output byte-for-byte under clang, check mode reports drift without writes, and invalid
   input produces diagnostics without overwriting the file. `test.skuld` is preserved
   untouched. Integration tests in `cli/tests/fmt.rs` and `cli/tests/cli.rs`.
+- **Fixed after the milestone:** two faults that inserted blank lines the
+  author had not written. The separator between declarations was emitted after
+  the next declaration's comments, detaching a comment from what it documents,
+  and the gap before a comment was measured from the previous comment rather
+  than from the last thing emitted, so a note above the last variant of an enum
+  inherited a gap that was never there. A comment the author left standing
+  alone still keeps its blank line on both sides.
 - **Out of scope, and still out:** syntax changes, import reorganization, and lint rules.
 
 ## M12 — References and rename — Implemented
@@ -641,12 +647,12 @@ dotted path and writes the result, and `skuld test` runs its suite.
 - **Decision taken — `main` still returns void.** A program that wants a status
   calls `os.exit(code)`, which flushes and leaves. Nothing is released on the
   way out, because the process is ending.
-- **Left undone, deliberately:** `skuld run` does not forward arguments to the
-  program it runs. `--` already means "every later argument is a path" in this
-  CLI, and quietly changing that would break a documented, tested rule for a
-  convenience; a program that reads arguments is built and run directly, and a
-  test suite goes through `skuld test`. Giving `run` a forwarding marker of its
-  own is a small decision that nothing needed yet.
+- **Decision taken — forwarding has a marker of its own.** `skuld run file
+  --args a b c` hands everything after `--args` to the program, unread, `--`
+  included. `--` already means "every later argument is a path" in this CLI, so
+  redefining it would have broken a documented, tested rule; a second marker
+  costs nothing and keeps both meanings. Only `run` executes a program, so only
+  `run` accepts it.
 - **Closing marker — reached:** `cli/tests/jsontool.rs` builds the application,
   reads a temporary JSON file, writes a selected part to another file and
   checks both, and covers a missing file, malformed input, a path that leads

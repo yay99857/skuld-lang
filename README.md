@@ -98,7 +98,13 @@ The debug AST and resolution output are not stable serialization formats.
 working directory under the source file's stem, or wherever `-o <path>` names.
 A build never overwrites its own source. `fmt` formats source files and `test`
 runs the `test_...` functions in a file; `new` and `doc` remain future CLI
-commands.
+commands. `run` hands a program its own arguments after `--args`, which are
+passed through unread — `--` keeps its separate meaning of ending the compiler's
+own options.
+
+```bash
+cargo run -p skuld-cli -- run examples/jsontool.skuld --args document.json user.name
+```
 
 ```bash
 cargo run -p skuld-cli -- test examples/jsontool_tests.skuld

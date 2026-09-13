@@ -347,8 +347,10 @@ accurate; documenting a future feature is not a request to implement it.
   entry point it writes, runs the tests in source order in one process, and
   stops at the first failure, since Skuld has no recoverable panic. Each
   finished test prints a flushed marker so the record survives a trap. `skuld
-  run` does not forward arguments: `--` already means "every later argument is
-  a path" in this CLI, and changing that quietly would break a tested rule.
+  run file --args ...` hands everything after `--args` to the program, unread
+  and `--` included; `--` keeps its own meaning of "every later argument is a
+  path", and only `run` accepts `--args`, since nothing else executes a
+  program.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built

@@ -20,7 +20,9 @@ The existing `func`, `->`, immutable `let` and mutable `var` syntax is retained.
 TypeScript/JavaScript source, type-system and runtime compatibility are not goals.
 Native compilation initially through C and clang. Composition instead of
 inheritance. No normal `null` value and no exceptions as the primary error model.
-The official `skuld fmt` is implemented and is the authority on style.
+The official `skuld fmt` is implemented and is the authority on style. It
+preserves every `//` comment where its author put it, including the blank line
+that separates a comment belonging to nobody from the declaration below it.
 
 ## Project priorities — Design commitments
 
@@ -1372,11 +1374,12 @@ string slicing and the `extern "C"` boundary.
 Future commands: `new` and `doc` (`fmt` and `test` are implemented). LLVM/Cranelift and eventual
 self-hosting remain long-term possibilities.
 
-`ROADMAP.md` records M1–M11 as implemented, including function values,
-callbacks, interfaces, blocking TCP/HTTP with JSON, and the official formatter
-`skuld fmt`. Its proposed M12–M18 sequence covers editor refactoring, local CLI
-applications and tests, construction defaults, maps, name resolution, HTTPS,
-and measured performance/portability. These proposals do not settle their syntax
+`ROADMAP.md` records M1–M13 as implemented, including function values,
+callbacks, interfaces, blocking TCP/HTTP with JSON, the official formatter
+`skuld fmt`, find-references and rename in the editor, and a native command-line
+application with its own `skuld test` suite. Its proposed M14–M18 sequence
+covers construction defaults, maps, name resolution, HTTPS, and measured
+performance/portability. These proposals do not settle their syntax
 or authorize implementation. No implementation milestone is active.
 
 ## Unsupported features and experimental status
