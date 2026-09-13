@@ -1,0 +1,84 @@
+// Dynamic dispatch through an interface.
+//
+// The same work in `dispatch.rs` and `dispatch.go`: build an array of `n`
+// values of three different implementations, then call one method on every
+// element and total the results. What it measures is the call, not the
+// arithmetic behind it.
+
+import "std/os"
+
+pub interface Shape {
+    area() -> int
+}
+
+class Square: Shape {
+    side: int
+
+    area() -> int {
+        return this.side * this.side
+    }
+}
+
+class Rectangle: Shape {
+    width: int
+    height: int
+
+    area() -> int {
+        return this.width * this.height
+    }
+}
+
+class Triangle: Shape {
+    base: int
+    height: int
+
+    area() -> int {
+        return this.base * this.height / 2
+    }
+}
+
+func number(text: string) -> int {
+    var value = 0
+    var index = 0
+    while index < text.len() {
+        let byte = text[index]
+        if byte < 48 || byte > 57 {
+            return 0
+        }
+        value = value * 10 + (int(byte) - 48)
+        index += 1
+    }
+    return value
+}
+
+func main() {
+    let given = os.parameters() else problem {
+        print(os.describe(problem))
+        os.exit(2)
+        return
+    }
+    if given.len() != 1 {
+        print("usage: dispatch <count>")
+        os.exit(2)
+        return
+    }
+    let count = number(given[0])
+    var shapes: []Shape = []
+    var index = 0
+    while index < count {
+        let kind = index % 3
+        if kind == 0 {
+            shapes.push(new Square(side: index % 100))
+        } else if kind == 1 {
+            shapes.push(new Rectangle(width: index % 50, height: index % 20))
+        } else {
+            shapes.push(new Triangle(base: index % 40, height: index % 30))
+        }
+        index += 1
+    }
+    var total = 0
+    for shape in shapes {
+        total = (total + shape.area()) % 1000000007
+    }
+    print(total)
+}

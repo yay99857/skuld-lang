@@ -1,0 +1,61 @@
+// Array growth and a stable sort through a comparator.
+//
+// The same work in `arrays.rs` and `arrays.go`: fill an array with `n`
+// pseudo-random integers from the same generator, sort it ascending through a
+// comparison function, and print a checksum that depends on the final order so
+// no part of it can be optimised away.
+
+import "std/os"
+
+// A linear congruential generator, so all three languages see the same input
+// without reading a file. The constants are Numerical Recipes'.
+func next(state: int) -> int {
+    return (state * 1664525 + 1013904223) % 2147483648
+}
+
+func number(text: string) -> int {
+    var value = 0
+    var index = 0
+    while index < text.len() {
+        let byte = text[index]
+        if byte < 48 || byte > 57 {
+            return 0
+        }
+        value = value * 10 + (int(byte) - 48)
+        index += 1
+    }
+    return value
+}
+
+func main() {
+    let given = os.parameters() else problem {
+        print(os.describe(problem))
+        os.exit(2)
+        return
+    }
+    if given.len() != 1 {
+        print("usage: arrays <count>")
+        os.exit(2)
+        return
+    }
+    let count = number(given[0])
+    var values: []int = []
+    var state = 12345
+    var index = 0
+    while index < count {
+        state = next(state)
+        values.push(state % 1000000)
+        index += 1
+    }
+    values.sort((a: int, b: int): int {
+        return a - b
+    }
+    )
+    var checksum = 0
+    index = 0
+    while index < values.len() {
+        checksum = (checksum + values[index] * (index % 7 + 1)) % 1000000007
+        index += 1
+    }
+    print(checksum)
+}

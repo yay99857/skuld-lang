@@ -1,0 +1,82 @@
+// Parsing JSON, which is the workload the language was aimed at.
+//
+// It reads `data/records.json` — checked in beside this file — and parses it
+// `n` times, printing a checksum taken from the document so the parse cannot
+// be skipped.
+//
+// The Go program next to it does the same with `encoding/json`. There is no
+// Rust one: the standard library has no JSON, and pulling in a crate would
+// compare Skuld's library against a third-party one rather than against a
+// language. That difference is reported rather than papered over.
+
+import "std/fs"
+import "std/json"
+import "std/os"
+
+func number(text: string) -> int {
+    var value = 0
+    var index = 0
+    while index < text.len() {
+        let byte = text[index]
+        if byte < 48 || byte > 57 {
+            return 0
+        }
+        value = value * 10 + (int(byte) - 48)
+        index += 1
+    }
+    return value
+}
+
+// Something that depends on the whole tree: the number of records, and the
+// length of every name in them.
+func checksum(document: json.JsonValue) -> int {
+    var total = 0
+    if let records = json.lookup(document, "records") {
+        match records {
+            json.JsonValue.Items(items): {
+                total += items.len()
+                for item in items {
+                    if let name = json.lookup(item, "name") {
+                        match name {
+                            json.JsonValue.Text(text): total += text.len()
+                            _: total += 1
+                        }
+                    }
+                }
+            }
+            _: total += 1
+        }
+    }
+    return total
+}
+
+func main() {
+    let given = os.parameters() else problem {
+        print(os.describe(problem))
+        os.exit(2)
+        return
+    }
+    if given.len() != 2 {
+        print("usage: json_parse <file.json> <rounds>")
+        os.exit(2)
+        return
+    }
+    let text = fs.read_text(given[0]) else problem {
+        print(fs.describe(problem))
+        os.exit(1)
+        return
+    }
+    let rounds = number(given[1])
+    var total = 0
+    var round = 0
+    while round < rounds {
+        let document = json.parse(text) else problem {
+            print(json.describe(problem))
+            os.exit(1)
+            return
+        }
+        total = (total + checksum(document)) % 1000000007
+        round += 1
+    }
+    print("${text.len()} ${total}")
+}

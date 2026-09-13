@@ -1,0 +1,79 @@
+// Building a string byte by byte, and scanning it.
+//
+// The same work in `strings.rs` and `strings.go`: append `item-<i>;` for `n`
+// items into a byte buffer, turn it into a string once, then count how many
+// times the two bytes `9;` appear in it. Counting is written out by hand in
+// all three, so the benchmark measures indexing and building rather than
+// whichever search routine a standard library happens to ship.
+
+import "std/os"
+
+func number(text: string) -> int {
+    var value = 0
+    var index = 0
+    while index < text.len() {
+        let byte = text[index]
+        if byte < 48 || byte > 57 {
+            return 0
+        }
+        value = value * 10 + (int(byte) - 48)
+        index += 1
+    }
+    return value
+}
+
+func push_number(buffer: []u8, value: int) -> []u8 {
+    var digits: []u8 = []
+    var rest = value
+    if rest == 0 {
+        digits.push(48)
+    }
+    while rest > 0 {
+        digits.push(u8(48 + rest % 10))
+        rest = rest / 10
+    }
+    var index = digits.len()
+    while index > 0 {
+        index -= 1
+        buffer.push(digits[index])
+    }
+    return buffer
+}
+
+func main() {
+    let given = os.parameters() else problem {
+        print(os.describe(problem))
+        os.exit(2)
+        return
+    }
+    if given.len() != 1 {
+        print("usage: strings <count>")
+        os.exit(2)
+        return
+    }
+    let count = number(given[0])
+    var buffer: []u8 = []
+    var index = 0
+    while index < count {
+        for byte in "item-".bytes() {
+            buffer.push(byte)
+        }
+        buffer = push_number(buffer, index)
+        buffer.push(59)
+        index += 1
+    }
+    let text = bytes_to_string(buffer) else problem {
+        print("not utf-8")
+        os.exit(1)
+        return
+    }
+    var found = 0
+    var at = 0
+    while at + 1 < text.len() {
+        if text[at] == 57 && text[at + 1] == 59 {
+            found += 1
+        }
+        at += 1
+    }
+    print("${text.len()} ${found}")
+}
