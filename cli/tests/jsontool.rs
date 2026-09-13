@@ -105,6 +105,31 @@ fn the_tool_selects_part_of_a_document_and_writes_it_out() {
 }
 
 #[test]
+fn counting_the_member_names_of_a_document_uses_the_map() {
+    if !clang_available() {
+        eprintln!("skipping: clang is not on PATH");
+        return;
+    }
+    let scratch = Scratch::new("keys");
+    let tool = build(&scratch);
+    let input = scratch.write(
+        "repeated.json",
+        r#"{"items": [{"id": 1, "name": "a"}, {"id": 2}], "id": 0}"#,
+    );
+    let output = Command::new(&tool)
+        .arg(&input)
+        .arg("--keys")
+        .output()
+        .expect("run jsontool");
+    assert!(output.status.success());
+    // Counted across the whole document, in the order the names first appear.
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "1 items\n3 id\n1 name\n"
+    );
+}
+
+#[test]
 fn a_missing_file_is_reported_on_stderr_and_writes_nothing() {
     if !clang_available() {
         eprintln!("skipping: clang is not on PATH");

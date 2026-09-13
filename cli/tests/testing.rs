@@ -68,7 +68,7 @@ fn the_example_application_has_its_own_passing_suite() {
         out.contains("ok   test_selecting_walks_objects_and_arrays"),
         "{out}"
     );
-    assert!(out.contains("7 of 7 tests passed"), "{out}");
+    assert!(out.contains("9 of 9 tests passed"), "{out}");
 }
 
 #[test]

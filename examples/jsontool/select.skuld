@@ -3,6 +3,7 @@
 // here and the opening and writing is in the entry file.
 
 import "std/json"
+import "std/map"
 
 pub class Request {
     // The document to read.
@@ -11,16 +12,18 @@ pub class Request {
     path: string
     // Where to write the result; absent means standard output.
     output: Option<string>
+    // `--keys` counts every member name in the document instead of selecting.
+    counting: bool = false
 }
 
 pub enum ToolError {
-    Usage(string)
+    Usage(string),
     // A path segment that named nothing in the document.
-    NoMember(string)
+    NoMember(string),
     // An index into an array that is not a number, or is off the end.
-    NoElement(string)
+    NoElement(string),
     // A path that walked into something with no members at all.
-    NotACollection(string)
+    NotACollection(string),
 }
 
 pub func describe(error: ToolError) -> string {
@@ -33,7 +36,7 @@ pub func describe(error: ToolError) -> string {
 }
 
 pub func usage() -> string {
-    return "usage: jsontool <file.json> [path] [-o <file.json>]"
+    return "usage: jsontool <file.json> [path] [-o <file.json>] [--keys]"
 }
 
 // The command line, as the tool understands it. Options may sit on either
@@ -43,11 +46,15 @@ pub func parse_arguments(given: []string) -> Result<Request, ToolError> {
     var input = ""
     var path = ""
     var output: Option<string> = null
+    var counting = false
     var positional = 0
     var index = 0
     while index < given.len() {
         let argument = given[index]
-        if argument == "-o" {
+        if argument == "--keys" {
+            counting = true
+            index += 1
+        } else if argument == "-o" {
             if index + 1 >= given.len() {
                 return Err(ToolError.Usage("`-o` needs a file name"))
             }
@@ -70,7 +77,7 @@ pub func parse_arguments(given: []string) -> Result<Request, ToolError> {
     if positional == 0 {
         return Err(ToolError.Usage("a file to read is required"))
     }
-    return Ok(new Request(input: input, path: path, output: output))
+    return Ok(new Request(input: input, path: path, output: output, counting: counting))
 }
 
 // The dotted path, split on `.`. An empty path selects nothing at all, which
@@ -118,6 +125,40 @@ pub func select(document: json.JsonValue, path: string) -> Result<json.JsonValue
         }
     }
     return Ok(current)
+}
+
+// Every member name in the document, with how many times it appears, in the
+// order the names were first seen.
+//
+// This is what the map is for. Counting with an array means a linear search
+// per member, so a document with many distinct names costs quadratic time; the
+// map turns each of those searches into one lookup, and the array of keys it
+// keeps is what makes the output order predictable.
+pub func count_keys(document: json.JsonValue) -> map.StringMap {
+    let counts = map.new_map()
+    tally(document, counts)
+    return counts
+}
+
+func tally(value: json.JsonValue, counts: map.StringMap) {
+    match value {
+        json.JsonValue.Object(members): {
+            for member in members {
+                var total = 1
+                if let seen = counts.get(member.key) {
+                    total = seen + 1
+                }
+                counts.set(member.key, total)
+                tally(member.value, counts)
+            }
+        }
+        json.JsonValue.Items(items): {
+            for item in items {
+                tally(item, counts)
+            }
+        }
+        _: return
+    }
 }
 
 // A segment as an array index: decimal digits and nothing else.

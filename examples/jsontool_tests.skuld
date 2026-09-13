@@ -6,6 +6,7 @@
 // stops the suite, because Skuld has no recoverable panic to carry on from.
 
 import "std/json"
+import "std/map"
 import "std/testing"
 import "jsontool"
 
@@ -45,27 +46,15 @@ func test_the_output_option_may_sit_on_either_side() {
 func test_a_command_line_that_makes_no_sense_is_refused() {
     match jsontool.parse_arguments([]) {
         Ok(request): testing.fail("an empty command line was accepted")
-        Err(problem): testing.equal_text(
-            jsontool.describe(problem),
-            "a file to read is required",
-            "empty command line"
-        )
+        Err(problem): testing.equal_text(jsontool.describe(problem), "a file to read is required", "empty command line")
     }
     match jsontool.parse_arguments(["doc.json", "-o"]) {
         Ok(request): testing.fail("a dangling -o was accepted")
-        Err(problem): testing.equal_text(
-            jsontool.describe(problem),
-            "`-o` needs a file name",
-            "dangling -o"
-        )
+        Err(problem): testing.equal_text(jsontool.describe(problem), "`-o` needs a file name", "dangling -o")
     }
     match jsontool.parse_arguments(["-x", "doc.json"]) {
         Ok(request): testing.fail("an unknown option was accepted")
-        Err(problem): testing.equal_text(
-            jsontool.describe(problem),
-            "unknown option `-x`",
-            "unknown option"
-        )
+        Err(problem): testing.equal_text(jsontool.describe(problem), "unknown option `-x`", "unknown option")
     }
 }
 
@@ -109,27 +98,15 @@ func test_a_path_that_leads_nowhere_says_where_it_stopped() {
     }
     match jsontool.select(document, "user.nope") {
         Ok(value): testing.fail("a missing member was selected")
-        Err(problem): testing.equal_text(
-            jsontool.describe(problem),
-            "no member named `nope`",
-            "a missing member"
-        )
+        Err(problem): testing.equal_text(jsontool.describe(problem), "no member named `nope`", "a missing member")
     }
     match jsontool.select(document, "user.tags.7") {
         Ok(value): testing.fail("an index past the end was selected")
-        Err(problem): testing.equal_text(
-            jsontool.describe(problem),
-            "no element at `7`",
-            "an index past the end"
-        )
+        Err(problem): testing.equal_text(jsontool.describe(problem), "no element at `7`", "an index past the end")
     }
     match jsontool.select(document, "user.tags.0.deeper") {
         Ok(value): testing.fail("a path into a string was followed")
-        Err(problem): testing.equal_text(
-            jsontool.describe(problem),
-            "`deeper` has no members",
-            "a path into a string"
-        )
+        Err(problem): testing.equal_text(jsontool.describe(problem), "`deeper` has no members", "a path into a string")
     }
 }
 
@@ -149,5 +126,39 @@ func test_an_index_is_digits_and_nothing_else() {
 func refuse_index(segment: string) {
     if let value = jsontool.index_of(segment) {
         testing.fail("`${segment}` should not be an index, got ${value}")
+    }
+}
+
+func test_counting_keys_visits_every_member_once() {
+    let document = json.parse("{\"a\": {\"b\": 1, \"a\": 2}, \"list\": [{\"b\": 3}, {\"c\": 4}]}") else problem {
+        testing.fail(json.describe(problem))
+        return
+    }
+    let counts = jsontool.count_keys(document)
+    testing.equal_int(counts.len(), 4, "distinct names")
+    expect_count(counts, "a", 2)
+    expect_count(counts, "b", 2)
+    expect_count(counts, "c", 1)
+    expect_count(counts, "list", 1)
+    // The order is the order the names were first seen, not the map's.
+    let names = counts.keys()
+    testing.equal_text(names[0], "a", "first name")
+    testing.equal_text(names[1], "b", "second name")
+    testing.equal_text(names[3], "c", "last name")
+}
+
+func test_counting_a_document_with_no_objects_finds_nothing() {
+    let document = json.parse("[1, 2, [3, \"four\"]]") else problem {
+        testing.fail(json.describe(problem))
+        return
+    }
+    testing.equal_int(jsontool.count_keys(document).len(), 0, "no members")
+}
+
+func expect_count(counts: map.StringMap, key: string, expected: int) {
+    if let found = counts.get(key) {
+        testing.equal_int(found, expected, "count of `${key}`")
+    } else {
+        testing.fail("`${key}` was not counted")
     }
 }

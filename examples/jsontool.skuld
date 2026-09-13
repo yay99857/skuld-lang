@@ -49,6 +49,17 @@ func main() {
         os.exit(1)
         return
     }
+    if request.counting {
+        let counts = jsontool.count_keys(document)
+        let names = counts.keys()
+        let totals = counts.values()
+        var index = 0
+        while index < names.len() {
+            print("${totals[index]} ${names[index]}")
+            index += 1
+        }
+        return
+    }
     let selected = jsontool.select(document, request.path) else problem {
         report(jsontool.describe(problem))
         os.exit(1)
