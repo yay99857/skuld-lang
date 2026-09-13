@@ -202,7 +202,7 @@ fn an_unknown_request_is_refused_but_an_unknown_notification_is_not() {
     // `hover`, `references`, `rename`, the outline and formatting are all
     // answered now, so the refused request has to be one the server genuinely
     // does not implement.
-    let (out, _) = converse(&[request(7, "textDocument/codeAction"), notification]);
+    let (out, _) = converse(&[request(7, "textDocument/inventedRequest"), notification]);
     assert_eq!(out.len(), 1, "a notification must not be answered");
     assert_eq!(out[0].get("id").unwrap().as_i64(), Some(7));
     assert_eq!(
