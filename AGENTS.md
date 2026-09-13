@@ -198,6 +198,11 @@ accurate; documenting a future feature is not a request to implement it.
   concurrently in another session (`2606206`, `e3d84c2`) and owns its own
   status entry. M8 (function values and lambdas) is complete; its three open
   design questions were delegated by the user and are recorded in `ROADMAP.md`.
+  M10 (interfaces) is the active milestone, delegated the same way: conformance
+  is declared on the class (`class User: Printable`), only classes implement
+  one, and an interface value is storable — which is what M8's escape rule left
+  out. Inheritance between interfaces, default bodies, structs behind
+  interfaces and run-time downcasts are all out.
   M9 (sockets, HTTP and the long-range target) is complete: `std/net` is a
   blocking TCP connection over libc, `std/http` an HTTP/1.1 client on top of
   it, and `std/json` is M4's parser promoted out of its fixture. A Skuld

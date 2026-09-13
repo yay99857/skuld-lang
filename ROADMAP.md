@@ -366,6 +366,57 @@ Skuld, and the JSON parser that closes M4.
   halves without a socket, so they run under the sanitizers with everything
   else. Nothing in the suite touches the network.
 
+## M10 — Interfaces — Planned
+
+The named abstraction every other milestone deferred, and the answer to the
+one limit M8 chose: a function value cannot be stored, so a handler table, a
+registry or an observer list has had nowhere to live.
+
+```skuld
+pub interface Renderer {
+    render(value: int) -> string
+}
+
+pub class Decimal: Renderer {
+    prefix: string
+
+    render(value: int) -> string {
+        return "${this.prefix}${value}"
+    }
+}
+
+func show(renderer: Renderer, value: int) {
+    print(renderer.render(value))
+}
+```
+
+- **Decision — conformance is declared, not inferred.** `class User: Printable`
+  states it on the class. Go's implicit satisfaction was considered and
+  declined for the same reason a capital letter was declined as an export
+  marker in M6: this language says what it means on the declaration. Rust's
+  `impl Trait for Type` was declined for putting the relationship in a third
+  place, away from both the type and the interface.
+- **Decision — only classes implement interfaces.** A struct is a value with
+  no identity; putting one behind an interface means boxing it, which means an
+  allocation and a lifetime question the milestone does not need to answer. A
+  class is already a counted reference, so an interface value is that reference
+  plus a table, and reference counting works unchanged.
+- **Decision — interface values are storable**, which is the whole point.
+  They are class references, so they may be fields, array elements, payloads
+  and return types like any other. That restores what M8 left out, and it
+  brings the cycles classes already have: `weak` remains the answer.
+- **In scope:** interface declaration with `pub`, declared conformance checked
+  method by method, an interface as a type anywhere a class may appear, and
+  dynamic dispatch.
+- **Out of scope:** inheritance between interfaces, default method bodies,
+  structs behind interfaces, generics of any kind, and asking at run time which
+  concrete class is inside — a downcast needs a decision of its own.
+- **Cheap by construction:** the shared allocation header already carries a
+  `destroy` pointer, so retain and release over an interface value need no new
+  runtime code. Dispatch goes through per-class thunks, the same shape M8's
+  function values already use, so no call is made through a mismatched function
+  pointer type.
+
 ## A parallel track — tooling — Partly implemented
 
 Not sequenced with the milestones above and not blocking any of them.
@@ -460,8 +511,9 @@ above.
    nothing the reference counter has to collect — and a non-escaping function
    value needs no allocation at all.
 8. ~~Whether interfaces are part of the callback milestone or a milestone of
-   their own?~~ Answered: their own, after M8. Their receiver syntax is still
-   unsettled, and M8 covers what callbacks are usually wanted for.
+   their own?~~ Answered: their own, M10. Their receiver syntax is settled with
+   them: a method on a class already takes an implicit `this`, and an interface
+   declares the same signature without a body, so nothing new is spelled.
 9. ~~Where NUL-terminated C strings are built — a language helper, or a
    standard library function over `[]u8`?~~ Answered by M7: `std/cstring.to_c`,
    in the library. The language keeps knowing nothing about C's terminator, and
