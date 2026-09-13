@@ -1414,6 +1414,28 @@ impl Emitter {
                         self.indent -= 1;
                         self.line("}");
                     }
+                    // The same loop over a string's own bytes: no array is
+                    // built, and a `u8` needs no retain or release.
+                    ForIterable::StringBytes(text) => {
+                        let value = self.expression(text);
+                        let text_temp = self.next_temp;
+                        self.next_temp += 1;
+                        self.line(&format!("skuld_string skuld_t{text_temp} = {value};"));
+                        let idx_temp = self.next_temp;
+                        self.next_temp += 1;
+                        self.line(&format!(
+                            "for (size_t skuld_t{idx_temp} = 0; skuld_t{idx_temp} < skuld_t{text_temp}.len; skuld_t{idx_temp}++) {{"
+                        ));
+                        self.indent += 1;
+                        self.line(&format!(
+                            "uint8_t skuld_v{} = skuld_t{text_temp}.data[skuld_t{idx_temp}];",
+                            variable.0
+                        ));
+                        self.line(&format!("(void)skuld_v{};", variable.0));
+                        self.block_contents(body);
+                        self.indent -= 1;
+                        self.line("}");
+                    }
                 }
                 self.indent -= 1;
                 self.line("}");

@@ -344,7 +344,19 @@ fn statement(source: &ast::Statement, cx: &Lowering<'_>) -> h::Statement {
                     end: expression(end, cx),
                 },
                 ast::ForIterable::Expr(collection) => {
-                    h::ForIterable::Array(expression(collection, cx))
+                    // `for byte in text.bytes()` is the one place the array
+                    // `bytes()` would answer cannot be reached from the body,
+                    // so it is not built: the loop reads the string's own
+                    // bytes. Everything else about the loop is unchanged —
+                    // the string is still evaluated exactly once, before the
+                    // first iteration.
+                    match expression(collection, cx) {
+                        h::Expr {
+                            kind: h::ExprKind::StringBytes(text),
+                            ..
+                        } => h::ForIterable::StringBytes(*text),
+                        lowered => h::ForIterable::Array(lowered),
+                    }
                 }
             };
             h::StatementKind::For {

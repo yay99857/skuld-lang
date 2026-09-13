@@ -139,8 +139,15 @@ pub(crate) enum IfLetPattern {
 }
 #[derive(Debug)]
 pub(crate) enum ForIterable {
-    Range { start: Expr, end: Expr },
+    Range {
+        start: Expr,
+        end: Expr,
+    },
     Array(Expr),
+    /// `for byte in text.bytes()`. The bytes of a string are iterated where
+    /// they already are: `bytes()` would answer a fresh array, and a loop is
+    /// the one place that array cannot be observed, so it is never built.
+    StringBytes(Expr),
 }
 #[derive(Debug)]
 pub(crate) struct MatchArm {
