@@ -993,6 +993,48 @@ arithmetic traps on overflow at every width, so comparing values near the
 extremes of `int` that way aborts the program. Comparing and returning `-1`,
 `0` or `1` always works.
 
+## Unwrapping with an escape — Implemented
+
+A declaration can unwrap an `Option` or a `Result` and say what to do when
+there is nothing to unwrap:
+
+```skuld
+let response = http.get(url) else reason {
+    print(http.describe(reason))
+    return
+}
+let document = json.parse(response.body) else reason {
+    print(json.describe(reason))
+    return
+}
+print(json.render(document))
+```
+
+`response` is the payload, in scope for the rest of the block. A `Result`
+names its error inside the escape block and nowhere else; an `Option` carries
+no error, so writing a name there is an error rather than a binding of
+something absent — `else { ... }` is the whole form.
+
+**The block must not fall through.** That is the entire rule, and it follows
+from the binding outliving the statement: reaching past the block would leave
+the name unbound. `return`, `break` and `continue` all leave. An `if` that only
+sometimes returns does not, and is refused:
+
+```skuld
+let value = fallible() else reason {
+    if reason.len() > 0 {
+        return
+    }
+}                       // rejected: `value` would be unbound here
+```
+
+Inside a function that returns a `Result`, `?` already does this in one
+character. The escape form is for everywhere else — chiefly `main`, which
+returns `void` and so has no `?`, and any place where two calls carry different
+error types, since `?` never converts between them. It is deliberately not a
+way around either rule; it is a way to handle a failure and carry on straight
+down the page, which is what reading code wants.
+
 ## Modules — Implemented
 
 A program is a set of modules. A **module is a directory**: every `.skuld` file

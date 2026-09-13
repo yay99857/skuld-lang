@@ -255,6 +255,17 @@ accurate; documenting a future feature is not a request to implement it.
   read as one. `sort()` is in place, returns void, is stable, and runs on a
   snapshot so a comparator that mutates the array aborts instead of reading a
   reallocated buffer.
+- A declaration can unwrap: `let name = value else binding { ... }` binds the
+  payload of an `Option` or a `Result` for the rest of the scope and runs the
+  block when there is none. A `Result` names its error there; an `Option` has
+  nothing to name, and writing a name is an error. The block must not fall
+  through, because the name outlives the statement — `return`, `break` and
+  `continue` leave, and an `if` that only sometimes returns does not. It relaxes
+  neither `?`'s refusal to convert error types nor `main` returning `void`; it
+  exists so a failure can be handled without nesting. Added after the user found
+  the nested `match` at a call site too Rust-shaped; the Go model was considered
+  and is blocked by Skuld having no zero values, which is a decision worth
+  keeping.
 - The standard library reaches the network, with three limits that are
   structural rather than unfinished, each following from pointer reads being out
   of scope at the foreign boundary. There is no name resolution — every resolver

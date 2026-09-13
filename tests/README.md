@@ -123,3 +123,10 @@ declared length that truncates, and each way a response or URL can be malformed
 `cli/tests/network.rs`, which binds an ephemeral loopback port, answers one
 request and stops, asserting both the program's output and the request the
 client actually produced. Nothing in the suite touches the network.
+
+`pass/guard_binding` and the `guard_*` fixtures in `fail/` cover the
+unwrapping declaration: both payload kinds, every way of leaving the escape
+block, managed payloads under the sanitizers, and each refusal — a block that
+falls through, an `if` that only sometimes returns, a name written for an
+Option, an initializer that is neither Option nor Result, and the error named
+outside the block that handles it.
