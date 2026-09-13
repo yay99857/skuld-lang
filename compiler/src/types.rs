@@ -54,6 +54,9 @@ pub struct ArrayInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumInfo {
     pub name: String,
+    /// The module that declares it, and whether it leaves that module.
+    pub module: crate::module::ModuleId,
+    pub visibility: crate::ast::Visibility,
     pub variants: Vec<VariantInfo>,
 }
 

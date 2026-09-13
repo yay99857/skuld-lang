@@ -1,7 +1,13 @@
-//! Lexical value-name resolution over an unchanged, single-source parser AST.
+//! Lexical value-name resolution over an unchanged parser AST.
+//!
+//! Scopes nest prelude → module → file → bodies. A module scope holds every
+//! declaration of every file in that module, public or not; a file scope holds
+//! only that file's import qualifiers, so two files of one module can import
+//! different things without seeing each other's imports.
 use crate::{
     ast::*,
     diagnostic::{Diagnostic, DiagnosticCode},
+    module::{FileDiagnostic, FileId, LoadedProgram, ModuleId},
     span::Span,
     types::IntType,
 };
@@ -34,6 +40,9 @@ pub enum SymbolKind {
     Parameter,
     Variable(Mutability),
     Enum,
+    /// An import qualifier. It names a module, never a value, so it is only
+    /// ever the left half of a qualified name.
+    Module(ModuleId),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Symbol {
@@ -42,6 +51,11 @@ pub struct Symbol {
     /// Builtins have no source declaration.
     pub span: Option<Span>,
     pub scope: ScopeId,
+    /// Whether another module may name this symbol. Everything below module
+    /// level is private by construction, since no other module can reach it.
+    pub visibility: Visibility,
+    /// The module that declares this symbol, absent for the prelude.
+    pub module: Option<ModuleId>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scope {
@@ -53,29 +67,56 @@ pub struct Scope {
 pub struct Resolution {
     pub symbols: Vec<Symbol>,
     pub scopes: Vec<Scope>,
-    /// Keys are declaration-name byte starts in the original, unchanged AST.
-    pub declarations: BTreeMap<usize, SymbolId>,
-    /// Keys are identifier-use byte starts. Member labels are not value names.
-    pub references: BTreeMap<usize, SymbolId>,
+    /// Keys are a file and a declaration-name byte start in that file's
+    /// unchanged AST. Offsets repeat across files, so the file is part of the
+    /// key rather than a property of the span.
+    pub declarations: BTreeMap<(FileId, usize), SymbolId>,
+    /// Keys are identifier-use positions. Member labels are not value names,
+    /// except the right half of a module-qualified name, which is one.
+    pub references: BTreeMap<(FileId, usize), SymbolId>,
+    /// The import scope of each file, by `FileId`.
+    pub file_scopes: Vec<ScopeId>,
+    /// The declaration scope of each module, by `ModuleId`.
+    pub module_scopes: Vec<ScopeId>,
 }
+
+impl Resolution {
+    /// The module an import qualifier names in one file. Type names live in
+    /// the checker's own namespace, so it resolves its qualifiers through
+    /// this rather than through the value scopes.
+    pub fn module_in_file(&self, file: FileId, qualifier: &str) -> Option<ModuleId> {
+        let scope = *self.file_scopes.get(file.0)?;
+        let symbol = self.scopes[scope.0].symbols.get(qualifier)?;
+        match self.symbols[symbol.0].kind {
+            SymbolKind::Module(id) => Some(id),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct ResolveOutput {
     pub resolution: Option<Resolution>,
-    pub diagnostics: Vec<Diagnostic>,
+    pub diagnostics: Vec<FileDiagnostic>,
 }
 
-/// Resolve a parser-produced AST. Tables belong only to this source revision;
-/// no type names, member labels, call signatures or entrypoints are checked.
-pub fn resolve(program: &Program) -> ResolveOutput {
+/// Resolve a whole program. Tables belong only to this revision of these
+/// sources; no type names, member labels, call signatures or entrypoints are
+/// checked here.
+pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
     let mut resolver = Resolver {
         result: Resolution {
             symbols: Vec::new(),
             scopes: Vec::new(),
             declarations: BTreeMap::new(),
             references: BTreeMap::new(),
+            file_scopes: vec![ScopeId(0); program.files.len()],
+            module_scopes: Vec::new(),
         },
         diagnostics: Vec::new(),
         current: ScopeId(0),
+        file: FileId(0),
+        module: None,
     };
     resolver.result.scopes.push(Scope {
         parent: None,
@@ -107,57 +148,113 @@ pub fn resolve(program: &Program) -> ResolveOutput {
             None,
         );
     }
-    resolver.enter(program.span);
-    for declaration in &program.enums {
-        resolver.declare(&declaration.name, SymbolKind::Enum);
+    let prelude = resolver.current;
+
+    // One scope per module, holding the declarations of all its files. They
+    // are created first so that a module can be imported before it is walked.
+    for _ in &program.modules {
+        resolver.current = prelude;
+        resolver.enter_scope(None);
+        resolver.result.module_scopes.push(resolver.current);
     }
-    // Foreign functions are ordinary value names: only the backend knows they
-    // are calls into another object file. Their parameter names are
-    // documentation, so they get no symbols of their own.
-    for block in &program.externs {
-        for function in &block.functions {
-            resolver.declare(&function.name, SymbolKind::Function);
-        }
-    }
-    for function in &program.functions {
-        resolver.declare(&function.name, SymbolKind::Function);
-    }
-    // Methods get symbols, but in a scope of their own so they never resolve as
-    // bare identifiers: a method is reached through `this` or a value.
-    let program_scope = resolver.current;
-    for declaration in &program.structs {
-        resolver.enter(declaration.span);
-        for method in &declaration.methods {
-            resolver.declare(&method.name, SymbolKind::Function);
-        }
-        let method_scope = resolver.current;
-        for method in &declaration.methods {
-            // Bodies resolve from the program scope, so a sibling method is not
-            // visible without a receiver.
-            resolver.current = program_scope;
-            resolver.enter(method.body.span);
-            resolver.insert(
-                "this",
-                SymbolKind::Parameter,
-                Some(Span::new(method.body.span.start, method.body.span.start)),
-            );
-            for parameter in &method.parameters {
-                resolver.declare(&parameter.name, SymbolKind::Parameter);
+    for (index, module) in program.modules.iter().enumerate() {
+        let id = ModuleId(index);
+        resolver.module = Some(id);
+        resolver.current = resolver.result.module_scopes[index];
+        for file in &module.files {
+            resolver.file = *file;
+            let syntax = &program.files[file.0].program;
+            for declaration in &syntax.enums {
+                resolver.declare(&declaration.name, SymbolKind::Enum, declaration.visibility);
             }
-            resolver.statements(&method.body);
-            resolver.leave();
-            resolver.current = method_scope;
+            // Foreign functions are ordinary value names: only the backend
+            // knows they are calls into another object file. Their parameter
+            // names are documentation, so they get no symbols of their own.
+            for block in &syntax.externs {
+                for function in &block.functions {
+                    // An `extern` block cannot be exported, so its names stay
+                    // inside the module that asserted them.
+                    resolver.declare(&function.name, SymbolKind::Function, Visibility::Private);
+                }
+            }
+            for function in &syntax.functions {
+                resolver.declare(&function.name, SymbolKind::Function, function.visibility);
+            }
         }
-        resolver.leave();
     }
-    for function in &program.functions {
-        resolver.enter(function.body.span);
-        for parameter in &function.parameters {
-            resolver.declare(&parameter.name, SymbolKind::Parameter);
+
+    // One scope per file, holding only that file's imports.
+    for (index, file) in program.files.iter().enumerate() {
+        let id = FileId(index);
+        resolver.file = id;
+        resolver.module = Some(file.module);
+        resolver.current = resolver.result.module_scopes[file.module.0];
+        resolver.enter_scope(Some(file.program.span));
+        resolver.result.file_scopes[index] = resolver.current;
+        for import in &file.program.imports {
+            let Some(target) = program
+                .modules
+                .iter()
+                .position(|module| module.path == import.path)
+            else {
+                continue;
+            };
+            // A qualifier may shadow a prelude binding, like any other name,
+            // but never another import: the loader rejected that already.
+            resolver.insert(
+                &import.qualifier.text,
+                SymbolKind::Module(ModuleId(target)),
+                None,
+            );
         }
-        // Parameters and the outermost function body share one lexical scope.
-        resolver.statements(&function.body);
-        resolver.leave();
+    }
+
+    // Bodies last, so every declaration in the program is already visible.
+    for (index, file) in program.files.iter().enumerate() {
+        let id = FileId(index);
+        resolver.file = id;
+        resolver.module = Some(file.module);
+        let file_scope = resolver.result.file_scopes[index];
+        let syntax = &file.program;
+        // Methods get symbols, but in a scope of their own so they never
+        // resolve as bare identifiers: a method is reached through `this` or a
+        // value.
+        for declaration in &syntax.structs {
+            resolver.current = file_scope;
+            resolver.enter_scope(Some(declaration.span));
+            for method in &declaration.methods {
+                resolver.declare(&method.name, SymbolKind::Function, Visibility::Public);
+            }
+            let method_scope = resolver.current;
+            for method in &declaration.methods {
+                // Bodies resolve from the file scope, so a sibling method is
+                // not visible without a receiver.
+                resolver.current = file_scope;
+                resolver.enter_scope(Some(method.body.span));
+                resolver.insert(
+                    "this",
+                    SymbolKind::Parameter,
+                    Some(Span::new(method.body.span.start, method.body.span.start)),
+                );
+                for parameter in &method.parameters {
+                    resolver.declare(&parameter.name, SymbolKind::Parameter, Visibility::Private);
+                }
+                resolver.statements(&method.body);
+                resolver.leave();
+                resolver.current = method_scope;
+            }
+            resolver.leave();
+        }
+        for function in &syntax.functions {
+            resolver.current = file_scope;
+            resolver.enter_scope(Some(function.body.span));
+            for parameter in &function.parameters {
+                resolver.declare(&parameter.name, SymbolKind::Parameter, Visibility::Private);
+            }
+            // Parameters and the outermost function body share one lexical scope.
+            resolver.statements(&function.body);
+            resolver.leave();
+        }
     }
     ResolveOutput {
         resolution: resolver.diagnostics.is_empty().then_some(resolver.result),
@@ -167,15 +264,33 @@ pub fn resolve(program: &Program) -> ResolveOutput {
 
 struct Resolver {
     result: Resolution,
-    diagnostics: Vec<Diagnostic>,
+    diagnostics: Vec<FileDiagnostic>,
     current: ScopeId,
+    /// The file being walked. Declaration and reference keys carry it, since
+    /// byte offsets alone no longer identify a position in the program.
+    file: FileId,
+    module: Option<ModuleId>,
 }
 impl Resolver {
+    fn error(&mut self, code: DiagnosticCode, span: Span, message: String, help: String) {
+        self.diagnostics.push(FileDiagnostic {
+            file: self.file,
+            diagnostic: Diagnostic {
+                code,
+                message,
+                span,
+                help: Some(help),
+            },
+        });
+    }
     fn enter(&mut self, span: Span) {
+        self.enter_scope(Some(span));
+    }
+    fn enter_scope(&mut self, span: Option<Span>) {
         let id = ScopeId(self.result.scopes.len());
         self.result.scopes.push(Scope {
             parent: Some(self.current),
-            span: Some(span),
+            span,
             symbols: BTreeMap::new(),
         });
         self.current = id;
@@ -186,35 +301,47 @@ impl Resolver {
         }
     }
     fn insert(&mut self, name: &str, kind: SymbolKind, span: Option<Span>) -> SymbolId {
+        self.insert_with(name, kind, span, Visibility::Private)
+    }
+    fn insert_with(
+        &mut self,
+        name: &str,
+        kind: SymbolKind,
+        span: Option<Span>,
+        visibility: Visibility,
+    ) -> SymbolId {
         let id = SymbolId(self.result.symbols.len());
         self.result.symbols.push(Symbol {
             name: name.into(),
             kind,
             span,
             scope: self.current,
+            visibility,
+            module: self.module,
         });
         self.result.scopes[self.current.0]
             .symbols
             .insert(name.into(), id);
         if let Some(span) = span {
-            self.result.declarations.insert(span.start, id);
+            self.result.declarations.insert((self.file, span.start), id);
         }
         id
     }
-    fn declare(&mut self, name: &Name, kind: SymbolKind) {
+    fn declare(&mut self, name: &Name, kind: SymbolKind, visibility: Visibility) {
         if self.result.scopes[self.current.0]
             .symbols
             .contains_key(&name.text)
         {
-            self.diagnostics.push(Diagnostic {
-                code: DiagnosticCode::DuplicateDeclaration,
-                message: format!("duplicate declaration of `{}` in the same scope", name.text),
-                span: name.span,
-                help: Some("rename this declaration or introduce a child block to shadow the existing binding".into()),
-            });
+            self.error(
+                DiagnosticCode::DuplicateDeclaration,
+                name.span,
+                format!("duplicate declaration of `{}` in the same scope", name.text),
+                "rename this declaration or introduce a child block to shadow the existing binding"
+                    .into(),
+            );
             // Keep the first binding so further diagnostics remain predictable.
         } else {
-            self.insert(&name.text, kind, Some(name.span));
+            self.insert_with(&name.text, kind, Some(name.span), visibility);
         }
     }
     fn lookup(&self, name: &str) -> Option<SymbolId> {
@@ -230,18 +357,48 @@ impl Resolver {
     }
     fn reference(&mut self, name: &Name) {
         if let Some(id) = self.lookup(&name.text) {
-            self.result.references.insert(name.span.start, id);
+            self.result
+                .references
+                .insert((self.file, name.span.start), id);
         } else {
-            self.diagnostics.push(Diagnostic {
-                code: DiagnosticCode::UnknownName,
-                message: format!("unknown identifier `{}`", name.text),
-                span: name.span,
-                help: Some(
-                    "check the spelling or declare this name in an enclosing scope before using it"
-                        .into(),
-                ),
-            });
+            self.error(
+                DiagnosticCode::UnknownName,
+                name.span,
+                format!("unknown identifier `{}`", name.text),
+                "check the spelling or declare this name in an enclosing scope before using it"
+                    .into(),
+            );
         }
+    }
+    /// The right half of `module.name`. A module's scope is not an enclosing
+    /// scope of the importing file, so this looks in exactly one place rather
+    /// than walking parents, and the name has to be exported to be found.
+    fn module_member(&mut self, module: ModuleId, qualifier: &Name, name: &Name) {
+        let scope = self.result.module_scopes[module.0];
+        let Some(symbol) = self.result.scopes[scope.0].symbols.get(&name.text).copied() else {
+            self.error(
+                DiagnosticCode::UnknownName,
+                name.span,
+                format!("module `{}` declares no `{}`", qualifier.text, name.text),
+                "check the spelling, or the module's own declarations".into(),
+            );
+            return;
+        };
+        if self.result.symbols[symbol.0].visibility != Visibility::Public {
+            self.error(
+                DiagnosticCode::PrivateName,
+                name.span,
+                format!("`{}` is private to module `{}`", name.text, qualifier.text),
+                format!(
+                    "write `pub` on its declaration in `{}` to export it",
+                    qualifier.text
+                ),
+            );
+            return;
+        }
+        self.result
+            .references
+            .insert((self.file, name.span.start), symbol);
     }
     fn statements(&mut self, block: &Block) {
         for statement in &block.statements {
@@ -258,7 +415,11 @@ impl Resolver {
             StatementKind::Variable(variable) => {
                 // A binding becomes visible only after its initializer.
                 self.expression(&variable.initializer);
-                self.declare(&variable.name, SymbolKind::Variable(variable.mutability));
+                self.declare(
+                    &variable.name,
+                    SymbolKind::Variable(variable.mutability),
+                    Visibility::Private,
+                );
             }
             StatementKind::Expression(expr) => self.expression(expr),
             StatementKind::Return(value) => {
@@ -287,7 +448,11 @@ impl Resolver {
             } => {
                 self.expression(value);
                 self.enter(then_block.span);
-                self.declare(binding, SymbolKind::Variable(Mutability::Immutable));
+                self.declare(
+                    binding,
+                    SymbolKind::Variable(Mutability::Immutable),
+                    Visibility::Private,
+                );
                 self.statements(then_block);
                 self.leave();
                 if let Some(branch) = else_branch {
@@ -312,7 +477,11 @@ impl Resolver {
                         ..
                     } = &arm.pattern
                     {
-                        self.declare(binding, SymbolKind::Variable(Mutability::Immutable));
+                        self.declare(
+                            binding,
+                            SymbolKind::Variable(Mutability::Immutable),
+                            Visibility::Private,
+                        );
                     }
                     self.statements(&arm.body);
                     self.leave();
@@ -333,7 +502,11 @@ impl Resolver {
                     }
                 }
                 self.enter(body.span);
-                self.declare(variable, SymbolKind::Variable(Mutability::Immutable));
+                self.declare(
+                    variable,
+                    SymbolKind::Variable(Mutability::Immutable),
+                    Visibility::Private,
+                );
                 self.statements(body);
                 self.leave();
             }
@@ -360,7 +533,22 @@ impl Resolver {
                     self.expression(argument);
                 }
             }
-            ExprKind::Member { object, .. } => self.expression(object),
+            ExprKind::Member { object, member } => {
+                // `json.parse` is one name in two halves, not a member of a
+                // value called `json`. A local binding of the same name wins,
+                // because `lookup` finds the innermost scope first.
+                if let ExprKind::Identifier(qualifier) = &object.kind
+                    && let Some(symbol) = self.lookup(&qualifier.text)
+                    && let SymbolKind::Module(module) = self.result.symbols[symbol.0].kind
+                {
+                    self.result
+                        .references
+                        .insert((self.file, qualifier.span.start), symbol);
+                    self.module_member(module, qualifier, member);
+                    return;
+                }
+                self.expression(object)
+            }
             ExprKind::Interpolation(parts) => {
                 for part in parts {
                     if let InterpolationPart::Value(value) = part {

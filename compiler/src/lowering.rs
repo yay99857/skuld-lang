@@ -1,77 +1,129 @@
 //! AST-to-HIR lowering after resolution and checking, with no code generation.
 use crate::{
     ast, hir as h,
-    resolver::{Builtin, SymbolKind},
+    module::FileId,
+    resolver::{Builtin, SymbolId, SymbolKind},
     span::Span,
     type_checker::TypedProgram,
-    types::Type,
+    types::{EnumId, Type},
 };
+
+/// The checked program, plus the file being walked. Byte offsets repeat
+/// across files, so every table lookup needs both.
+struct Lowering<'a> {
+    typed: &'a TypedProgram,
+    file: FileId,
+}
+
+impl Lowering<'_> {
+    fn decl(&self, span: Span) -> SymbolId {
+        self.typed.resolution.declarations[&(self.file, span.start)]
+    }
+    fn reference(&self, span: Span) -> SymbolId {
+        self.typed.resolution.references[&(self.file, span.start)]
+    }
+    fn ty(&self, span: Span) -> Option<Type> {
+        self.typed.expression_type_in(self.file, span)
+    }
+    /// The enum named by the left of `Enum.Variant` or `module.Enum.Variant`.
+    /// Checking already accepted it, so this only has to find it again.
+    fn enum_prefix(&self, object: &ast::Expr) -> Option<EnumId> {
+        let (module, name) = match &object.kind {
+            ast::ExprKind::Identifier(name) => {
+                (self.typed.program.files[self.file.0].module, &name.text)
+            }
+            ast::ExprKind::Member { object, member } => {
+                let ast::ExprKind::Identifier(qualifier) = &object.kind else {
+                    return None;
+                };
+                let module = self
+                    .typed
+                    .resolution
+                    .module_in_file(self.file, &qualifier.text)?;
+                (module, &member.text)
+            }
+            _ => return None,
+        };
+        self.typed.enum_names[module.0].get(name).copied()
+    }
+}
 
 pub fn lower(typed: TypedProgram) -> h::Program {
     let mut functions = Vec::new();
     let mut externs = Vec::new();
-    for block in &typed.syntax.externs {
-        for function in &block.functions {
-            let id = typed.resolution.declarations[&function.name.span.start];
-            let signature = &typed.signatures[&id];
-            externs.push(h::ExternFunction {
-                id,
-                name: typed.externs[&id].name.clone(),
-                parameters: signature.parameters.clone(),
-                return_type: signature.return_type,
-                span: function.span,
-            });
-        }
-    }
-    for declaration in &typed.syntax.structs {
-        for method in &declaration.methods {
-            let id = typed.resolution.declarations[&method.name.span.start];
-            let this = typed.resolution.declarations[&method.body.span.start];
-            let mut parameters = vec![h::Parameter {
-                id: this,
-                ty: typed.symbol_types[this.0],
-                span: Span::new(method.body.span.start, method.body.span.start),
-            }];
-            parameters.extend(method.parameters.iter().map(|parameter| {
-                let id = typed.resolution.declarations[&parameter.name.span.start];
-                h::Parameter {
+    // Every file of every module, in load order. Symbol ids are already
+    // unique across the program, so nothing here has to disambiguate them.
+    let files: Vec<Lowering<'_>> = (0..typed.program.files.len())
+        .map(|index| Lowering {
+            typed: &typed,
+            file: FileId(index),
+        })
+        .collect();
+    for cx in &files {
+        let syntax = &typed.program.files[cx.file.0].program;
+        for block in &syntax.externs {
+            for function in &block.functions {
+                let id = cx.decl(function.name.span);
+                let signature = &typed.signatures[&id];
+                externs.push(h::ExternFunction {
                     id,
-                    ty: typed.symbol_types[id.0],
-                    span: parameter.span,
-                }
-            }));
-            functions.push(h::Function {
-                id,
-                name: format!("{}.{}", declaration.name.text, method.name.text),
-                parameters,
-                return_type: typed.signatures[&id].return_type,
-                body: block(&method.body, &typed),
-                span: method.span,
-            });
+                    name: typed.externs[&id].name.clone(),
+                    parameters: signature.parameters.clone(),
+                    return_type: signature.return_type,
+                    span: function.span,
+                });
+            }
         }
-    }
-    for function in &typed.syntax.functions {
-        {
-            let id = typed.resolution.declarations[&function.name.span.start];
-            functions.push(h::Function {
-                id,
-                name: function.name.text.clone(),
-                parameters: function
-                    .parameters
-                    .iter()
-                    .map(|parameter| {
-                        let id = typed.resolution.declarations[&parameter.name.span.start];
-                        h::Parameter {
-                            id,
-                            ty: typed.symbol_types[id.0],
-                            span: parameter.span,
-                        }
-                    })
-                    .collect(),
-                return_type: typed.signatures[&id].return_type,
-                body: block(&function.body, &typed),
-                span: function.span,
-            });
+        for declaration in &syntax.structs {
+            for method in &declaration.methods {
+                let id = cx.decl(method.name.span);
+                let this = cx.decl(method.body.span);
+                let mut parameters = vec![h::Parameter {
+                    id: this,
+                    ty: typed.symbol_types[this.0],
+                    span: Span::new(method.body.span.start, method.body.span.start),
+                }];
+                parameters.extend(method.parameters.iter().map(|parameter| {
+                    let id = cx.decl(parameter.name.span);
+                    h::Parameter {
+                        id,
+                        ty: typed.symbol_types[id.0],
+                        span: parameter.span,
+                    }
+                }));
+                functions.push(h::Function {
+                    id,
+                    name: format!("{}.{}", declaration.name.text, method.name.text),
+                    parameters,
+                    return_type: typed.signatures[&id].return_type,
+                    body: block(&method.body, cx),
+                    span: method.span,
+                });
+            }
+        }
+        for function in &syntax.functions {
+            {
+                let id = cx.decl(function.name.span);
+                functions.push(h::Function {
+                    id,
+                    name: function.name.text.clone(),
+                    parameters: function
+                        .parameters
+                        .iter()
+                        .map(|parameter| {
+                            let id = cx.decl(parameter.name.span);
+                            h::Parameter {
+                                id,
+                                ty: typed.symbol_types[id.0],
+                                span: parameter.span,
+                            }
+                        })
+                        .collect(),
+                    return_type: typed.signatures[&id].return_type,
+                    body: block(&function.body, cx),
+                    span: function.span,
+                });
+            }
         }
     }
     h::Program {
@@ -83,79 +135,71 @@ pub fn lower(typed: TypedProgram) -> h::Program {
         results: typed.results.clone(),
         functions,
         entry: typed.entry,
-        span: typed.syntax.span,
+        span: typed.program.files[0].program.span,
     }
 }
 /// Walk a chain of field accesses down to the local it is rooted in.
-fn place(target: &ast::Expr, typed: &TypedProgram) -> h::Place {
+fn place(target: &ast::Expr, cx: &Lowering<'_>) -> h::Place {
     match &target.kind {
-        ast::ExprKind::Group(inner) => place(inner, typed),
-        ast::ExprKind::Identifier(name) => {
-            h::Place::Local(typed.resolution.references[&name.span.start])
-        }
+        ast::ExprKind::Group(inner) => place(inner, cx),
+        ast::ExprKind::Identifier(name) => h::Place::Local(cx.reference(name.span)),
         ast::ExprKind::Member { object, member } => {
-            let Some(Type::Struct(id)) = typed.expression_type(object.span) else {
+            let Some(Type::Struct(id)) = cx.ty(object.span) else {
                 unreachable!("internal compiler bug: unchecked field assignment")
             };
-            let index = typed.structs[id.0]
+            let index = cx.typed.structs[id.0]
                 .fields
                 .iter()
                 .position(|f| f.name == member.text)
                 .expect("checked field");
-            if typed.structs[id.0].reference {
+            if cx.typed.structs[id.0].reference {
                 h::Place::ReferenceField {
-                    object: Box::new(expression(object, typed)),
+                    object: Box::new(expression(object, cx)),
                     index,
                 }
             } else {
                 h::Place::Field {
-                    base: Box::new(place(object, typed)),
+                    base: Box::new(place(object, cx)),
                     index,
                 }
             }
         }
         ast::ExprKind::Index { object, index } => h::Place::Index {
-            object: Box::new(expression(object, typed)),
-            index: Box::new(expression(index, typed)),
+            object: Box::new(expression(object, cx)),
+            index: Box::new(expression(index, cx)),
         },
         _ => unreachable!("internal compiler bug: unchecked assignment target"),
     }
 }
-fn block(source: &ast::Block, typed: &TypedProgram) -> h::Block {
+fn block(source: &ast::Block, cx: &Lowering<'_>) -> h::Block {
     h::Block {
-        statements: source
-            .statements
-            .iter()
-            .map(|s| statement(s, typed))
-            .collect(),
+        statements: source.statements.iter().map(|s| statement(s, cx)).collect(),
         span: source.span,
     }
 }
-fn statement(source: &ast::Statement, typed: &TypedProgram) -> h::Statement {
+fn statement(source: &ast::Statement, cx: &Lowering<'_>) -> h::Statement {
     let kind = match &source.kind {
         ast::StatementKind::Variable(variable) => {
-            let id = typed.resolution.declarations[&variable.name.span.start];
+            let id = cx.decl(variable.name.span);
             h::StatementKind::Variable {
                 id,
-                ty: typed.symbol_types[id.0],
-                initializer: expression(&variable.initializer, typed),
+                ty: cx.typed.symbol_types[id.0],
+                initializer: expression(&variable.initializer, cx),
             }
         }
-        ast::StatementKind::Expression(expr) => {
-            h::StatementKind::Expression(expression(expr, typed))
-        }
+        ast::StatementKind::Expression(expr) => h::StatementKind::Expression(expression(expr, cx)),
         ast::StatementKind::Return(value) => {
-            h::StatementKind::Return(value.as_ref().map(|e| expression(e, typed)))
+            h::StatementKind::Return(value.as_ref().map(|e| expression(e, cx)))
         }
-        ast::StatementKind::Block(source) => h::StatementKind::Block(block(source, typed)),
+        ast::StatementKind::Block(source) => h::StatementKind::Block(block(source, cx)),
         ast::StatementKind::If {
             condition,
             then_block,
             else_branch,
         } => h::StatementKind::If {
-            condition: expression(condition, typed),
-            then_block: block(then_block, typed),
-            else_branch: else_branch.as_ref().map(|s| Box::new(statement(s, typed))),
+            condition: expression(condition, cx),
+            then_block: block(then_block, cx),
+            else_branch: else_branch.as_ref().map(|s| Box::new(statement(s, cx))),
         },
         ast::StatementKind::IfLet {
             pattern,
@@ -169,26 +213,26 @@ fn statement(source: &ast::Statement, typed: &TypedProgram) -> h::Statement {
                 ast::IfLetPattern::Ok => h::IfLetPattern::Ok,
                 ast::IfLetPattern::Err => h::IfLetPattern::Err,
             },
-            binding: typed.resolution.declarations[&binding.span.start],
-            value: expression(value, typed),
-            then_block: block(then_block, typed),
-            else_branch: else_branch.as_ref().map(|s| Box::new(statement(s, typed))),
+            binding: cx.decl(binding.span),
+            value: expression(value, cx),
+            then_block: block(then_block, cx),
+            else_branch: else_branch.as_ref().map(|s| Box::new(statement(s, cx))),
         },
         ast::StatementKind::While { condition, body } => h::StatementKind::While {
-            condition: expression(condition, typed),
-            body: block(body, typed),
+            condition: expression(condition, cx),
+            body: block(body, cx),
         },
         ast::StatementKind::Loop { body } => h::StatementKind::Loop {
-            body: block(body, typed),
+            body: block(body, cx),
         },
         ast::StatementKind::Break => h::StatementKind::Break,
         ast::StatementKind::Continue => h::StatementKind::Continue,
         ast::StatementKind::Match { value, arms } => {
-            let lowered_value = expression(value, typed);
+            let lowered_value = expression(value, cx);
             // A `Result` reaches the backend as a two-variant enum, so a match
             // over it only differs in where the variant index comes from.
             let variant_index = |name: &str| match lowered_value.ty {
-                Type::Enum(enum_id) => typed.enums[enum_id.0]
+                Type::Enum(enum_id) => cx.typed.enums[enum_id.0]
                     .find_variant(name)
                     .expect("checked variant"),
                 Type::Result(_) if name == "Ok" => crate::types::ResultInfo::OK,
@@ -206,9 +250,7 @@ fn statement(source: &ast::Statement, typed: &TypedProgram) -> h::Statement {
                             ..
                         } => {
                             let variant_index = variant_index(&variant_name.text);
-                            let binding_id = binding
-                                .as_ref()
-                                .map(|name| typed.resolution.declarations[&name.span.start]);
+                            let binding_id = binding.as_ref().map(|name| cx.decl(name.span));
                             h::MatchPattern::Variant {
                                 variant_index,
                                 binding: binding_id,
@@ -217,7 +259,7 @@ fn statement(source: &ast::Statement, typed: &TypedProgram) -> h::Statement {
                     };
                     h::MatchArm {
                         pattern,
-                        body: block(&arm.body, typed),
+                        body: block(&arm.body, cx),
                     }
                 })
                 .collect();
@@ -231,20 +273,20 @@ fn statement(source: &ast::Statement, typed: &TypedProgram) -> h::Statement {
             iterable,
             body,
         } => {
-            let symbol_id = typed.resolution.declarations[&variable.span.start];
+            let symbol_id = cx.decl(variable.span);
             let lowered_iterable = match iterable {
                 ast::ForIterable::Range { start, end } => h::ForIterable::Range {
-                    start: expression(start, typed),
-                    end: expression(end, typed),
+                    start: expression(start, cx),
+                    end: expression(end, cx),
                 },
                 ast::ForIterable::Expr(collection) => {
-                    h::ForIterable::Array(expression(collection, typed))
+                    h::ForIterable::Array(expression(collection, cx))
                 }
             };
             h::StatementKind::For {
                 variable: symbol_id,
                 iterable: lowered_iterable,
-                body: block(body, typed),
+                body: block(body, cx),
             }
         }
     };
@@ -259,57 +301,55 @@ fn strip_groups(mut expr: &ast::Expr) -> &ast::Expr {
     }
     expr
 }
-fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
+fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
     let kind = match &source.kind {
         ast::ExprKind::Array(elements) => {
-            h::ExprKind::Array(elements.iter().map(|e| expression(e, typed)).collect())
+            h::ExprKind::Array(elements.iter().map(|e| expression(e, cx)).collect())
         }
         ast::ExprKind::Index { object, index } => h::ExprKind::Index {
-            object: Box::new(expression(object, typed)),
-            index: Box::new(expression(index, typed)),
+            object: Box::new(expression(object, cx)),
+            index: Box::new(expression(index, cx)),
         },
         ast::ExprKind::Slice { object, start, end } => h::ExprKind::Slice {
-            object: Box::new(expression(object, typed)),
-            start: Box::new(expression(start, typed)),
-            end: Box::new(expression(end, typed)),
+            object: Box::new(expression(object, cx)),
+            start: Box::new(expression(start, cx)),
+            end: Box::new(expression(end, cx)),
         },
         ast::ExprKind::Weak(value) => {
-            h::ExprKind::Weak(value.as_ref().map(|v| Box::new(expression(v, typed))))
+            h::ExprKind::Weak(value.as_ref().map(|v| Box::new(expression(v, cx))))
         }
-        ast::ExprKind::Try(inner) => h::ExprKind::Try(Box::new(expression(inner, typed))),
+        ast::ExprKind::Try(inner) => h::ExprKind::Try(Box::new(expression(inner, cx))),
         ast::ExprKind::Interpolation(parts) => h::ExprKind::Interpolation(
             parts
                 .iter()
                 .map(|part| match part {
                     ast::InterpolationPart::Text(text) => h::InterpolationPart::Text(text.clone()),
                     ast::InterpolationPart::Value(value) => {
-                        h::InterpolationPart::Value(expression(value, typed))
+                        h::InterpolationPart::Value(expression(value, cx))
                     }
                 })
                 .collect(),
         ),
         ast::ExprKind::StructLiteral { fields, .. } | ast::ExprKind::New { fields, .. } => {
-            let Some(Type::Struct(id)) = typed.expression_type(source.span) else {
+            let Some(Type::Struct(id)) = cx.ty(source.span) else {
                 unreachable!("internal compiler bug: unchecked struct literal")
             };
             let values = fields
                 .iter()
                 .map(|field| {
-                    let index = typed.structs[id.0]
+                    let index = cx.typed.structs[id.0]
                         .fields
                         .iter()
                         .position(|f| f.name == field.name.text)
                         .expect("checked field");
-                    (index, expression(&field.value, typed))
+                    (index, expression(&field.value, cx))
                 })
                 .collect();
             h::ExprKind::StructLiteral { id, fields: values }
         }
         ast::ExprKind::Member { object, member } => {
-            if let ast::ExprKind::Identifier(enum_ident) = &object.kind
-                && let Some(&enum_id) = typed.enum_names.get(&enum_ident.text)
-            {
-                let variant_index = typed.enums[enum_id.0]
+            if let Some(enum_id) = cx.enum_prefix(object) {
+                let variant_index = cx.typed.enums[enum_id.0]
                     .find_variant(&member.text)
                     .expect("checked variant");
                 h::ExprKind::EnumVariant {
@@ -317,16 +357,16 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
                     payload: None,
                 }
             } else {
-                let Some(Type::Struct(id)) = typed.expression_type(object.span) else {
+                let Some(Type::Struct(id)) = cx.ty(object.span) else {
                     unreachable!("internal compiler bug: unchecked field access")
                 };
-                let index = typed.structs[id.0]
+                let index = cx.typed.structs[id.0]
                     .fields
                     .iter()
                     .position(|field| field.name == member.text)
                     .expect("internal compiler bug: checked access to a missing field");
                 h::ExprKind::Field {
-                    object: Box::new(expression(object, typed)),
+                    object: Box::new(expression(object, cx)),
                     index,
                 }
             }
@@ -339,14 +379,14 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
             ast::Literal::Char(_) => unreachable!("internal compiler bug: checked char literal"),
         },
         ast::ExprKind::Identifier(name) => {
-            let id = typed.resolution.references[&name.span.start];
-            if typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::None) {
+            let id = cx.reference(name.span);
+            if cx.typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::None) {
                 h::ExprKind::None
             } else {
                 h::ExprKind::Local(id)
             }
         }
-        ast::ExprKind::Group(inner) => expression(inner, typed).kind,
+        ast::ExprKind::Group(inner) => expression(inner, cx).kind,
         ast::ExprKind::Unary {
             op,
             operand,
@@ -354,8 +394,8 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
         } => {
             // A signed type's most negative value has no positive literal, so
             // the minus and its operand fold into one constant at every width.
-            let minimum = typed
-                .expression_type(source.span)
+            let minimum = cx
+                .ty(source.span)
                 .and_then(Type::int_type)
                 .filter(|kind| *op == ast::UnaryOp::Negative && kind.signed())
                 .filter(|kind| {
@@ -375,7 +415,7 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
                         ast::UnaryOp::Not => h::UnaryOp::Not,
                     },
                     op_span: *op_span,
-                    operand: Box::new(expression(operand, typed)),
+                    operand: Box::new(expression(operand, cx)),
                 }
             }
         }
@@ -385,10 +425,10 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
             right,
             op_span,
         } => h::ExprKind::Binary {
-            left: Box::new(expression(left, typed)),
+            left: Box::new(expression(left, cx)),
             op: binary(*op),
             op_span: *op_span,
-            right: Box::new(expression(right, typed)),
+            right: Box::new(expression(right, cx)),
         },
         ast::ExprKind::Assignment {
             target,
@@ -396,7 +436,7 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
             value,
             op_span,
         } => h::ExprKind::Assignment {
-            target: place(target, typed),
+            target: place(target, cx),
             op: match op {
                 ast::AssignmentOp::Assign => h::AssignmentOp::Assign,
                 ast::AssignmentOp::Add => h::AssignmentOp::Add,
@@ -405,27 +445,25 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
                 ast::AssignmentOp::Divide => h::AssignmentOp::Divide,
             },
             op_span: *op_span,
-            value: Box::new(expression(value, typed)),
+            value: Box::new(expression(value, cx)),
         },
         ast::ExprKind::Call { callee, arguments } => {
             if let ast::ExprKind::Member { object, member } = &strip_groups(callee).kind {
-                if let ast::ExprKind::Identifier(enum_ident) = &object.kind
-                    && let Some(&enum_id) = typed.enum_names.get(&enum_ident.text)
-                {
-                    let variant_index = typed.enums[enum_id.0]
+                if let Some(enum_id) = cx.enum_prefix(object) {
+                    let variant_index = cx.typed.enums[enum_id.0]
                         .find_variant(&member.text)
                         .expect("checked enum variant");
-                    let payload = Some(Box::new(expression(&arguments[0], typed)));
+                    let payload = Some(Box::new(expression(&arguments[0], cx)));
                     return wrap_expression(
                         h::ExprKind::EnumVariant {
                             variant_index,
                             payload,
                         },
                         source,
-                        typed,
+                        cx,
                     );
                 }
-                let object_type = typed.expression_type(object.span);
+                let object_type = cx.ty(object.span);
                 let array_method = match (object_type, member.text.as_str()) {
                     (Some(Type::Array(_)), "push") => Some(h::ArrayMethod::Push),
                     (Some(Type::Array(_)), "insert") => Some(h::ArrayMethod::Insert),
@@ -436,99 +474,119 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
                 if let Some(method) = array_method {
                     return h::Expr {
                         kind: h::ExprKind::ArrayCall {
-                            object: Box::new(expression(object, typed)),
+                            object: Box::new(expression(object, cx)),
                             method,
-                            arguments: arguments.iter().map(|arg| expression(arg, typed)).collect(),
+                            arguments: arguments.iter().map(|arg| expression(arg, cx)).collect(),
                         },
-                        ty: typed.expressions[&(source.span.start, source.span.end)],
+                        ty: cx.ty(source.span).expect("checked expression"),
                         span: source.span,
                     };
                 }
                 let special = match (object_type, member.text.as_str()) {
-                    (Some(Type::Weak(_)), "upgrade") => Some(h::ExprKind::WeakUpgrade(Box::new(
-                        expression(object, typed),
-                    ))),
+                    (Some(Type::Weak(_)), "upgrade") => {
+                        Some(h::ExprKind::WeakUpgrade(Box::new(expression(object, cx))))
+                    }
                     (Some(Type::Option(_)), "is_some") => {
-                        Some(h::ExprKind::IsSome(Box::new(expression(object, typed))))
+                        Some(h::ExprKind::IsSome(Box::new(expression(object, cx))))
                     }
                     (Some(Type::Option(_)), "is_none") => {
-                        Some(h::ExprKind::IsNone(Box::new(expression(object, typed))))
+                        Some(h::ExprKind::IsNone(Box::new(expression(object, cx))))
                     }
                     (Some(Type::Result(_)), "is_ok") => {
-                        Some(h::ExprKind::IsOk(Box::new(expression(object, typed))))
+                        Some(h::ExprKind::IsOk(Box::new(expression(object, cx))))
                     }
                     (Some(Type::Result(_)), "is_err") => {
-                        Some(h::ExprKind::IsErr(Box::new(expression(object, typed))))
+                        Some(h::ExprKind::IsErr(Box::new(expression(object, cx))))
                     }
                     (Some(Type::Array(_)), "len") => {
-                        Some(h::ExprKind::ArrayLen(Box::new(expression(object, typed))))
+                        Some(h::ExprKind::ArrayLen(Box::new(expression(object, cx))))
                     }
                     (Some(Type::String), "len") => {
-                        Some(h::ExprKind::StringLen(Box::new(expression(object, typed))))
+                        Some(h::ExprKind::StringLen(Box::new(expression(object, cx))))
                     }
-                    (Some(Type::String), "bytes") => Some(h::ExprKind::StringBytes(Box::new(
-                        expression(object, typed),
-                    ))),
+                    (Some(Type::String), "bytes") => {
+                        Some(h::ExprKind::StringBytes(Box::new(expression(object, cx))))
+                    }
                     (Some(Type::Weak(_)), "alive") => {
-                        Some(h::ExprKind::WeakAlive(Box::new(expression(object, typed))))
+                        Some(h::ExprKind::WeakAlive(Box::new(expression(object, cx))))
                     }
                     (Some(Type::Weak(_)), "get") => {
-                        Some(h::ExprKind::WeakGet(Box::new(expression(object, typed))))
+                        Some(h::ExprKind::WeakGet(Box::new(expression(object, cx))))
                     }
                     _ => None,
                 };
                 if let Some(kind) = special {
                     return h::Expr {
                         kind,
-                        ty: typed.expressions[&(source.span.start, source.span.end)],
+                        ty: cx.ty(source.span).expect("checked expression"),
                         span: source.span,
                     };
                 }
-                let Some(Type::Struct(id)) = typed.expression_type(object.span) else {
+                // A module-qualified call: the resolver bound the right half
+                // to the exported function, so this lowers as a direct call
+                // and the qualifier itself produces no code.
+                if let ast::ExprKind::Identifier(qualifier) = &object.kind
+                    && cx
+                        .typed
+                        .resolution
+                        .module_in_file(cx.file, &qualifier.text)
+                        .is_some()
+                {
+                    return h::Expr {
+                        kind: h::ExprKind::Call {
+                            target: h::CallTarget::Function(cx.reference(member.span)),
+                            arguments: arguments.iter().map(|e| expression(e, cx)).collect(),
+                        },
+                        ty: cx.ty(source.span).expect("checked expression"),
+                        span: source.span,
+                    };
+                }
+                let Some(Type::Struct(id)) = cx.ty(object.span) else {
                     unreachable!("internal compiler bug: unchecked method call")
                 };
-                let method = typed.structs[id.0]
+                let method = cx.typed.structs[id.0]
                     .methods
                     .iter()
                     .find(|method| method.name == member.text)
                     .expect("internal compiler bug: checked call to a missing method");
                 // The receiver is an ordinary leading argument, copied like any
                 // other value-typed argument.
-                let mut values = vec![expression(object, typed)];
-                values.extend(arguments.iter().map(|e| expression(e, typed)));
+                let mut values = vec![expression(object, cx)];
+                values.extend(arguments.iter().map(|e| expression(e, cx)));
                 return h::Expr {
                     kind: h::ExprKind::Call {
                         target: h::CallTarget::Function(method.id),
                         arguments: values,
                     },
-                    ty: typed.expressions[&(source.span.start, source.span.end)],
+                    ty: cx.ty(source.span).expect("checked expression"),
                     span: source.span,
                 };
             }
             let ast::ExprKind::Identifier(name) = &strip_groups(callee).kind else {
                 unreachable!("internal compiler bug: indirect checked call")
             };
-            let id = typed.resolution.references[&name.span.start];
-            if typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::BytesToString) {
+            let id = cx.reference(name.span);
+            if cx.typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::BytesToString)
+            {
                 return h::Expr {
-                    kind: h::ExprKind::BytesToString(Box::new(expression(&arguments[0], typed))),
-                    ty: typed.expressions[&(source.span.start, source.span.end)],
+                    kind: h::ExprKind::BytesToString(Box::new(expression(&arguments[0], cx))),
+                    ty: cx.ty(source.span).expect("checked expression"),
                     span: source.span,
                 };
             }
             if let SymbolKind::Builtin(Builtin::IntConvert(target)) =
-                typed.resolution.symbols[id.0].kind
+                cx.typed.resolution.symbols[id.0].kind
             {
                 return h::Expr {
                     kind: h::ExprKind::IntConvert {
-                        value: Box::new(expression(&arguments[0], typed)),
+                        value: Box::new(expression(&arguments[0], cx)),
                         target,
                     },
-                    ty: typed.expressions[&(source.span.start, source.span.end)],
+                    ty: cx.ty(source.span).expect("checked expression"),
                     span: source.span,
                 };
             }
-            let constructor = match typed.resolution.symbols[id.0].kind {
+            let constructor = match cx.typed.resolution.symbols[id.0].kind {
                 SymbolKind::Builtin(Builtin::Some) => Some(h::ExprKind::Some as fn(_) -> _),
                 SymbolKind::Builtin(Builtin::Ok) => Some(h::ExprKind::Ok as fn(_) -> _),
                 SymbolKind::Builtin(Builtin::Err) => Some(h::ExprKind::Err as fn(_) -> _),
@@ -536,21 +594,21 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
             };
             if let Some(constructor) = constructor {
                 return h::Expr {
-                    kind: constructor(Box::new(expression(&arguments[0], typed))),
-                    ty: typed.expressions[&(source.span.start, source.span.end)],
+                    kind: constructor(Box::new(expression(&arguments[0], cx))),
+                    ty: cx.ty(source.span).expect("checked expression"),
                     span: source.span,
                 };
             }
-            if typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::Ptr) {
+            if cx.typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::Ptr) {
                 return h::Expr {
-                    kind: h::ExprKind::Ptr(Box::new(expression(&arguments[0], typed))),
-                    ty: typed.expressions[&(source.span.start, source.span.end)],
+                    kind: h::ExprKind::Ptr(Box::new(expression(&arguments[0], cx))),
+                    ty: cx.ty(source.span).expect("checked expression"),
                     span: source.span,
                 };
             }
-            let target = match typed.resolution.symbols[id.0].kind {
+            let target = match cx.typed.resolution.symbols[id.0].kind {
                 SymbolKind::Builtin(Builtin::Print) => h::CallTarget::Print,
-                SymbolKind::Function if typed.externs.contains_key(&id) => {
+                SymbolKind::Function if cx.typed.externs.contains_key(&id) => {
                     h::CallTarget::Extern(id)
                 }
                 SymbolKind::Function => h::CallTarget::Function(id),
@@ -558,21 +616,22 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
             };
             h::ExprKind::Call {
                 target,
-                arguments: arguments.iter().map(|e| expression(e, typed)).collect(),
+                arguments: arguments.iter().map(|e| expression(e, cx)).collect(),
             }
         }
     };
-    wrap_expression(kind, source, typed)
+    wrap_expression(kind, source, cx)
 }
-fn wrap_expression(kind: h::ExprKind, source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
+fn wrap_expression(kind: h::ExprKind, source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
     let lowered = h::Expr {
         kind,
-        ty: typed.expressions[&(source.span.start, source.span.end)],
+        ty: cx.ty(source.span).expect("checked expression"),
         span: source.span,
     };
-    if let Some(target_type) = typed
-        .implicit_wraps
-        .get(&(source.span.start, source.span.end))
+    if let Some(target_type) =
+        cx.typed
+            .implicit_wraps
+            .get(&(cx.file, source.span.start, source.span.end))
     {
         h::Expr {
             kind: h::ExprKind::Some(Box::new(lowered)),

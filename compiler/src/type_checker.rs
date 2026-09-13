@@ -2,6 +2,7 @@
 use crate::{
     ast::*,
     diagnostic::{Diagnostic, DiagnosticCode},
+    module::{Errors, FileDiagnostic, FileId, LoadedProgram, ModuleId, ROOT},
     resolver::{Builtin, Resolution, SymbolId, SymbolKind},
     span::Span,
     types::{
@@ -10,6 +11,9 @@ use crate::{
     },
 };
 use std::collections::BTreeMap;
+
+/// The entry file, which is the only file of the root module today.
+const ROOT_FILE: FileId = FileId(0);
 
 #[derive(Debug, Clone)]
 pub struct ExternInfo {
@@ -27,9 +31,9 @@ pub struct Signature {
 /// stay together; HIR lowering consumes them without repeating name lookup.
 #[derive(Debug)]
 pub struct TypedProgram {
-    pub(crate) syntax: Program,
+    pub(crate) program: LoadedProgram,
     pub(crate) resolution: Resolution,
-    pub(crate) expressions: BTreeMap<(usize, usize), Type>,
+    pub(crate) expressions: BTreeMap<(FileId, usize, usize), Type>,
     pub(crate) symbol_types: Vec<Type>,
     pub(crate) signatures: BTreeMap<SymbolId, Signature>,
     /// Foreign functions, which have a signature but no body. The C name is the
@@ -38,11 +42,12 @@ pub struct TypedProgram {
     pub(crate) entry: SymbolId,
     pub(crate) structs: Vec<StructInfo>,
     pub(crate) enums: Vec<EnumInfo>,
-    pub(crate) enum_names: BTreeMap<String, EnumId>,
+    /// Enum names by module, since two modules may each declare a `Tag`.
+    pub(crate) enum_names: Vec<BTreeMap<String, EnumId>>,
     pub(crate) arrays: Vec<ArrayInfo>,
     pub(crate) options: Vec<OptionInfo>,
     pub(crate) results: Vec<ResultInfo>,
-    pub(crate) implicit_wraps: BTreeMap<(usize, usize), Type>,
+    pub(crate) implicit_wraps: BTreeMap<(FileId, usize, usize), Type>,
 }
 impl TypedProgram {
     pub fn enums(&self) -> &[EnumInfo] {
@@ -57,26 +62,33 @@ impl TypedProgram {
     pub fn arrays(&self) -> &[ArrayInfo] {
         &self.arrays
     }
-    pub fn syntax(&self) -> &Program {
-        &self.syntax
+    pub fn program(&self) -> &LoadedProgram {
+        &self.program
     }
     pub fn resolution(&self) -> &Resolution {
         &self.resolution
     }
+    pub fn expression_type_in(&self, file: FileId, span: Span) -> Option<Type> {
+        self.expressions.get(&(file, span.start, span.end)).copied()
+    }
+    /// The entry file's expression types. Every caller that walks a whole
+    /// program uses `expression_type_in`; this is for single-file callers.
     pub fn expression_type(&self, span: Span) -> Option<Type> {
-        self.expressions.get(&(span.start, span.end)).copied()
+        self.expression_type_in(ROOT_FILE, span)
     }
 }
 
 /// The resolution must belong to this exact parser AST. All source-facing
 /// callers should use `check`, which enforces phase ordering and ownership.
 pub(crate) fn type_check(
-    syntax: Program,
+    program: LoadedProgram,
     resolution: Resolution,
-) -> Result<TypedProgram, Vec<Diagnostic>> {
+) -> Result<TypedProgram, Errors> {
     let mut checker = Checker {
         symbol_types: vec![Type::Error; resolution.symbols.len()],
         resolution: &resolution,
+        file: ROOT_FILE,
+        module: ROOT,
         expressions: BTreeMap::new(),
         signatures: BTreeMap::new(),
         externs: BTreeMap::new(),
@@ -84,9 +96,8 @@ pub(crate) fn type_check(
         return_type: Type::Void,
         loops: Vec::new(),
         structs: Vec::new(),
-        struct_names: BTreeMap::new(),
         enums: Vec::new(),
-        enum_names: BTreeMap::new(),
+        module_types: vec![ModuleTypes::default(); program.modules.len()],
         arrays: Vec::new(),
         options: Vec::new(),
         option_types: BTreeMap::new(),
@@ -96,69 +107,49 @@ pub(crate) fn type_check(
         expected_context: None,
         implicit_wraps: BTreeMap::new(),
     };
-    for declaration in &syntax.enums {
-        let id = EnumId(checker.enums.len());
-        if matches!(declaration.name.text.as_str(), "Option" | "Result") {
-            checker.error(
-                DiagnosticCode::DuplicateDeclaration,
-                declaration.name.span,
-                format!(
-                    "`{}` is a builtin type and cannot be redeclared",
-                    declaration.name.text
-                ),
-            );
+    // Where each type was declared, aligned with the ids handed out below, so
+    // that a later pass finds its syntax without searching for it.
+    let mut enum_sites: Vec<(FileId, usize)> = Vec::new();
+    let mut struct_sites: Vec<(FileId, usize)> = Vec::new();
+    for (index, file) in program.files.iter().enumerate() {
+        checker.file = FileId(index);
+        checker.module = file.module;
+        for (position, declaration) in file.program.enums.iter().enumerate() {
+            let id = EnumId(checker.enums.len());
+            checker.declare_type(&declaration.name, TypeEntry::Enum(id));
+            checker.enums.push(EnumInfo {
+                name: declaration.name.text.clone(),
+                module: file.module,
+                visibility: declaration.visibility,
+                variants: Vec::new(),
+            });
+            enum_sites.push((FileId(index), position));
         }
-        if checker
-            .enum_names
-            .insert(declaration.name.text.clone(), id)
-            .is_some()
-        {
-            checker.error(
-                DiagnosticCode::DuplicateDeclaration,
-                declaration.name.span,
-                format!("type `{}` is already declared", declaration.name.text),
-            );
-        }
-        checker.enums.push(EnumInfo {
-            name: declaration.name.text.clone(),
-            variants: Vec::new(),
-        });
     }
     // Structs are collected before signatures so functions may use them, and
     // before field types so a struct can refer to one declared later.
-    for declaration in &syntax.structs {
-        let id = StructId(checker.structs.len());
-        if matches!(declaration.name.text.as_str(), "Option" | "Result") {
-            checker.error(
-                DiagnosticCode::DuplicateDeclaration,
-                declaration.name.span,
-                format!(
-                    "`{}` is a builtin type and cannot be redeclared",
-                    declaration.name.text
-                ),
-            );
+    for (index, file) in program.files.iter().enumerate() {
+        checker.file = FileId(index);
+        checker.module = file.module;
+        for (position, declaration) in file.program.structs.iter().enumerate() {
+            let id = StructId(checker.structs.len());
+            checker.declare_type(&declaration.name, TypeEntry::Struct(id));
+            checker.structs.push(StructInfo {
+                name: declaration.name.text.clone(),
+                module: file.module,
+                visibility: declaration.visibility,
+                reference: declaration.kind == TypeDeclKind::Reference,
+                fields: Vec::new(),
+                methods: Vec::new(),
+                span: declaration.span,
+            });
+            struct_sites.push((FileId(index), position));
         }
-        if checker.enum_names.contains_key(&declaration.name.text)
-            || checker
-                .struct_names
-                .insert(declaration.name.text.clone(), id)
-                .is_some()
-        {
-            checker.error(
-                DiagnosticCode::DuplicateDeclaration,
-                declaration.name.span,
-                format!("type `{}` is already declared", declaration.name.text),
-            );
-        }
-        checker.structs.push(StructInfo {
-            name: declaration.name.text.clone(),
-            reference: declaration.kind == TypeDeclKind::Reference,
-            fields: Vec::new(),
-            methods: Vec::new(),
-            span: declaration.span,
-        });
     }
-    for (index, declaration) in syntax.structs.iter().enumerate() {
+    for (index, &(file, position)) in struct_sites.iter().enumerate() {
+        checker.file = file;
+        checker.module = program.files[file.0].module;
+        let declaration = &program.files[file.0].program.structs[position];
         let mut fields: Vec<FieldInfo> = Vec::new();
         for field in &declaration.fields {
             let ty = checker.type_ref(&field.type_ref, false);
@@ -187,7 +178,7 @@ pub(crate) fn type_check(
     // A value type has no indirection, so containing itself — directly or
     // through other value types — would have no size. A class field is a
     // reference, which breaks any such chain.
-    for index in 0..checker.structs.len() {
+    for (index, &(site_file, site_position)) in struct_sites.iter().enumerate() {
         if checker.structs[index].reference {
             continue;
         }
@@ -196,7 +187,8 @@ pub(crate) fn type_check(
             StructId(index),
             &mut vec![false; checker.structs.len()],
         ) {
-            let declaration = &syntax.structs[index];
+            checker.file = site_file;
+            let declaration = &program.files[site_file.0].program.structs[site_position];
             checker.error(
                 DiagnosticCode::InvalidValueType,
                 declaration.name.span,
@@ -207,7 +199,10 @@ pub(crate) fn type_check(
             );
         }
     }
-    for (index, declaration) in syntax.enums.iter().enumerate() {
+    for (index, &(file, position)) in enum_sites.iter().enumerate() {
+        checker.file = file;
+        checker.module = program.files[file.0].module;
+        let declaration = &program.files[file.0].program.enums[position];
         let mut variants: Vec<VariantInfo> = Vec::new();
         for variant in &declaration.variants {
             let payload = variant
@@ -232,13 +227,14 @@ pub(crate) fn type_check(
         }
         checker.enums[index].variants = variants;
     }
-    for index in 0..checker.enums.len() {
+    for (index, &(site_file, site_position)) in enum_sites.iter().enumerate() {
         if checker.enum_contains_by_value(
             EnumId(index),
             EnumId(index),
             &mut vec![false; checker.enums.len()],
         ) {
-            let declaration = &syntax.enums[index];
+            checker.file = site_file;
+            let declaration = &program.files[site_file.0].program.enums[site_position];
             checker.error(
                 DiagnosticCode::InvalidValueType,
                 declaration.name.span,
@@ -251,7 +247,10 @@ pub(crate) fn type_check(
     }
     // Method signatures come after fields so a method can use any field type,
     // and after every struct exists so signatures may mention other structs.
-    for (index, declaration) in syntax.structs.iter().enumerate() {
+    for (index, &(file, position)) in struct_sites.iter().enumerate() {
+        checker.file = file;
+        checker.module = program.files[file.0].module;
+        let declaration = &program.files[file.0].program.structs[position];
         let receiver = Type::Struct(StructId(index));
         let mut methods: Vec<MethodInfo> = Vec::new();
         for method in &declaration.methods {
@@ -305,7 +304,7 @@ pub(crate) fn type_check(
             let this = checker
                 .resolution
                 .declarations
-                .get(&method.body.span.start)
+                .get(&(checker.file, method.body.span.start))
                 .copied()
                 .expect("internal compiler bug: method body has no receiver symbol");
             checker.symbol_types[this.0] = receiver;
@@ -318,27 +317,30 @@ pub(crate) fn type_check(
     }
     // Foreign signatures come first: an ordinary function may call one, and
     // nothing about them depends on the rest of the program.
-    for block in &syntax.externs {
-        for function in &block.functions {
-            let id = checker.declaration(&function.name);
-            let mut parameters = Vec::new();
-            for parameter in &function.parameters {
-                let ty = checker.type_ref(&parameter.type_ref, false);
-                checker.foreign_type(ty, parameter.type_ref.span(), false);
-                parameters.push(ty);
-            }
-            let return_type = match &function.return_type {
-                Some(reference) => {
-                    let ty = checker.type_ref(reference, true);
-                    checker.foreign_type(ty, reference.span(), true);
-                    ty
+    for (index, file) in program.files.iter().enumerate() {
+        checker.file = FileId(index);
+        checker.module = file.module;
+        for block in &file.program.externs {
+            for function in &block.functions {
+                let id = checker.declaration(&function.name);
+                let mut parameters = Vec::new();
+                for parameter in &function.parameters {
+                    let ty = checker.type_ref(&parameter.type_ref, false);
+                    checker.foreign_type(ty, parameter.type_ref.span(), false);
+                    parameters.push(ty);
                 }
-                None => Type::Void,
-            };
-            // The declared name is the linker name, so it must not collide with
-            // what the backend emits for the program itself.
-            if function.name.text == "main" || function.name.text.starts_with("skuld_") {
-                checker.error(
+                let return_type = match &function.return_type {
+                    Some(reference) => {
+                        let ty = checker.type_ref(reference, true);
+                        checker.foreign_type(ty, reference.span(), true);
+                        ty
+                    }
+                    None => Type::Void,
+                };
+                // The declared name is the linker name, so it must not collide with
+                // what the backend emits for the program itself.
+                if function.name.text == "main" || function.name.text.starts_with("skuld_") {
+                    checker.error(
                     DiagnosticCode::InvalidValueType,
                     function.name.span,
                     format!(
@@ -346,14 +348,41 @@ pub(crate) fn type_check(
                         function.name.text
                     ),
                 );
+                }
+                checker.externs.insert(
+                    id,
+                    ExternInfo {
+                        name: function.name.text.clone(),
+                        span: function.span,
+                    },
+                );
+                checker.signatures.insert(
+                    id,
+                    Signature {
+                        parameters,
+                        return_type,
+                    },
+                );
             }
-            checker.externs.insert(
-                id,
-                ExternInfo {
-                    name: function.name.text.clone(),
-                    span: function.span,
-                },
-            );
+        }
+    }
+    for (index, file) in program.files.iter().enumerate() {
+        checker.file = FileId(index);
+        checker.module = file.module;
+        for function in &file.program.functions {
+            let id = checker.declaration(&function.name);
+            let mut parameters = Vec::new();
+            for parameter in &function.parameters {
+                let ty = checker.type_ref(&parameter.type_ref, false);
+                parameters.push(ty);
+                let param_id = checker.declaration(&parameter.name);
+                checker.symbol_types[param_id.0] = ty;
+            }
+            let return_type = function
+                .return_type
+                .as_ref()
+                .map(|r| checker.type_ref(r, true))
+                .unwrap_or(Type::Void);
             checker.signatures.insert(
                 id,
                 Signature {
@@ -363,40 +392,19 @@ pub(crate) fn type_check(
             );
         }
     }
-    for function in &syntax.functions {
-        let id = checker.declaration(&function.name);
-        let mut parameters = Vec::new();
-        for parameter in &function.parameters {
-            let ty = checker.type_ref(&parameter.type_ref, false);
-            parameters.push(ty);
-            let param_id = checker.declaration(&parameter.name);
-            checker.symbol_types[param_id.0] = ty;
-        }
-        let return_type = function
-            .return_type
-            .as_ref()
-            .map(|r| checker.type_ref(r, true))
-            .unwrap_or(Type::Void);
-        checker.signatures.insert(
-            id,
-            Signature {
-                parameters,
-                return_type,
-            },
-        );
-    }
-    let entry = syntax
+    // The entrypoint belongs to the entry file. A module is a library, so a
+    // `main` in one is an ordinary function that nothing calls.
+    checker.file = ROOT_FILE;
+    checker.module = ROOT;
+    let entry_main = program.files[ROOT_FILE.0]
+        .program
         .functions
         .iter()
-        .find(|f| f.name.text == "main")
-        .map(|f| checker.declaration(&f.name));
+        .find(|f| f.name.text == "main");
+    let entry = entry_main.map(|f| checker.declaration(&f.name));
     match entry {
         Some(id) if !checker.signatures[&id].parameters.is_empty() => {
-            let function = syntax
-                .functions
-                .iter()
-                .find(|f| f.name.text == "main")
-                .unwrap();
+            let function = entry_main.expect("entry exists");
             checker.error(
                 DiagnosticCode::InvalidEntrypoint,
                 function.name.span,
@@ -404,11 +412,7 @@ pub(crate) fn type_check(
             );
         }
         Some(id) if checker.signatures[&id].return_type != Type::Void => {
-            let function = syntax
-                .functions
-                .iter()
-                .find(|f| f.name.text == "main")
-                .unwrap();
+            let function = entry_main.expect("entry exists");
             checker.error(
                 DiagnosticCode::InvalidEntrypoint,
                 function.name.span,
@@ -422,32 +426,41 @@ pub(crate) fn type_check(
             "missing entrypoint `func main()`",
         ),
     }
-    for function in syntax
-        .structs
-        .iter()
-        .flat_map(|declaration| declaration.methods.iter())
-        .chain(syntax.functions.iter())
-    {
-        checker.return_type = checker.signatures[&checker.declaration(&function.name)].return_type;
-        let returns = checker.block(&function.body);
-        if checker.return_type != Type::Void && checker.return_type != Type::Error && !returns {
-            checker.error(
-                DiagnosticCode::MissingReturn,
-                function.name.span,
-                format!(
-                    "function `{}` must return `{}` on every path",
-                    function.name.text, checker.return_type
-                ),
-            );
+    for (index, file) in program.files.iter().enumerate() {
+        checker.file = FileId(index);
+        checker.module = file.module;
+        for function in file
+            .program
+            .structs
+            .iter()
+            .flat_map(|declaration| declaration.methods.iter())
+            .chain(file.program.functions.iter())
+        {
+            checker.return_type =
+                checker.signatures[&checker.declaration(&function.name)].return_type;
+            let returns = checker.block(&function.body);
+            if checker.return_type != Type::Void && checker.return_type != Type::Error && !returns {
+                checker.error(
+                    DiagnosticCode::MissingReturn,
+                    function.name.span,
+                    format!(
+                        "function `{}` must return `{}` on every path",
+                        function.name.text, checker.return_type
+                    ),
+                );
+            }
         }
     }
     if !checker.diagnostics.is_empty() {
-        return Err(checker.diagnostics);
+        return Err(Errors {
+            sources: program.sources(),
+            diagnostics: checker.diagnostics,
+        });
     }
     let Checker {
         structs,
         enums,
-        enum_names,
+        module_types,
         arrays,
         options,
         results,
@@ -460,8 +473,9 @@ pub(crate) fn type_check(
     } = checker;
     // A missing entry always produces a diagnostic above.
     let entry = entry.expect("internal compiler bug: checked program has no entrypoint");
+    let enum_names = module_types.into_iter().map(|types| types.enums).collect();
     Ok(TypedProgram {
-        syntax,
+        program,
         resolution,
         structs,
         enums,
@@ -480,21 +494,26 @@ pub(crate) fn type_check(
 
 struct Checker<'a> {
     resolution: &'a Resolution,
+    /// The file being checked, and the module it belongs to. Both are part of
+    /// every table key, since byte offsets repeat across files and type names
+    /// repeat across modules.
+    file: FileId,
+    module: ModuleId,
     symbol_types: Vec<Type>,
-    expressions: BTreeMap<(usize, usize), Type>,
+    expressions: BTreeMap<(FileId, usize, usize), Type>,
     signatures: BTreeMap<SymbolId, Signature>,
     externs: BTreeMap<SymbolId, ExternInfo>,
-    diagnostics: Vec<Diagnostic>,
+    diagnostics: Vec<FileDiagnostic>,
     return_type: Type,
     /// One frame per enclosing loop, recording whether a `break` can exit it.
     /// Empty means a jump has no loop to bind to.
     loops: Vec<bool>,
     /// Declared structs in declaration order; `Type::Struct` indexes this.
     structs: Vec<StructInfo>,
-    /// Struct name to table index, for resolving type names and constructions.
-    struct_names: BTreeMap<String, StructId>,
     enums: Vec<EnumInfo>,
-    enum_names: BTreeMap<String, EnumId>,
+    /// Type names by module. A type is reached unqualified from its own
+    /// module, or qualified and public from another.
+    module_types: Vec<ModuleTypes>,
     /// Interned array types; `Type::Array` indexes this.
     arrays: Vec<ArrayInfo>,
     options: Vec<OptionInfo>,
@@ -504,12 +523,28 @@ struct Checker<'a> {
     result_types: BTreeMap<(Type, Type), ResultId>,
     array_types: BTreeMap<Type, ArrayId>,
     expected_context: Option<Type>,
-    implicit_wraps: BTreeMap<(usize, usize), Type>,
+    implicit_wraps: BTreeMap<(FileId, usize, usize), Type>,
+}
+
+/// One module's type namespace, which is separate from its value scope: a
+/// struct and a function may share a name, as they already could.
+#[derive(Debug, Default, Clone)]
+struct ModuleTypes {
+    structs: BTreeMap<String, StructId>,
+    enums: BTreeMap<String, EnumId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TypeEntry {
+    Struct(StructId),
+    Enum(EnumId),
 }
 
 #[derive(Debug, Clone)]
 pub struct StructInfo {
     pub name: String,
+    pub module: ModuleId,
+    pub visibility: Visibility,
     /// A class is a reference to a shared object; a struct is a value.
     pub reference: bool,
     /// Field order is declaration order, which the backend layout follows.
@@ -542,18 +577,149 @@ impl StructInfo {
 }
 impl Checker<'_> {
     fn declaration(&self, name: &Name) -> SymbolId {
-        self.resolution.declarations[&name.span.start]
+        self.resolution.declarations[&(self.file, name.span.start)]
     }
     fn reference(&self, name: &Name) -> SymbolId {
-        self.resolution.references[&name.span.start]
+        self.resolution.references[&(self.file, name.span.start)]
     }
     fn error(&mut self, code: DiagnosticCode, span: Span, message: impl Into<String>) {
-        self.diagnostics.push(Diagnostic {
-            code,
-            message: message.into(),
-            span,
-            help: None,
+        self.diagnostics.push(FileDiagnostic {
+            file: self.file,
+            diagnostic: Diagnostic {
+                code,
+                message: message.into(),
+                span,
+                help: None,
+            },
         });
+    }
+    /// Record a type in the current module's namespace. Types live apart from
+    /// value names, so a struct and a function may still share a spelling.
+    fn declare_type(&mut self, name: &Name, entry: TypeEntry) {
+        if matches!(name.text.as_str(), "Option" | "Result") {
+            self.error(
+                DiagnosticCode::DuplicateDeclaration,
+                name.span,
+                format!("`{}` is a builtin type and cannot be redeclared", name.text),
+            );
+        }
+        let types = &self.module_types[self.module.0];
+        if types.structs.contains_key(&name.text) || types.enums.contains_key(&name.text) {
+            self.error(
+                DiagnosticCode::DuplicateDeclaration,
+                name.span,
+                format!("type `{}` is already declared", name.text),
+            );
+            return;
+        }
+        let types = &mut self.module_types[self.module.0];
+        match entry {
+            TypeEntry::Struct(id) => {
+                types.structs.insert(name.text.clone(), id);
+            }
+            TypeEntry::Enum(id) => {
+                types.enums.insert(name.text.clone(), id);
+            }
+        }
+    }
+    /// The module a type path names: the current one, or the one an import
+    /// qualifier binds in this file.
+    fn path_module(&mut self, path: &Path) -> Option<ModuleId> {
+        let Some(qualifier) = &path.module else {
+            return Some(self.module);
+        };
+        match self.resolution.module_in_file(self.file, &qualifier.text) {
+            Some(id) => Some(id),
+            None => {
+                self.error(
+                    DiagnosticCode::UnknownModule,
+                    qualifier.span,
+                    format!("no module `{}` is imported in this file", qualifier.text),
+                );
+                None
+            }
+        }
+    }
+    /// Resolve a type name, enforcing that a qualified one is exported. An
+    /// unqualified name never crosses a module boundary, so it needs no check.
+    fn lookup_type(&mut self, path: &Path, noun: &str) -> Option<TypeEntry> {
+        let module = self.path_module(path)?;
+        let types = &self.module_types[module.0];
+        let entry = types
+            .structs
+            .get(&path.name.text)
+            .copied()
+            .map(TypeEntry::Struct)
+            .or_else(|| {
+                types
+                    .enums
+                    .get(&path.name.text)
+                    .copied()
+                    .map(TypeEntry::Enum)
+            });
+        let Some(entry) = entry else {
+            self.error(
+                DiagnosticCode::UnknownType,
+                path.name.span,
+                match &path.module {
+                    Some(qualifier) => format!(
+                        "module `{}` declares no {noun} `{}`",
+                        qualifier.text, path.name.text
+                    ),
+                    None => format!("unknown or unsupported {noun} `{}`", path.name.text),
+                },
+            );
+            return None;
+        };
+        if path.module.is_some() {
+            let visibility = match entry {
+                TypeEntry::Struct(id) => self.structs[id.0].visibility,
+                TypeEntry::Enum(id) => self.enums[id.0].visibility,
+            };
+            if visibility != Visibility::Public {
+                self.error(
+                    DiagnosticCode::PrivateName,
+                    path.name.span,
+                    format!("type `{}` is private to its module", path.name.text),
+                );
+                return None;
+            }
+        }
+        Some(entry)
+    }
+    /// The enum named by the left of `Enum.Variant` or `module.Enum.Variant`.
+    fn enum_prefix(&mut self, object: &Expr) -> Option<EnumId> {
+        let path = match &object.kind {
+            ExprKind::Identifier(name) => Path::bare(name.clone()),
+            ExprKind::Member { object, member } => {
+                let ExprKind::Identifier(qualifier) = &object.kind else {
+                    return None;
+                };
+                // Only an import qualifier can precede an enum name here; a
+                // value of the same name is a member access, not a path.
+                self.resolution.module_in_file(self.file, &qualifier.text)?;
+                Path {
+                    module: Some(qualifier.clone()),
+                    name: member.clone(),
+                    span: object.span,
+                }
+            }
+            _ => return None,
+        };
+        let module = match &path.module {
+            None => self.module,
+            Some(qualifier) => self.resolution.module_in_file(self.file, &qualifier.text)?,
+        };
+        let id = self.module_types[module.0]
+            .enums
+            .get(&path.name.text)
+            .copied()?;
+        // A private enum reached through a qualifier is already reported by the
+        // resolver, which sees the same two names as a value path.
+        if path.module.is_some() && self.enums[id.0].visibility != Visibility::Public {
+            return None;
+        }
+        Some(id)
     }
     /// `Display` cannot reach the struct table, so every user-facing type name
     /// goes through here instead.
@@ -655,35 +821,33 @@ impl Checker<'_> {
                 }
             }
             TypeRef::Named(path) => {
-                let name = self.unqualified(path).clone();
+                let name = path.name.clone();
+                // A module exports no scalars, so only an unqualified name can
+                // be one of the builtin spellings.
+                let builtin = path.module.is_none();
                 let ty = match name.text.as_str() {
                     // `int` and `i64` are two spellings of one type, not two
                     // types with a conversion between them.
-                    "int" => Type::INT,
-                    other if IntType::ALL.iter().any(|k| k.suffix() == other) => Type::Int(
-                        *IntType::ALL
-                            .iter()
-                            .find(|k| k.suffix() == other)
-                            .expect("matched width"),
-                    ),
-                    "float" => Type::Float,
-                    "bool" => Type::Bool,
-                    "string" => Type::String,
-                    "void" => Type::Void,
-                    other if self.struct_names.contains_key(other) => {
-                        Type::Struct(self.struct_names[other])
+                    "int" if builtin => Type::INT,
+                    other if builtin && IntType::ALL.iter().any(|k| k.suffix() == other) => {
+                        Type::Int(
+                            *IntType::ALL
+                                .iter()
+                                .find(|k| k.suffix() == other)
+                                .expect("matched width"),
+                        )
                     }
-                    other if self.enum_names.contains_key(other) => {
-                        Type::Enum(self.enum_names[other])
-                    }
-                    _ => {
-                        self.error(
-                            DiagnosticCode::UnknownType,
-                            name.span,
-                            format!("unknown or unsupported type `{}`", name.text),
-                        );
-                        Type::Error
-                    }
+                    "float" if builtin => Type::Float,
+                    "bool" if builtin => Type::Bool,
+                    "string" if builtin => Type::String,
+                    "void" if builtin => Type::Void,
+                    _ => match self.lookup_type(path, "type") {
+                        Some(TypeEntry::Struct(id)) => Type::Struct(id),
+                        Some(TypeEntry::Enum(id)) => Type::Enum(id),
+                        // `lookup_type` reports whichever of unknown module,
+                        // unknown name or private name applies.
+                        None => Type::Error,
+                    },
                 };
                 if ty == Type::Void && !allow_void {
                     self.error(
@@ -744,7 +908,8 @@ impl Checker<'_> {
         if let Type::Option(id) = expected
             && self.options[id.0].element == found
         {
-            self.implicit_wraps.insert((span.start, span.end), expected);
+            self.implicit_wraps
+                .insert((self.file, span.start, span.end), expected);
             return true;
         }
         self.error(
@@ -924,6 +1089,10 @@ impl Checker<'_> {
                 }
                 // A `Result` matches like a two-variant enum, so the arm and
                 // exhaustiveness checking below is shared rather than repeated.
+                let target_enum = match target_ty {
+                    Type::Enum(enum_id) => Some(enum_id),
+                    _ => None,
+                };
                 let enum_info = match target_ty {
                     Type::Enum(enum_id) => self.enums[enum_id.0].clone(),
                     Type::Result(result_id) => result_as_enum(self.results[result_id.0]),
@@ -957,30 +1126,27 @@ impl Checker<'_> {
                             binding,
                             span: _,
                         } => {
-                            let enum_name = enum_name.as_ref().map(|path| {
-                                if let Some(module) = &path.module {
+                            // A qualified pattern names its enum through
+                            // the type namespace, so `a.Tag` and `b.Tag` are
+                            // told apart by identity rather than spelling.
+                            if let Some(path) = enum_name {
+                                let resolved = self.lookup_type(path, "enum");
+                                let mismatched = match (resolved, target_enum) {
+                                    (Some(TypeEntry::Enum(id)), Some(expected)) => id != expected,
+                                    // Unresolved names are already reported.
+                                    (None, _) => false,
+                                    _ => true,
+                                };
+                                if mismatched {
                                     self.error(
-                                        DiagnosticCode::UnsupportedFeature,
+                                        DiagnosticCode::TypeMismatch,
                                         path.span,
                                         format!(
-                                            "module-qualified names like `{}.{}` are not resolved yet",
-                                            module.text, path.name.text
+                                            "pattern belongs to enum `{}`, not `{}`",
+                                            path.name.text, enum_info.name
                                         ),
                                     );
                                 }
-                                path.name.clone()
-                            });
-                            if let Some(enum_name) = &enum_name
-                                && enum_name.text != enum_info.name
-                            {
-                                self.error(
-                                    DiagnosticCode::TypeMismatch,
-                                    enum_name.span,
-                                    format!(
-                                        "pattern belongs to enum `{}`, not `{}`",
-                                        enum_name.text, enum_info.name
-                                    ),
-                                );
                             }
                             if let Some(variant_index) = enum_info.find_variant(&variant_name.text)
                             {
@@ -1081,7 +1247,7 @@ impl Checker<'_> {
                         }
                     }
                 };
-                let id = self.resolution.declarations[&variable.span.start];
+                let id = self.resolution.declarations[&(self.file, variable.span.start)];
                 self.symbol_types[id.0] = elem_ty;
                 self.loops.push(false);
                 self.block(body);
@@ -1090,33 +1256,18 @@ impl Checker<'_> {
             }
         }
     }
-    /// The name inside a path, once it is known to be unqualified. Module
-    /// qualifiers are parsed but not yet resolved; until they are, a qualified
-    /// name is reported rather than silently read as a local one.
-    fn unqualified<'b>(&mut self, path: &'b Path) -> &'b Name {
-        if let Some(module) = &path.module {
-            self.error(
-                DiagnosticCode::UnsupportedFeature,
-                path.span,
-                format!(
-                    "module-qualified names like `{}.{}` are not resolved yet",
-                    module.text, path.name.text
-                ),
-            );
-        }
-        &path.name
-    }
-    fn construction(&mut self, name: &Name, fields: &[FieldInit], new: bool) -> Type {
-        let Some(id) = self.struct_names.get(&name.text).copied() else {
-            self.error(
-                DiagnosticCode::UnknownType,
-                name.span,
-                format!(
-                    "unknown {} `{}`",
-                    if new { "class" } else { "struct" },
-                    name.text
-                ),
-            );
+    fn construction(&mut self, path: &Path, fields: &[FieldInit], new: bool) -> Type {
+        let name = &path.name;
+        let noun = if new { "class" } else { "struct" };
+        let entry = self.lookup_type(path, noun);
+        let Some(TypeEntry::Struct(id)) = entry else {
+            if let Some(TypeEntry::Enum(_)) = entry {
+                self.error(
+                    DiagnosticCode::UnknownType,
+                    name.span,
+                    format!("`{}` is an enum, not a {noun}", name.text),
+                );
+            }
             // Still check the values so their own errors are reported.
             for field in fields {
                 self.expression(&field.value);
@@ -1190,12 +1341,12 @@ impl Checker<'_> {
     /// The type already recorded for an expression this pass has walked.
     fn expression_type_of(&self, expr: &Expr) -> Option<Type> {
         self.expressions
-            .get(&(expr.span.start, expr.span.end))
+            .get(&(self.file, expr.span.start, expr.span.end))
             .copied()
     }
     fn record(&mut self, expr: &Expr, ty: Type) -> Type {
         self.expressions
-            .insert((expr.span.start, expr.span.end), ty);
+            .insert((self.file, expr.span.start, expr.span.end), ty);
         ty
     }
     /// Only unary minus may consume the positive magnitude of a signed type's
@@ -1460,7 +1611,10 @@ impl Checker<'_> {
                             } else {
                                 "declare the variable with `var` to allow assignment".into()
                             });
-                            self.diagnostics.push(diagnostic);
+                            self.diagnostics.push(FileDiagnostic {
+                                file: self.file,
+                                diagnostic,
+                            });
                         }
                         _ => self.error(
                             DiagnosticCode::InvalidAssignment,
@@ -1490,9 +1644,7 @@ impl Checker<'_> {
                 self.call(callee, arguments, expr.span, expected)
             }
             ExprKind::Member { object, member } => {
-                if let ExprKind::Identifier(enum_ident) = &object.kind
-                    && let Some(&enum_id) = self.enum_names.get(&enum_ident.text)
-                {
+                if let Some(enum_id) = self.enum_prefix(object) {
                     let enum_info = &self.enums[enum_id.0];
                     if let Some(variant_index) = enum_info.find_variant(&member.text) {
                         let variant = &enum_info.variants[variant_index];
@@ -1515,7 +1667,7 @@ impl Checker<'_> {
                             member.span,
                             format!(
                                 "enum `{}` has no variant `{}`",
-                                enum_ident.text, member.text
+                                self.enums[enum_id.0].name, member.text
                             ),
                         );
                         Type::Error
@@ -1547,7 +1699,10 @@ impl Checker<'_> {
                                     diagnostic.help =
                                         Some("call it with `()`; methods are not values".into());
                                 }
-                                self.diagnostics.push(diagnostic);
+                                self.diagnostics.push(FileDiagnostic {
+                                    file: self.file,
+                                    diagnostic,
+                                });
                                 Type::Error
                             }
                         },
@@ -1713,14 +1868,8 @@ impl Checker<'_> {
                     }
                 }
             }
-            ExprKind::StructLiteral { name, fields } => {
-                let name = self.unqualified(name).clone();
-                self.construction(&name, fields, false)
-            }
-            ExprKind::New { name, fields } => {
-                let name = self.unqualified(name).clone();
-                self.construction(&name, fields, true)
-            }
+            ExprKind::StructLiteral { name, fields } => self.construction(name, fields, false),
+            ExprKind::New { name, fields } => self.construction(name, fields, true),
             ExprKind::Interpolation(parts) => {
                 for part in parts {
                     let InterpolationPart::Value(value) = part else {
@@ -1934,9 +2083,7 @@ impl Checker<'_> {
             direct = inner;
         }
         if let ExprKind::Member { object, member } = &direct.kind {
-            if let ExprKind::Identifier(enum_ident) = &object.kind
-                && let Some(&enum_id) = self.enum_names.get(&enum_ident.text)
-            {
+            if let Some(enum_id) = self.enum_prefix(object) {
                 let enum_info = &self.enums[enum_id.0];
                 return if let Some(variant_index) = enum_info.find_variant(&member.text) {
                     let variant = &enum_info.variants[variant_index];
@@ -1983,7 +2130,7 @@ impl Checker<'_> {
                         member.span,
                         format!(
                             "enum `{}` has no variant `{}`",
-                            enum_ident.text, member.text
+                            self.enums[enum_id.0].name, member.text
                         ),
                     );
                     for arg in arguments {
@@ -1992,12 +2139,26 @@ impl Checker<'_> {
                     Type::Error
                 };
             }
-            return self.method_call(object, member, arguments, span);
+            // `geometry.area(p)` is one name in two halves: a direct call to
+            // an exported function, not a method on a value called `geometry`.
+            let module_call = matches!(&object.kind, ExprKind::Identifier(qualifier)
+                if self
+                    .resolution
+                    .module_in_file(self.file, &qualifier.text)
+                    .is_some())
+                && self
+                    .resolution
+                    .references
+                    .contains_key(&(self.file, member.span.start));
+            if !module_call {
+                return self.method_call(object, member, arguments, span);
+            }
         }
-        let id = if let ExprKind::Identifier(name) = &direct.kind {
-            Some(self.reference(name))
-        } else {
-            None
+        let id = match &direct.kind {
+            ExprKind::Identifier(name) => Some(self.reference(name)),
+            // Only a module-qualified call reaches here as a member.
+            ExprKind::Member { member, .. } => Some(self.reference(member)),
+            _ => None,
         };
         match id.map(|id| (id, self.resolution.symbols[id.0].kind)) {
             Some((_, SymbolKind::Builtin(Builtin::Some))) => {
@@ -2361,7 +2522,7 @@ impl Checker<'_> {
             ExprKind::Member { object, .. } => {
                 let ty = self
                     .expressions
-                    .get(&(object.span.start, object.span.end))
+                    .get(&(self.file, object.span.start, object.span.end))
                     .copied();
                 matches!(ty, Some(Type::Struct(id)) if self.structs[id.0].reference)
                     || self.through_reference(object)
@@ -2369,7 +2530,7 @@ impl Checker<'_> {
             ExprKind::Index { object, .. } => {
                 let ty = self
                     .expressions
-                    .get(&(object.span.start, object.span.end))
+                    .get(&(self.file, object.span.start, object.span.end))
                     .copied();
                 matches!(ty, Some(Type::Array(_))) || self.through_reference(object)
             }
@@ -2384,6 +2545,9 @@ impl Checker<'_> {
 fn result_as_enum(info: ResultInfo) -> EnumInfo {
     EnumInfo {
         name: "Result".into(),
+        // A builtin belongs to no module and is visible everywhere.
+        module: ROOT,
+        visibility: Visibility::Public,
         variants: vec![
             VariantInfo {
                 name: "Ok".into(),

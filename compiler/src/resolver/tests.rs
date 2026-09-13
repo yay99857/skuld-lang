@@ -1,9 +1,9 @@
 use super::*;
-use crate::{parse, types::IntType};
+use crate::types::IntType;
 fn output(source: &str) -> ResolveOutput {
-    let parsed = parse(source);
-    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
-    resolve(&parsed.program.expect("AST"))
+    let program = crate::module::load("<test>", source, &mut crate::module::NoModules)
+        .expect("a single-file program parses");
+    resolve(&program)
 }
 fn valid(source: &str) -> Resolution {
     let result = output(source);
@@ -69,7 +69,7 @@ fn duplicate_functions_parameters_and_locals() {
         assert!(result.resolution.is_none());
         assert_eq!(result.diagnostics.len(), 1, "{source}");
         assert_eq!(
-            result.diagnostics[0].code,
+            result.diagnostics[0].diagnostic.code,
             DiagnosticCode::DuplicateDeclaration
         );
     }
@@ -85,7 +85,10 @@ fn locals_are_not_hoisted_or_visible_in_other_functions() {
     ] {
         let result = output(source);
         assert_eq!(result.diagnostics.len(), 1, "{source}");
-        assert_eq!(result.diagnostics[0].code, DiagnosticCode::UnknownName);
+        assert_eq!(
+            result.diagnostics[0].diagnostic.code,
+            DiagnosticCode::UnknownName
+        );
     }
 }
 #[test]
@@ -102,7 +105,11 @@ fn all_expression_positions_resolve_and_member_labels_are_deferred() {
         "func f(user: Unknown, x: int) {\nuser.field = -x\nx += +x\nif !(x == x) { return user.greet((x + x)) }\n}",
     );
     let result = output("func f() {\na = b\nc(d)\nif e { return !f_missing }\nusr.greet()\n}");
-    let names: Vec<_> = result.diagnostics.iter().map(|d| &d.message).collect();
+    let names: Vec<_> = result
+        .diagnostics
+        .iter()
+        .map(|d| &d.diagnostic.message)
+        .collect();
     assert_eq!(names.len(), 7, "{names:?}");
     assert!(names.last().expect("unknown usr").contains("`usr`"));
     assert!(!names.iter().any(|name| name.contains("`greet`")));
@@ -174,7 +181,10 @@ fn try_operand_and_result_if_let_bindings_resolve() {
         "func read() -> Result<int, string> { return Ok(1) }\nfunc main() {\n    if let Ok(value) = read() {}\n    print(value)\n}",
     );
     assert_eq!(result.diagnostics.len(), 1);
-    assert_eq!(result.diagnostics[0].code, DiagnosticCode::UnknownName);
+    assert_eq!(
+        result.diagnostics[0].diagnostic.code,
+        DiagnosticCode::UnknownName
+    );
 }
 
 #[test]
@@ -217,7 +227,7 @@ fn slice_endpoints_resolve() {
         result
             .diagnostics
             .iter()
-            .all(|d| d.code == DiagnosticCode::UnknownName)
+            .all(|d| d.diagnostic.code == DiagnosticCode::UnknownName)
     );
 }
 
@@ -227,8 +237,13 @@ fn diagnostics_point_to_name_and_do_not_hide_following_errors() {
     let result = output(source);
     assert_eq!(result.diagnostics.len(), 2);
     let d = &result.diagnostics[0];
-    assert_eq!(&source[d.span.start..d.span.end], "usr");
-    let rendered = d.render(&crate::span::SourceFile::new("main.skuld", source));
+    assert_eq!(
+        &source[d.diagnostic.span.start..d.diagnostic.span.end],
+        "usr"
+    );
+    let rendered = d
+        .diagnostic
+        .render(&crate::span::SourceFile::new("main.skuld", source));
     assert!(rendered.contains("error[E0201]: unknown identifier `usr`"));
     assert!(rendered.contains("main.skuld:2:5"));
     assert!(rendered.contains("    ^^^"));
@@ -265,7 +280,7 @@ fn methods_bind_this_and_do_not_leak_as_bare_names() {
         result
             .diagnostics
             .iter()
-            .any(|d| d.code == DiagnosticCode::UnknownName)
+            .any(|d| d.diagnostic.code == DiagnosticCode::UnknownName)
     );
     // Methods are equally invisible from a plain function.
     let result = output(
@@ -275,7 +290,7 @@ fn methods_bind_this_and_do_not_leak_as_bare_names() {
         result
             .diagnostics
             .iter()
-            .any(|d| d.code == DiagnosticCode::UnknownName)
+            .any(|d| d.diagnostic.code == DiagnosticCode::UnknownName)
     );
 }
 
@@ -292,7 +307,10 @@ fn for_loop_variable_scoped_to_body() {
     let result =
         output("func main() {\n    for i in 0..5 {\n        print(i)\n    }\n    print(i)\n}");
     assert_eq!(result.diagnostics.len(), 1);
-    assert_eq!(result.diagnostics[0].code, DiagnosticCode::UnknownName);
+    assert_eq!(
+        result.diagnostics[0].diagnostic.code,
+        DiagnosticCode::UnknownName
+    );
 }
 
 #[test]
@@ -321,7 +339,7 @@ fn extern_names_collide_with_ordinary_functions() {
         result
             .diagnostics
             .iter()
-            .any(|d| d.code == DiagnosticCode::DuplicateDeclaration)
+            .any(|d| d.diagnostic.code == DiagnosticCode::DuplicateDeclaration)
     );
 }
 
@@ -338,4 +356,109 @@ fn ptr_is_a_shadowable_prelude_binding() {
         resolution.symbols[id.0].kind,
         SymbolKind::Variable(_)
     ));
+}
+
+/// A loader for the module rules below; the graph itself is tested in
+/// `module::tests`.
+struct Fake(&'static [(&'static str, &'static str, &'static str)]);
+
+impl crate::module::ModuleLoader for Fake {
+    fn load(&mut self, path: &str) -> Result<Vec<(String, String)>, String> {
+        let files: Vec<_> = self
+            .0
+            .iter()
+            .filter(|(module, ..)| *module == path)
+            .map(|(_, name, source)| ((*name).to_owned(), (*source).to_owned()))
+            .collect();
+        if files.is_empty() {
+            return Err("no such module".into());
+        }
+        Ok(files)
+    }
+}
+
+fn program(
+    entry: &str,
+    modules: &'static [(&'static str, &'static str, &'static str)],
+) -> ResolveOutput {
+    let loaded =
+        crate::module::load("main.skuld", entry, &mut Fake(modules)).expect("a program that loads");
+    resolve(&loaded)
+}
+
+#[test]
+fn a_qualified_name_resolves_to_the_exported_declaration() {
+    let result = program(
+        "import \"lib\"\nfunc main() { print(lib.exported()) }",
+        &[(
+            "lib",
+            "lib/l.skuld",
+            "pub func exported() -> int { return 1 }",
+        )],
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let resolution = result.resolution.expect("resolution");
+    // The right half of `lib.exported` is a value name, resolved in the
+    // module's own scope rather than an enclosing one.
+    let symbol = resolution
+        .references
+        .iter()
+        .find(|((file, _), _)| *file == FileId(0))
+        .map(|(_, id)| &resolution.symbols[id.0]);
+    assert!(symbol.is_some());
+    assert!(
+        resolution
+            .symbols
+            .iter()
+            .any(|s| s.name == "exported" && s.visibility == Visibility::Public)
+    );
+}
+
+#[test]
+fn a_private_name_does_not_leave_its_module() {
+    let result = program(
+        "import \"lib\"\nfunc main() { print(lib.hidden()) }",
+        &[("lib", "lib/l.skuld", "func hidden() -> int { return 1 }")],
+    );
+    assert_eq!(
+        result.diagnostics[0].diagnostic.code,
+        DiagnosticCode::PrivateName
+    );
+}
+
+#[test]
+fn imports_belong_to_a_file_rather_than_to_its_module() {
+    // `b.skuld` shares a namespace with `a.skuld`, but not its imports: a
+    // qualifier is bound where it is written.
+    let result = program(
+        "import \"pair\"\nfunc main() { print(pair.a()) }",
+        &[
+            (
+                "pair",
+                "pair/a.skuld",
+                "import \"lib\"\npub func a() -> int { return lib.value() }",
+            ),
+            (
+                "pair",
+                "pair/b.skuld",
+                "pub func b() -> int { return lib.value() }",
+            ),
+            ("lib", "lib/l.skuld", "pub func value() -> int { return 1 }"),
+        ],
+    );
+    let codes: Vec<_> = result
+        .diagnostics
+        .iter()
+        .map(|d| d.diagnostic.code)
+        .collect();
+    assert_eq!(codes, vec![DiagnosticCode::UnknownName]);
+}
+
+#[test]
+fn a_module_qualifier_is_shadowed_by_a_local_binding() {
+    let result = program(
+        "import \"lib\"\nfunc main() { let lib = 1\n print(lib) }",
+        &[("lib", "lib/l.skuld", "pub func value() -> int { return 1 }")],
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
 }
