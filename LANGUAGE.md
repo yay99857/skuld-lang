@@ -987,6 +987,12 @@ words.sort((a: string, b: string): int { return a.len() - b.len() })
 // fig, pear, kiwi, banana — `pear` and `kiwi` keep the order they were in
 ```
 
+A comparator returns a negative, zero or positive `int`. Writing that as
+`a - b` is the usual shorthand and it is only safe when the values are small:
+arithmetic traps on overflow at every width, so comparing values near the
+extremes of `int` that way aborts the program. Comparing and returning `-1`,
+`0` or `1` always works.
+
 ## Modules — Implemented
 
 A program is a set of modules. A **module is a directory**: every `.skuld` file
