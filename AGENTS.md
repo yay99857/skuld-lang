@@ -152,19 +152,27 @@ accurate; documenting a future feature is not a request to implement it.
   colon return type syntax, Option with null, safe weak promotion, M1 (Enums and match),
   M2 (`for` and iteration), and M3 (`Result<T, E>` and propagation), which the user
   authorized as a builtin following the Option precedent rather than through general
-  generics. M4 (bytes, sized integers and string slices) has its primitives
-  implemented — the user authorized the full set of sized integers, type-name
-  conversion calls, and delivering the primitives before the milestone's closing
-  marker. That marker, a JSON parser written in pure Skuld over `[]u8` as a
-  `tests/pass` fixture, is still outstanding and closes M4. Do not infer
+  generics. M4 (bytes, sized integers and string slices) is complete — the user
+  authorized the full set of sized integers, type-name conversion calls, and
+  delivering the primitives before the milestone's closing marker, and that
+  marker is now met: `tests/pass/json_parser.skuld` is a complete
+  JSON parser in pure Skuld over `[]u8`, so M4 is closed. It exposed one rough
+  edge left unfixed — the expected width of a conversion call reaches into its
+  whole argument expression, so `u8(128 + n % 64)` is rejected and needs a named
+  intermediate. M6 (modules and `import`) is the active milestone by explicit
+  user decision: a module is a directory whose `.skuld` files share a namespace,
+  export is an explicit `pub`, imported names are always qualified by the
+  module's last path segment, and an import cycle is a diagnostic. M5 (FFI) was
+  deliberately skipped for now, since modules do not depend on it. Do not infer
   authorization for further features without explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
-  and string slices → `extern "C"` FFI, with modules and networking beyond it.
-  It is a plan, not a selection: a remaining entry is Planned, and starting one
-  still requires an explicit decision recorded here. Its `Result`-versus-generics
-  question was answered in favour of a builtin; the rest (slice retention,
-  recursive enum variants, callback syntax, JSON object representation) are
-  unresolved; do not settle them unilaterally while implementing something else.
+  and string slices → `extern "C"` FFI → modules → standard library → function
+  values → sockets. It is a plan, not a selection: a remaining entry is Planned,
+  and starting one still requires an explicit decision recorded here, and the
+  sequence may be taken out of order, as M6 was. Its `Result`-versus-generics,
+  slice-retention, JSON-object and module-boundary questions are answered there;
+  recursive enum boxing, callback syntax, capture and where interfaces belong
+  are not. Do not settle those unilaterally while implementing something else.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built
@@ -218,14 +226,15 @@ unless explicitly included in the active task.
 Do not build a standard library or memory-management runtime ahead of need.
 
 The milestones proposed in `ROADMAP.md` do not relax any of the above.
-`extern "C"`, modules, `import`, HTTP and JSON are all Planned and each needs its
-own authorization. `Result` arrived as a builtin, which settles that roadmap
+`extern "C"`, HTTP and JSON are all Planned and each needs its own
+authorization. `Result` arrived as a builtin, which settles that roadmap
 question; general generics remain excluded and still need their own explicit
-decision. The sized integers, `[]u8` and string slicing are implemented, but a
-JSON parser is not authorized by that: M4's closing marker is a `tests/pass`
-fixture written in Skuld, never a JSON facility in the compiler. Nothing in that document
-authorizes a standard library, a networking runtime or process execution from
-the compiler library.
+decision. M4's closing marker was met by `tests/pass/json_parser.skuld`, a
+parser written in Skuld — it is a fixture, never a JSON facility in the
+compiler, and nothing about it authorizes one. Modules and `import` are the
+active milestone by explicit user decision, under the shape recorded in the
+status section above. Nothing in that document authorizes a standard library, a
+networking runtime or process execution from the compiler library.
 
 ## Diagnostics and validation
 

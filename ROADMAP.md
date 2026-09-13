@@ -7,9 +7,10 @@ is active, and the user selects it explicitly. Read `LANGUAGE.md` for what the
 language actually does today and `README.md` for what currently runs.
 
 The long-range target that motivates this ordering is a program that performs
-an HTTP request and decodes a JSON response. That target is deliberately **not**
-reachable within these five milestones; they build the foundations it needs.
-The naming below is local to this document.
+an HTTP request and decodes a JSON response. M1–M5 build the language
+foundations it needs without reaching it; M6–M9 turn what remains into a library
+problem and finally spend that budget. The naming below is local to this
+document.
 
 ## M1 — Enums and `match` — Implemented
 
@@ -83,7 +84,7 @@ The error mechanism has to exist before anything that can fail exists.
   the latter with an array, a class and a string alive, and runs under the
   address, leak and UB sanitizers with the rest of `tests/pass`.
 
-## M4 — Bytes, sized integers and string slices — Primitives implemented
+## M4 — Bytes, sized integers and string slices — Implemented
 
 Being able to look inside a string and build one from bytes.
 
@@ -109,13 +110,23 @@ Being able to look inside a string and build one from bytes.
 - **Still provisional:** the error side of `bytes_to_string` is a message rather
   than a dedicated error type. No error enum belongs in the language before a
   standard library exists to own one.
-- **Closing marker — outstanding:** a complete JSON parser written in **pure
-  Skuld** over `[]u8`, returning `Result<JsonValue, JsonError>`, as a
-  `tests/pass` fixture. That is the whole of `res.json()` except for where the
-  bytes come from. The primitives above were delivered first, by explicit
-  decision, so this marker still closes the milestone.
+- **Closing marker — reached:** `tests/pass/json_parser.skuld` is a complete
+  JSON parser written in **pure Skuld** over `[]u8`, returning
+  `Result<JsonValue, JsonError>`. It scans bytes rather than characters and
+  covers objects, arrays, strings with every escape including `\uXXXX` and
+  surrogate pairs, numbers with fraction and exponent, the three keywords,
+  a nesting limit and a canonical renderer, with the failure cases as part of
+  the same fixture. That is the whole of `res.json()` except for where the
+  bytes come from. The compiler gained nothing: the parser is ordinary user
+  code, which is the point of the marker.
+- **Found by the marker, not fixed by it:** the expected width of a conversion
+  call reaches into its argument, so `u8(128 + n % 64)` is rejected where `n`
+  is an `int` and only a named intermediate gets through. Range-checking a
+  literal argument at compile time is what the context is for; propagating it
+  through a whole expression tree is not. Left as it stands, since it is a
+  checker change rather than a milestone one.
 
-## M5 — `extern "C"` FFI and linking
+## M5 — `extern "C"` FFI and linking — Planned
 
 ```skuld
 extern "C" {
@@ -137,14 +148,114 @@ The boundary with the outside world, and the real gate for any network work.
 - **Validation:** `read_file()` over libc, not sockets. It exercises the FFI,
   `[]u8`, `Result` and slicing at once without TLS or networking in the way.
 
-## Beyond M5
+## M6 — Modules and `import` — Planned
 
-With M1–M5 in place, an HTTP request stops being a language problem and becomes
-a library problem: sockets through the FFI, a response parser in Skuld, and the
-JSON parser from M4. What remains undecided is where those functions live —
-`import` is still only a reserved word rejected by the parser. Modules and a
-minimal standard library therefore fall between M5 and any `fetch`, either
-interleaved or as a milestone of their own.
+Where a function lives, which is the question every milestone after M5 runs
+into first. `import` is currently a reserved word the parser rejects.
+
+```skuld
+import "json"
+import "net/socket"
+```
+
+- **In scope:** a compilation unit larger than one file, a path-to-file mapping
+  rule, per-module name resolution tables, an export marker, and the CLI
+  learning to compile a set of files rather than one.
+- **Out of scope:** a package registry, versioned dependencies, remote imports,
+  conditional compilation, and separate compilation with a cached artifact per
+  module. The compiler keeps reading every source of a program.
+- **Open risk:** the resolver's single-source declaration/use tables assume one
+  `SourceFile`. Either they grow a module dimension or a module-level table sits
+  above them; deciding that before writing code is the whole of this milestone's
+  design work. Spans stay byte offsets into their own file.
+- **Decisions taken:** a module is a **directory**; every `.skuld` file in it
+  shares one namespace, as a Go package does. A name leaves it through an
+  explicit **`pub`**, not through its spelling — tying visibility to a capital
+  letter would fight the lowercase style the prelude already established.
+  An imported name is **always qualified** by the module's last path segment
+  (`json.parse`), so no import can quietly shadow a local name. An **import
+  cycle is a diagnostic**, which also keeps initialization order defined.
+- **Validation:** a two-module program in `tests/pass`, plus fail fixtures for
+  a missing module, a cyclic import and a private name used from outside.
+
+## M7 — A minimal standard library — Planned
+
+The first code that ships with the compiler instead of inside it. It only
+becomes possible once M6 says where it lives, and it is the natural owner of
+the error types the language has so far been unable to name.
+
+- **In scope:** a `std` written in Skuld, small on purpose — an error type for
+  `bytes_to_string()` to return instead of a `string`, string helpers built on
+  `[]u8`, and whatever M6 and M8 prove they need.
+- **Out of scope:** collections beyond arrays (no map, no set — a hash map is
+  its own milestone), formatting beyond interpolation, time, randomness,
+  filesystem traversal, threads.
+- **Depends on:** M6 for module boundaries, M5 for anything touching the OS.
+- **Open risk:** a standard library written before its users exist becomes a
+  museum of guesses. Each entry needs a caller in a milestone already planned,
+  or it stays out.
+- **Marker:** `bytes_to_string()` returns `Result<string, Utf8Error>` and the
+  provisional string error side of M4 disappears.
+
+## M8 — Function values, callbacks and interfaces — Planned
+
+```skuld
+numbers.sort((a, b) => a - b)
+```
+
+The abstraction milestone the earlier ones kept deferring. Sorting has demanded
+it since M2 and the sketch in `test.skuld` is marked unsatisfactory by the user,
+so the syntax is an open question, not a decision this document may take.
+
+- **In scope:** function types as values, a lambda form, passing them as
+  arguments, `sort()` over arrays as the first consumer, and interfaces with
+  `impl` as the named-abstraction half.
+- **Out of scope:** closures capturing mutable state, generic functions,
+  higher-kinded anything, dynamic dispatch beyond what interfaces need.
+- **Open risk:** capture and the reference-counted model. A lambda that
+  captures a managed value must retain it, which makes the lambda itself a
+  managed value, and capturing `this` inside a class creates exactly the cycle
+  the project has no collector for. The cheapest answer — non-capturing
+  function values only, enough for `sort()` — is on the table and would keep
+  this milestone small.
+- **Open question:** whether interfaces belong here at all or in a milestone of
+  their own. `LANGUAGE.md` lists them as Planned with unsettled receiver syntax.
+
+## M9 — Sockets, HTTP and the long-range target — Planned
+
+```skuld
+let res = http.get("http://example.com/data.json")
+let value = json.parse(res.body)?
+```
+
+The target that motivated the whole ordering, spent at last, and by then not a
+language milestone: an FFI binding over libc sockets, a response parser in
+Skuld, and the JSON parser that closes M4.
+
+- **In scope:** a socket binding over M5, a blocking HTTP/1.1 client, and the
+  JSON value and parser from M4's closing marker promoted into `std`.
+- **Out of scope, and pointedly:** TLS, so plain HTTP only; a server; async,
+  non-blocking I/O and any event loop; connection pooling; HTTP/2.
+- **Open risk:** TLS is where this stops. Binding a system TLS library is a
+  milestone of its own and arguably a dependency policy decision, not a
+  technical one.
+- **Validation:** an integration test against a local socket that this
+  repository starts, never the network. `tests/pass` stays hermetic.
+
+## A parallel track — tooling — Planned
+
+Not sequenced with the milestones above and not blocking any of them.
+`LANGUAGE.md` names `fmt`, `test`, `doc` and `new` as future commands; the
+official formatter in particular has been deferred since the beginning and can
+land whenever the syntax stops moving.
+
+## Beyond M9
+
+Nothing here is planned in the sense the sections above are. The recurring
+candidates are a real map type, generics (question 1 below), LLVM or Cranelift
+as an alternative backend, portability beyond the current target, and eventual
+self-hosting. Each would need its own design pass and its own explicit
+authorization.
 
 ## Open design questions
 
@@ -159,7 +270,21 @@ above.
    slice earns its danger is a question for a benchmark, not for this document.
 3. Recursive enum variants: automatic boxing, or the user's responsibility?
 4. Callback and lambda syntax, deferred by M2 but eventually demanded by
-   sorting. The current sketch in `test.skuld` is marked unsatisfactory by the
-   user.
-5. JSON objects as a list of key/value fields, avoiding a hash map milestone
-   entirely, or waiting for a real map type?
+   sorting, and now the subject of M8. The current sketch in `test.skuld` is
+   marked unsatisfactory by the user.
+5. ~~JSON objects as a list of key/value fields, or waiting for a real map
+   type?~~ Answered by M4's closing marker: a list of key/value pairs in source
+   order, with linear lookup and duplicate keys preserved. Waiting for a map
+   would have made the milestone unclosable, since a hash map is a milestone of
+   its own and is not authorized. Whether the parser M9 reuses keeps that
+   representation is open again once a map exists.
+6. ~~Where module boundaries sit — file or directory, `pub` or convention?~~
+   Answered for M6 by the user: a module is a **directory**, export is an
+   explicit **`pub`**, use is always **qualified** (`json.parse`), and an import
+   cycle is an error. Whether the resolver grows a module dimension or gains a
+   table above it is an implementation question left to that milestone.
+7. Whether function values may capture. Non-capturing values are enough for
+   `sort()` and create no cycles; capturing ones make a lambda a managed value
+   and can capture `this`, which the reference counter cannot collect.
+8. Whether interfaces are part of the callback milestone or a milestone of
+   their own.
