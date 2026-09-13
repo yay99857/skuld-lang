@@ -85,6 +85,15 @@ The debug AST and resolution output are not stable serialization formats.
 the source file stem, and keeps only that artifact. `new`, `fmt`, `test` and
 `doc` remain future CLI commands.
 
+A program that declares foreign functions from a library other than libc names
+it on the command line; `build` and `run` forward `-l` and `-L` to clang and
+accept nothing else:
+
+```bash
+cargo run -p skuld-cli -- run examples/ffi.skuld
+skuld build program.skuld -L/opt/lib -lfoo
+```
+
 ## Implemented language core
 
 ```skuld
@@ -115,8 +124,13 @@ Integer overflow and division/remainder by zero produce runtime errors instead
 of C undefined behavior. String literals reference immutable static bytes;
 Unicode and embedded NUL are preserved. Concatenation and classes allocate
 and are reference counted. There is no string mutation or cycle collector. Homogeneous arrays and weak
-class references are supported; strong cycles require weak links or explicit breaking. See
-[LANGUAGE.md](LANGUAGE.md) for the complete implemented/planned distinction.
+class references are supported; strong cycles require weak links or explicit breaking.
+
+`unsafe extern "C" { ... }` declares functions from a linked library, and
+`ptr(value)` borrows the bytes of a string or an array to pass to one. Only
+scalars and raw pointers cross that boundary: a reference-counted value never
+does. See [LANGUAGE.md](LANGUAGE.md) for the complete implemented/planned
+distinction.
 
 ## Architecture and verification
 
@@ -179,6 +193,7 @@ cargo run -p skuld-cli -- run examples/enums.skuld
 cargo run -p skuld-cli -- run examples/for_loops.skuld
 cargo run -p skuld-cli -- run examples/results.skuld
 cargo run -p skuld-cli -- run examples/bytes.skuld
+cargo run -p skuld-cli -- run examples/ffi.skuld
 ```
 
 `Option<T>`, `Some(value)` and `None` represent optional values without null.
@@ -232,10 +247,25 @@ func shout(text: string) -> Result<string, string> {
 }
 ```
 
-This closes M3 (`Result<T, E>` and propagation), M2 (`for` and iteration),
-M1 (Enums and `match`), Option, classes, weak references and arrays, and
-delivers the primitives of M4 (bytes, sized integers and string slices); that
-milestone's closing marker, a JSON parser written in Skuld, is still outstanding.
+Foreign functions come from a linked library, declared in an `unsafe extern "C"`
+block. Only scalars, raw pointers (`*u8`, `*void`) and a `void` return cross
+that boundary; `ptr(value)` borrows the bytes of a string or an array for the
+duration of a call and retains nothing.
+
+```skuld
+unsafe extern "C" {
+    func write(fd: i32, buffer: *u8, count: u64) -> i64
+}
+
+func emit(text: string) -> int {
+    return write(1, ptr(text), u64(text.len()))
+}
+```
+
+This closes M5 (`extern "C"` FFI and linking), M4 (bytes, sized integers and
+string slices, closed by `tests/pass/json_parser.skuld`), M3 (`Result<T, E>` and
+propagation), M2 (`for` and iteration) and M1 (Enums and `match`), alongside
+Option, classes, weak references and arrays.
 Modules, a standard library, the official
 formatter, broader tooling, portability and eventual self-hosting remain ahead;
 `ROADMAP.md` proposes an ordering for those milestones and records the design

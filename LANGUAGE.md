@@ -837,6 +837,67 @@ match status {
 - If every arm returns (or diverges), the `match` statement satisfies the function's return contract.
 - Inside loops, `break` and `continue` inside match arms naturally bind to the enclosing loop.
 
+## Foreign functions — Implemented
+
+An `extern "C"` block declares functions that another object file defines.
+Nothing else about the language changes: a foreign function is called like any
+other, and the compiler emits its declared name for the linker to find.
+
+```skuld
+unsafe extern "C" {
+    func write(fd: i32, buffer: *u8, count: u64) -> i64
+    func abs(value: i32) -> i32
+}
+
+func main() {
+    let text = "hello from libc\n"
+    let written = write(1, ptr(text), u64(text.len()))
+    print(abs(-3))
+}
+```
+
+`unsafe` is required on the block. The compiler cannot check a declaration
+against the library that is eventually linked, so the signature is an assertion
+by whoever writes it, and getting it wrong is undefined behavior in C rather
+than a Skuld diagnostic. The marker is where that responsibility is recorded.
+Only `"C"` is a supported ABI, and a declaration carries no body.
+
+**Managed values never cross the boundary.** C knows nothing about retain and
+release, so a signature accepts only:
+
+- the scalars `i8 i16 i32 i64 u8 u16 u32 u64`, `float` and `bool`,
+- raw pointers, and
+- `void`, as a return type.
+
+A `string`, an array, a class, an `Option` or a `Result` in a signature is
+rejected (`E0103`), as is a pointer to one. The declared name may not be `main`
+or start with `skuld_`, which the generated program already uses.
+
+`*T` is a raw pointer, where `T` is a scalar or `void`. It is unmanaged: it
+keeps nothing alive, and Skuld cannot read or write through it. `*void` is the
+opaque handle a C library hands back.
+
+`ptr(value)` borrows the bytes a `string` or an array of scalars already owns
+and yields `*u8` for a string, or `*T` for a `[]T`. It retains nothing: the
+pointer is valid only while the value it borrows from is alive, which for a
+temporary lasts to the end of the enclosing block. `ptr` is a prelude binding
+like `print` and can be shadowed. Pass the length alongside it — C has no idea
+how long the buffer is, and a Skuld string is **not** NUL-terminated, so a
+function that expects a C string needs a `[]u8` with an explicit trailing `0`.
+
+Libraries beyond libc are selected on the command line, not in the source:
+
+```bash
+skuld run program.skuld -lm
+skuld build program.skuld -L/opt/lib -lfoo
+```
+
+Out of scope, and still out: Skuld functions called back from C, structs passed
+by value across the ABI, varargs, pointers to pointers, arithmetic on pointers,
+reading or writing through one from Skuld, and any ABI other than C. A
+declaration whose C prototype disagrees with a header the generated program
+already includes is a clang error at build time, not a Skuld diagnostic.
+
 ## Demonstration proposals — Experimental
 
 `test.skuld` may contain incomplete examples and comments asking for redesign.
@@ -866,19 +927,19 @@ the earlier `func print(self)` sketch is superseded as a class-method model.
 Enums are sum types, e.g.
 `enum Status { Online Offline Away }`.
 `Option<T>` with `Some`/`None` and `Result<T, E>` with `Ok`/`Err` and `?`
-propagation are implemented above, as are the sized integers, `[]u8` and
-string slicing.
+propagation are implemented above, as are the sized integers, `[]u8`,
+string slicing and the `extern "C"` boundary.
 
-Future FFI: `extern "C" { func puts(text: *char) -> int }`.
 Future commands: `new`, `fmt`, `test`, `doc`. LLVM/Cranelift and eventual
 self-hosting remain long-term possibilities.
 
 `ROADMAP.md` proposes the order in which these capabilities would arrive —
 enums and `match`, then `for`, then `Result` and `?`, then bytes and string
-slices, then the FFI — together with the design questions each one depends on.
-Everything up to and including bytes and string slices has landed, except that
-milestone's closing marker, a JSON parser written in Skuld. The FFI and beyond
-are a plan, not a commitment, and none of it is implemented.
+slices, then the FFI, then modules — together with the design questions each one
+depends on.
+Everything up to and including the `extern "C"` FFI has landed. Modules and
+everything after them are a plan, not a commitment, and none of it is
+implemented.
 
 ## Unsupported features and experimental status
 
@@ -889,6 +950,7 @@ variables, conditional execution and classes with methods/interpolation
 
 Loops (`while`, `loop`, `for`), structs, classes, interpolation, weak class references, arrays, Option,
 `Result` with `?`, enums, pattern matching, the sized integers, `[]u8`, string indexing and slicing,
+foreign `extern "C"` declarations with raw pointers,
 and reference-counted runtime behavior are **Implemented**. Interfaces,
 modules and the remaining capabilities above are **Planned**. No generics, macros, async/await, threads, channels,
 reflection, decorators, annotations, package registry, compiler plugins,

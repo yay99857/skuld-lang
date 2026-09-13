@@ -1,0 +1,31 @@
+// Calling libc across the `extern "C"` boundary.
+//
+// The compiler cannot check these signatures against the library that is
+// linked, which is what the `unsafe` marker records.
+unsafe extern "C" {
+    func write(fd: i32, buffer: *u8, count: u64) -> i64
+    func abs(value: i32) -> i32
+}
+
+// `ptr` borrows the bytes the string already owns. The borrow lasts for the
+// call and keeps nothing alive, so the length has to travel with it: C has no
+// idea how long the buffer is.
+func emit(text: string) -> int {
+    return write(1, ptr(text), u64(text.len()))
+}
+
+func main() {
+    let written = emit("Hello from libc!\n")
+    if written == 17 {
+        let confirmed = emit("wrote every byte\n")
+    }
+
+    // An array of scalars borrows the same way.
+    var bytes: []u8 = []
+    for byte in "and from a []u8\n".bytes() {
+        bytes.push(byte)
+    }
+    let second = write(1, ptr(bytes), u64(bytes.len()))
+
+    print(abs(-3))
+}

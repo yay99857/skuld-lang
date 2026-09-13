@@ -126,27 +126,57 @@ Being able to look inside a string and build one from bytes.
   through a whole expression tree is not. Left as it stands, since it is a
   checker change rather than a milestone one.
 
-## M5 — `extern "C"` FFI and linking — Planned
+## M5 — `extern "C"` FFI and linking — Implemented
 
 ```skuld
-extern "C" {
-    func read(fd: i32, buf: *u8, count: u64) -> i64
+unsafe extern "C" {
+    func write(fd: i32, buffer: *u8, count: u64) -> i64
 }
 ```
 
 The boundary with the outside world, and the real gate for any network work.
 
-- **In scope:** `extern` declarations, opaque pointer types, marshalling
-  `string` and `[]u8` as borrowed pointer plus length, link flags in
-  `cli/src/native.rs`, and some marker for the unsafe boundary.
-- **Out of scope:** Skuld callbacks into C, passing structs by value across the
-  ABI, varargs, non-C foreign interfaces.
-- **Open risk:** the largest in the plan. The reference-counted memory model
-  meets code that knows nothing about retain and release. Fix the rule early:
-  managed values never cross the boundary; only scalars and borrowed
-  pointer-plus-length whose lifetime ends with the call.
-- **Validation:** `read_file()` over libc, not sockets. It exercises the FFI,
-  `[]u8`, `Result` and slicing at once without TLS or networking in the way.
+- **Implemented:** `unsafe extern "C"` blocks of body-less declarations, the
+  raw pointer type `*T` over scalars and `*void`, `ptr(value)` borrowing the
+  bytes of a string or an array of scalars, foreign calls checked like any other
+  direct call and emitted under the declared linker name, and `-l`/`-L`
+  arguments forwarded from `build` and `run` to clang.
+- **Decision taken:** the marker for the unsafe boundary is `unsafe` on the
+  block, not on each call. The unsafe act is asserting a signature the compiler
+  cannot verify against the library that is eventually linked; the calls that
+  follow are then ordinary calls.
+- **Decision taken:** libraries are named on the command line rather than in the
+  source, and only `-l<library>` and `-L<directory>` are accepted, so a linker
+  argument can never redirect clang's output or change how the program itself is
+  compiled. Which library provides a symbol is a property of the build, not of
+  the language.
+- **Decision taken:** marshalling is explicit. There is no implicit conversion
+  from `string` or `[]u8` to a pointer — Skuld has no implicit coercions
+  anywhere else either — so `ptr(value)` borrows the bytes and the length
+  travels separately, as `u64(value.len())`.
+- **Open risk, closed as planned:** managed values never cross the boundary, and
+  the checker enforces it rather than the programmer remembering it. A
+  signature accepts only scalars, raw pointers and a `void` return; a `string`,
+  array, class, `Option`, `Result` or a pointer to one is rejected (`E0103`).
+  A borrow retains nothing and is valid only while its operand is alive, so a
+  foreign call adds no retain, no release and no cleanup attribute of its own.
+- **Validation:** `tests/pass/extern_c_ffi.skuld` calls libc `write` and `abs`,
+  borrowing both a string and a `[]u8`, and routes every line of output through
+  `write` so the fixture does not depend on stdio buffering. It runs under the
+  address, leak and UB sanitizers with the rest of `tests/pass`, which is what
+  proves the borrow leaks nothing. The `read_file()` target named earlier was
+  dropped: opening a path makes a fixture depend on the filesystem, and
+  `tests/pass` stays hermetic. `examples/ffi.skuld` is the same shape as a
+  runnable example.
+- **Out of scope, and still out:** Skuld callbacks into C, structs by value
+  across the ABI, varargs, pointers to pointers, pointer arithmetic, reading or
+  writing through a pointer from Skuld, and any ABI other than C. A declaration
+  that disagrees with a header the generated program already includes is a clang
+  error at build time, not a Skuld diagnostic.
+- **Still provisional:** a Skuld string is not NUL-terminated, so calling a C
+  function that expects a C string means building a `[]u8` with an explicit
+  trailing `0`. Whether a helper for that belongs in the language or in the
+  standard library is a question for M7, not for the boundary.
 
 ## M6 — Modules and `import` — Planned
 
@@ -288,3 +318,5 @@ above.
    and can capture `this`, which the reference counter cannot collect.
 8. Whether interfaces are part of the callback milestone or a milestone of
    their own.
+9. Where NUL-terminated C strings are built — a language helper, or a standard
+   library function over `[]u8`. M5 left it to the caller.

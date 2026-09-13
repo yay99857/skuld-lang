@@ -74,3 +74,11 @@ language's float rendering, not the parser's. Being a `pass/` fixture, it also
 runs under the address, leak and UB sanitizers, which is what makes it a
 memory-management test of recursive managed values rather than only a parsing
 test.
+
+Foreign-boundary fixtures cover the `extern "C"` path: `extern_c_ffi` calls libc
+`write` and `abs`, borrowing a string and a `[]u8` through `ptr`, and writes
+every line through `write` so the expectation does not depend on stdio
+buffering. Under the sanitizers it is also the proof that a borrow retains and
+leaks nothing. The refusals that keep the boundary narrow live in `fail/`: a
+managed type in a signature, a pointer to one, `ptr` on a value that owns no
+bytes, a missing `unsafe` marker and a body on a declaration.
