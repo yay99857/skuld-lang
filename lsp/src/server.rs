@@ -1817,6 +1817,13 @@ fn initialize_result() -> Json {
             // already had, and there is nothing to fill in on a second call.
             ("inlayHintProvider", Json::Bool(true)),
             (
+                "codeActionProvider",
+                Json::object([(
+                    "codeActionKinds",
+                    Json::Array(vec![Json::string("refactor.rewrite")]),
+                )]),
+            ),
+            (
                 "semanticTokensProvider",
                 Json::object([
                     (
