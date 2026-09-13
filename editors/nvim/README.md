@@ -96,9 +96,19 @@ What it answers: diagnostics on open and on every keystroke, including for the
 files an open file imports; completion — variants after an enum name, exports
 after an import qualifier, fields and methods after a value, and keywords, the
 prelude and what is in scope otherwise; hover (`K`), which reports a
-declaration the way it is written; and go-to-definition (`gd`), which follows a
+declaration the way it is written; go-to-definition (`gd`), which follows a
 qualified name into the module that declared it, opening a file you never had
-open. What it does not answer yet: find-references, rename and formatting.
+open; find-references (`grr`) and rename (`grn`), which reach every file the
+editor has open and refuse a rename that would change which declaration a name
+reaches; the outline (`gO`, and any breadcrumb or symbol picker), with a class's
+fields and methods nested inside it; and formatting (`vim.lsp.buf.format()`,
+`gq` where `formatexpr` is set), which runs the same formatter `skuld fmt` does.
+
+Formatting and the outline both answer quietly when they cannot. A file that
+does not parse formats to no change rather than an error dialog, since the
+diagnostic already says where the problem is; its outline falls back to the
+last text that parsed, so it does not empty itself while a declaration is being
+typed.
 
 A prelude binding such as `print` has a hover but no definition: it belongs to
 the language, and there is nowhere to send you.
