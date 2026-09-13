@@ -953,6 +953,62 @@ impl Emitter {
             }
         }
     }
+    /// The C expression for storage reached only through bindings nothing can
+    /// reassign, and fields of them: `name`, `this->f0`, `this->f0->f1`.
+    ///
+    /// Reading through one of these borrows rather than counts, because the
+    /// bindings on the way are themselves what keep the value alive. It is
+    /// only safe where nothing runs between the read and the use, which is why
+    /// every caller pairs it with [`Self::runs_no_code`] on the other operand.
+    fn settled_storage(&self, expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Local { id, settled } => settled.then(|| self.local_name(*id)),
+            ExprKind::Field { object, index } => {
+                let base = self.settled_storage(object)?;
+                let arrow = match object.ty {
+                    Type::Struct(id) if self.structs[id.0].reference => "->",
+                    _ => ".",
+                };
+                Some(format!("{base}{arrow}f{index}"))
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether evaluating this expression can run code that frees something —
+    /// a call, an allocation, a concatenation. Arithmetic and reads cannot: a
+    /// trap ends the process rather than releasing anything, so a bounds check
+    /// on the way is not a reason to take a count.
+    fn runs_no_code(&self, expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Local { .. } => {
+                true
+            }
+            ExprKind::Field { object, .. }
+            | ExprKind::StringLen(object)
+            | ExprKind::ArrayLen(object) => self.runs_no_code(object),
+            ExprKind::Unary { operand, .. } => self.runs_no_code(operand),
+            ExprKind::Binary { left, right, .. } => {
+                self.runs_no_code(left) && self.runs_no_code(right)
+            }
+            ExprKind::Index { object, index } => {
+                self.runs_no_code(object) && self.runs_no_code(index)
+            }
+            _ => false,
+        }
+    }
+
+    /// Reading one element, which checks the index once. A place has to check
+    /// again where it is used; see [`Self::index_place`].
+    fn index_read(&mut self, object: &Expr, index: &Expr) -> String {
+        let value = self.expression(object);
+        let subscript = self.expression(index);
+        format!(
+            "{value}->data[skuld_index({subscript}, {value}->len, {})]",
+            index.span.start
+        )
+    }
+
     fn index_place(&mut self, object: &Expr, index: &Expr) -> String {
         let value = self.expression(object);
         let subscript = self.expression(index);
@@ -1604,6 +1660,20 @@ impl Emitter {
                 name
             }
             ExprKind::Index { object, index } if object.ty == Type::String => {
+                // A byte read out of settled storage borrows it: nothing
+                // between the read and the use can release the string.
+                if let Some(storage) = self.settled_storage(object)
+                    && self.runs_no_code(index)
+                {
+                    let subscript = self.expression(index);
+                    return self.temporary(
+                        expr.ty,
+                        &format!(
+                            "skuld_string_byte({storage}, {subscript}, {})",
+                            index.span.start
+                        ),
+                    );
+                }
                 let value = self.expression(object);
                 let subscript = self.expression(index);
                 self.temporary(
@@ -1699,6 +1769,9 @@ impl Emitter {
                 self.temporary(expr.ty, &bytes)
             }
             ExprKind::StringLen(value) => {
+                if let Some(storage) = self.settled_storage(value) {
+                    return self.temporary(Type::INT, &format!("(int64_t){storage}.len"));
+                }
                 let value = self.expression(value);
                 self.temporary(Type::INT, &format!("(int64_t){value}.len"))
             }
@@ -1712,8 +1785,18 @@ impl Emitter {
                 result
             }
             ExprKind::Index { object, index } => {
-                let place = self.index_place(object, index);
-                self.temporary(expr.ty, &place)
+                if let Some(storage) = self.settled_storage(object)
+                    && self.runs_no_code(index)
+                {
+                    let subscript = self.expression(index);
+                    let read = format!(
+                        "{storage}->data[skuld_index({subscript}, {storage}->len, {})]",
+                        index.span.start
+                    );
+                    return self.temporary(expr.ty, &read);
+                }
+                let read = self.index_read(object, index);
+                self.temporary(expr.ty, &read)
             }
             ExprKind::ArrayCall {
                 object,
@@ -1721,6 +1804,9 @@ impl Emitter {
                 arguments,
             } => self.array_call(object, *method, arguments, expr),
             ExprKind::ArrayLen(object) => {
+                if let Some(storage) = self.settled_storage(object) {
+                    return self.temporary(Type::INT, &format!("(int64_t){storage}->len"));
+                }
                 let value = self.expression(object);
                 self.temporary(Type::INT, &format!("(int64_t){value}->len"))
             }

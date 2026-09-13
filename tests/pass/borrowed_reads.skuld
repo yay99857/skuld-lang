@@ -30,6 +30,33 @@ func take_first(texts: []string) -> string {
     return first
 }
 
+// Reading through a field borrows the storage too, but only when nothing
+// between the read and the use can run. Here the index runs a method that
+// replaces the very field being read, so the read takes a count instead — and
+// still sees the array it started with, because the object is evaluated
+// before the index.
+class Buffer {
+    data: []u8
+    at: int = 0
+
+    read_while_replacing() -> u8 {
+        return this.data[this.replace()]
+    }
+
+    replace() -> int {
+        this.data = [9, 9, 9]
+        return 0
+    }
+
+    first() -> u8 {
+        return this.data[this.at]
+    }
+
+    size() -> int {
+        return this.data.len()
+    }
+}
+
 func main() {
     var boxes: []Box = []
     boxes.push(new Box(value: "alive"))
@@ -50,6 +77,12 @@ func main() {
     // Two borrows in one expression, one of which is a fresh value.
     let name = "skuld"
     print(longest(name, name + "-lang"))
+
+    let buffer = new Buffer(data: [1, 2, 3])
+    print(buffer.first())
+    print(buffer.read_while_replacing())
+    print(buffer.first())
+    print(buffer.size())
 
     // A field read through `this` while the object is also in an array.
     var boxed: []Box = []
