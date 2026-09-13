@@ -13,6 +13,10 @@ pub struct ArrayId(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OptionId(pub usize);
 
+/// Index into the checked program's result table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ResultId(pub usize);
+
 /// Index into the checked program's enum table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EnumId(pub usize);
@@ -20,6 +24,26 @@ pub struct EnumId(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OptionInfo {
     pub element: Type,
+}
+
+/// A builtin `Result<T, E>`. `Ok` is tag 0 and `Err` is tag 1 everywhere,
+/// which is what lets matching reuse the enum machinery unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResultInfo {
+    pub ok: Type,
+    pub err: Type,
+}
+
+impl ResultInfo {
+    pub const OK: usize = 0;
+    pub const ERR: usize = 1;
+    pub fn payload(&self, variant_index: usize) -> Type {
+        if variant_index == Self::OK {
+            self.ok
+        } else {
+            self.err
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,6 +84,8 @@ pub enum Type {
     Array(ArrayId),
     /// An inline discriminated optional value.
     Option(OptionId),
+    /// An inline discriminated success-or-error value.
+    Result(ResultId),
     /// A non-owning class reference, which may be empty or expired.
     Weak(StructId),
     /// Recovery only; never present in a successfully checked program.
@@ -83,6 +109,7 @@ impl fmt::Display for Type {
             Self::Enum(_) => "<enum>",
             Self::Array(_) => "<array>",
             Self::Option(_) => "<option>",
+            Self::Result(_) => "<result>",
             Self::Weak(_) => "<weak>",
             Self::Error => "<error>",
         })

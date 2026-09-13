@@ -144,6 +144,40 @@ fn prelude_can_be_shadowed_by_user_declarations() {
     );
 }
 #[test]
+fn result_constructors_are_prelude_bindings() {
+    let result = valid("func f() { Ok(1)\nErr(2) }");
+    let kinds: Vec<_> = result
+        .references
+        .values()
+        .map(|id| result.symbols[id.0].kind)
+        .collect();
+    assert!(kinds.contains(&SymbolKind::Builtin(Builtin::Ok)));
+    assert!(kinds.contains(&SymbolKind::Builtin(Builtin::Err)));
+    // Like the rest of the prelude, they are ordinary bindings a user can
+    // shadow; the checker must identify builtins by symbol, not by spelling.
+    let result = valid("func f() { let Ok = 1\nOk }");
+    let id = result.references.values().next().expect("use");
+    assert_eq!(
+        result.symbols[id.0].kind,
+        SymbolKind::Variable(Mutability::Immutable)
+    );
+}
+
+#[test]
+fn try_operand_and_result_if_let_bindings_resolve() {
+    let result = output(
+        "func read() -> Result<int, string> { return Ok(1) }\nfunc main() {\n    if let Ok(value) = read() { print(value) }\n    if let Err(reason) = read() { print(reason) }\n}",
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    // The binding belongs to the then-block, not to the enclosing scope.
+    let result = output(
+        "func read() -> Result<int, string> { return Ok(1) }\nfunc main() {\n    if let Ok(value) = read() {}\n    print(value)\n}",
+    );
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].code, DiagnosticCode::UnknownName);
+}
+
+#[test]
 fn diagnostics_point_to_name_and_do_not_hide_following_errors() {
     let source = "func main() {\n    usr.greet()\n    other()\n}";
     let result = output(source);

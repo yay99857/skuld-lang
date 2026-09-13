@@ -5,7 +5,8 @@ use crate::{
     resolver::{Builtin, Resolution, SymbolId, SymbolKind},
     span::Span,
     types::{
-        ArrayId, ArrayInfo, EnumId, EnumInfo, OptionId, OptionInfo, StructId, Type, VariantInfo,
+        ArrayId, ArrayInfo, EnumId, EnumInfo, OptionId, OptionInfo, ResultId, ResultInfo, StructId,
+        Type, VariantInfo,
     },
 };
 use std::collections::BTreeMap;
@@ -31,6 +32,7 @@ pub struct TypedProgram {
     pub(crate) enum_names: BTreeMap<String, EnumId>,
     pub(crate) arrays: Vec<ArrayInfo>,
     pub(crate) options: Vec<OptionInfo>,
+    pub(crate) results: Vec<ResultInfo>,
     pub(crate) implicit_wraps: BTreeMap<(usize, usize), Type>,
 }
 impl TypedProgram {
@@ -39,6 +41,9 @@ impl TypedProgram {
     }
     pub fn options(&self) -> &[OptionInfo] {
         &self.options
+    }
+    pub fn results(&self) -> &[ResultInfo] {
+        &self.results
     }
     pub fn arrays(&self) -> &[ArrayInfo] {
         &self.arrays
@@ -75,17 +80,22 @@ pub(crate) fn type_check(
         arrays: Vec::new(),
         options: Vec::new(),
         option_types: BTreeMap::new(),
+        results: Vec::new(),
+        result_types: BTreeMap::new(),
         array_types: BTreeMap::new(),
         expected_context: None,
         implicit_wraps: BTreeMap::new(),
     };
     for declaration in &syntax.enums {
         let id = EnumId(checker.enums.len());
-        if declaration.name.text == "Option" {
+        if matches!(declaration.name.text.as_str(), "Option" | "Result") {
             checker.error(
                 DiagnosticCode::DuplicateDeclaration,
                 declaration.name.span,
-                "`Option` is a builtin type and cannot be redeclared",
+                format!(
+                    "`{}` is a builtin type and cannot be redeclared",
+                    declaration.name.text
+                ),
             );
         }
         if checker
@@ -108,11 +118,14 @@ pub(crate) fn type_check(
     // before field types so a struct can refer to one declared later.
     for declaration in &syntax.structs {
         let id = StructId(checker.structs.len());
-        if declaration.name.text == "Option" {
+        if matches!(declaration.name.text.as_str(), "Option" | "Result") {
             checker.error(
                 DiagnosticCode::DuplicateDeclaration,
                 declaration.name.span,
-                "`Option` is a builtin type and cannot be redeclared",
+                format!(
+                    "`{}` is a builtin type and cannot be redeclared",
+                    declaration.name.text
+                ),
             );
         }
         if checker.enum_names.contains_key(&declaration.name.text)
@@ -380,6 +393,7 @@ pub(crate) fn type_check(
         enum_names,
         arrays,
         options,
+        results,
         expressions,
         symbol_types,
         signatures,
@@ -396,6 +410,7 @@ pub(crate) fn type_check(
         enum_names,
         arrays,
         options,
+        results,
         implicit_wraps,
         expressions,
         symbol_types,
@@ -424,6 +439,9 @@ struct Checker<'a> {
     arrays: Vec<ArrayInfo>,
     options: Vec<OptionInfo>,
     option_types: BTreeMap<Type, OptionId>,
+    /// Interned `Result` types; `Type::Result` indexes this.
+    results: Vec<ResultInfo>,
+    result_types: BTreeMap<(Type, Type), ResultId>,
     array_types: BTreeMap<Type, ArrayId>,
     expected_context: Option<Type>,
     implicit_wraps: BTreeMap<(usize, usize), Type>,
@@ -485,6 +503,11 @@ impl Checker<'_> {
             Type::Enum(id) => self.enums[id.0].name.clone(),
             Type::Array(id) => format!("[]{}", self.type_name(self.arrays[id.0].element)),
             Type::Option(id) => format!("Option<{}>", self.type_name(self.options[id.0].element)),
+            Type::Result(id) => format!(
+                "Result<{}, {}>",
+                self.type_name(self.results[id.0].ok),
+                self.type_name(self.results[id.0].err)
+            ),
             Type::Weak(id) => format!("weak {}", self.structs[id.0].name),
             other => other.to_string(),
         }
@@ -497,6 +520,15 @@ impl Checker<'_> {
         self.options.push(OptionInfo { element });
         self.option_types.insert(element, id);
         Type::Option(id)
+    }
+    fn result_type(&mut self, ok: Type, err: Type) -> Type {
+        if let Some(&id) = self.result_types.get(&(ok, err)) {
+            return Type::Result(id);
+        }
+        let id = ResultId(self.results.len());
+        self.results.push(ResultInfo { ok, err });
+        self.result_types.insert((ok, err), id);
+        Type::Result(id)
     }
     fn array_type(&mut self, element: Type) -> Type {
         if let Some(&id) = self.array_types.get(&element) {
@@ -516,6 +548,16 @@ impl Checker<'_> {
                     Type::Error
                 } else {
                     self.option_type(element)
+                }
+            }
+            TypeRef::Result { ok, err, .. } => {
+                let ok_type = self.type_ref(ok, false);
+                let err_type = self.type_ref(err, false);
+                // `type_ref` already rejects `void` in a payload position.
+                if ok_type == Type::Error || err_type == Type::Error {
+                    Type::Error
+                } else {
+                    self.result_type(ok_type, err_type)
                 }
             }
             TypeRef::Weak { class, span } => {
@@ -676,20 +718,42 @@ impl Checker<'_> {
                 then_returns && else_returns
             }
             StatementKind::IfLet {
+                pattern,
                 binding,
                 value,
                 then_block,
                 else_branch,
             } => {
                 let ty = self.expression(value);
-                let payload = match ty {
-                    Type::Option(id) => self.options[id.0].element,
-                    Type::Error => Type::Error,
-                    _ => {
+                let payload = match (pattern, ty) {
+                    (IfLetPattern::Some, Type::Option(id)) => self.options[id.0].element,
+                    (IfLetPattern::Ok, Type::Result(id)) => self.results[id.0].ok,
+                    (IfLetPattern::Err, Type::Result(id)) => self.results[id.0].err,
+                    (_, Type::Error) => Type::Error,
+                    (IfLetPattern::Some, other) => {
                         self.error(
                             DiagnosticCode::TypeMismatch,
                             value.span,
-                            "if let Some(...) requires an Option value",
+                            format!(
+                                "if let Some(...) requires an Option value, found `{}`",
+                                self.type_name(other)
+                            ),
+                        );
+                        Type::Error
+                    }
+                    (pattern, other) => {
+                        let name = if *pattern == IfLetPattern::Ok {
+                            "Ok"
+                        } else {
+                            "Err"
+                        };
+                        self.error(
+                            DiagnosticCode::TypeMismatch,
+                            value.span,
+                            format!(
+                                "if let {name}(...) requires a Result value, found `{}`",
+                                self.type_name(other)
+                            ),
                         );
                         Type::Error
                     }
@@ -749,22 +813,26 @@ impl Checker<'_> {
                     }
                     return false;
                 }
-                let Type::Enum(enum_id) = target_ty else {
-                    self.error(
-                        DiagnosticCode::TypeMismatch,
-                        value.span,
-                        format!(
-                            "match expects an enum value, found `{}`",
-                            self.type_name(target_ty)
-                        ),
-                    );
-                    for arm in arms {
-                        self.block(&arm.body);
+                // A `Result` matches like a two-variant enum, so the arm and
+                // exhaustiveness checking below is shared rather than repeated.
+                let enum_info = match target_ty {
+                    Type::Enum(enum_id) => self.enums[enum_id.0].clone(),
+                    Type::Result(result_id) => result_as_enum(self.results[result_id.0]),
+                    other => {
+                        self.error(
+                            DiagnosticCode::TypeMismatch,
+                            value.span,
+                            format!(
+                                "match expects an enum or Result value, found `{}`",
+                                self.type_name(other)
+                            ),
+                        );
+                        for arm in arms {
+                            self.block(&arm.body);
+                        }
+                        return false;
                     }
-                    return false;
                 };
-
-                let enum_info = self.enums[enum_id.0].clone();
                 let mut covered = vec![false; enum_info.variants.len()];
                 let mut has_wildcard = false;
                 let mut all_arms_return = !arms.is_empty();
@@ -1043,6 +1111,17 @@ impl Checker<'_> {
                             }
                         }
                     }
+                    SymbolKind::Builtin(Builtin::Ok | Builtin::Err) => {
+                        self.error(
+                            DiagnosticCode::ArgumentCount,
+                            expr.span,
+                            format!(
+                                "`{}` is a Result constructor; call it with a value",
+                                name.text
+                            ),
+                        );
+                        Type::Error
+                    }
                     SymbolKind::Enum => {
                         self.error(
                             DiagnosticCode::UnsupportedFeature,
@@ -1063,6 +1142,49 @@ impl Checker<'_> {
             ExprKind::Group(inner) => {
                 self.expected_context = expected;
                 self.expression(inner)
+            }
+            ExprKind::Try(inner) => {
+                let ty = self.expression(inner);
+                match (ty, self.return_type) {
+                    (Type::Error, _) => Type::Error,
+                    (Type::Result(value_id), Type::Result(return_id)) => {
+                        let value = self.results[value_id.0];
+                        let returned = self.results[return_id.0];
+                        if value.err == returned.err {
+                            value.ok
+                        } else {
+                            self.error(
+                                DiagnosticCode::TypeMismatch,
+                                expr.span,
+                                format!(
+                                    "`?` propagates `{}`, but this function returns errors of type `{}`",
+                                    self.type_name(value.err),
+                                    self.type_name(returned.err)
+                                ),
+                            );
+                            Type::Error
+                        }
+                    }
+                    (Type::Result(_), _) => {
+                        self.error(
+                            DiagnosticCode::TypeMismatch,
+                            expr.span,
+                            "`?` is only valid inside a function returning `Result`",
+                        );
+                        Type::Error
+                    }
+                    (other, _) => {
+                        self.error(
+                            DiagnosticCode::TypeMismatch,
+                            inner.span,
+                            format!(
+                                "`?` requires a Result value, found `{}`",
+                                self.type_name(other)
+                            ),
+                        );
+                        Type::Error
+                    }
+                }
             }
             ExprKind::Unary {
                 op,
@@ -1474,6 +1596,7 @@ impl Checker<'_> {
             (Type::Weak(id), "get") => Some(Type::Struct(id)),
             (Type::Weak(id), "upgrade") => Some(self.option_type(Type::Struct(id))),
             (Type::Option(_), "is_some" | "is_none") => Some(Type::Bool),
+            (Type::Result(_), "is_ok" | "is_err") => Some(Type::Bool),
             _ => None,
         };
         if let Some(ty) = builtin {
@@ -1663,6 +1786,44 @@ impl Checker<'_> {
                     self.option_type(element)
                 }
             }
+            Some((_, SymbolKind::Builtin(builtin @ (Builtin::Ok | Builtin::Err)))) => {
+                let label = if builtin == Builtin::Ok { "Ok" } else { "Err" };
+                if arguments.len() != 1 {
+                    for argument in arguments {
+                        self.expression(argument);
+                    }
+                    self.error(
+                        DiagnosticCode::ArgumentCount,
+                        span,
+                        format!("{label} expects exactly one argument"),
+                    );
+                    return Type::Error;
+                }
+                // Only one side of a `Result` is written at a construction, so
+                // the other has to come from the context. Inferring it would
+                // mean guessing an error type from a success value.
+                let Some(Type::Result(id)) = expected else {
+                    self.expression(&arguments[0]);
+                    self.error(
+                        DiagnosticCode::UnknownType,
+                        span,
+                        format!(
+                            "{label} requires an expected Result type; annotate the binding or the return type"
+                        ),
+                    );
+                    return Type::Error;
+                };
+                let payload = if builtin == Builtin::Ok {
+                    self.results[id.0].ok
+                } else {
+                    self.results[id.0].err
+                };
+                self.expected_context = Some(payload);
+                let found = self.expression(&arguments[0]);
+                self.expected_context = None;
+                self.expect_type(payload, found, arguments[0].span);
+                Type::Result(id)
+            }
             Some((_, SymbolKind::Builtin(Builtin::None))) => {
                 for argument in arguments {
                     self.expression(argument);
@@ -1758,6 +1919,21 @@ impl Checker<'_> {
 }
 
 impl Checker<'_> {
+    /// Every value stored inline in `ty`: the type itself, or what an `Option`
+    /// or `Result` keeps inside it. Sizing and cycle detection have to see
+    /// through both, because neither adds indirection.
+    fn inline_payloads(&self, ty: Type) -> Vec<Type> {
+        match ty {
+            Type::Option(id) => self.inline_payloads(self.options[id.0].element),
+            Type::Result(id) => {
+                let info = self.results[id.0];
+                let mut payloads = self.inline_payloads(info.ok);
+                payloads.extend(self.inline_payloads(info.err));
+                payloads
+            }
+            other => vec![other],
+        }
+    }
     /// Whether `target` is reachable from `from` through value-typed fields.
     fn contains_by_value(&self, from: StructId, target: StructId, seen: &mut Vec<bool>) -> bool {
         if seen[from.0] {
@@ -1765,33 +1941,28 @@ impl Checker<'_> {
         }
         seen[from.0] = true;
         self.structs[from.0].fields.iter().any(|field| {
-            let mut ty = field.ty;
-            while let Type::Option(id) = ty {
-                ty = self.options[id.0].element;
-            }
-            match ty {
-                Type::Struct(id) if !self.structs[id.0].reference => {
-                    id == target || self.contains_by_value(id, target, seen)
-                }
-                Type::Enum(id) => self.enum_contains_struct_by_value(id, target),
-                _ => false,
-            }
+            self.inline_payloads(field.ty)
+                .into_iter()
+                .any(|ty| match ty {
+                    Type::Struct(id) if !self.structs[id.0].reference => {
+                        id == target || self.contains_by_value(id, target, seen)
+                    }
+                    Type::Enum(id) => self.enum_contains_struct_by_value(id, target),
+                    _ => false,
+                })
         })
     }
     fn enum_contains_struct_by_value(&self, from: EnumId, target: StructId) -> bool {
         self.enums[from.0].variants.iter().any(|v| {
-            let mut ty = match v.payload {
-                Some(ty) => ty,
-                None => return false,
-            };
-            while let Type::Option(id) = ty {
-                ty = self.options[id.0].element;
-            }
-            match ty {
-                Type::Struct(id) if !self.structs[id.0].reference => id == target,
-                Type::Enum(id) => self.enum_contains_struct_by_value(id, target),
-                _ => false,
-            }
+            v.payload.is_some_and(|payload| {
+                self.inline_payloads(payload)
+                    .into_iter()
+                    .any(|ty| match ty {
+                        Type::Struct(id) if !self.structs[id.0].reference => id == target,
+                        Type::Enum(id) => self.enum_contains_struct_by_value(id, target),
+                        _ => false,
+                    })
+            })
         })
     }
     fn enum_contains_by_value(&self, from: EnumId, target: EnumId, seen: &mut Vec<bool>) -> bool {
@@ -1800,35 +1971,32 @@ impl Checker<'_> {
         }
         seen[from.0] = true;
         self.enums[from.0].variants.iter().any(|v| {
-            let mut ty = match v.payload {
-                Some(ty) => ty,
-                None => return false,
-            };
-            while let Type::Option(id) = ty {
-                ty = self.options[id.0].element;
-            }
-            match ty {
-                Type::Enum(id) => id == target || self.enum_contains_by_value(id, target, seen),
-                Type::Struct(id) if !self.structs[id.0].reference => {
-                    self.struct_contains_enum_by_value(id, target)
-                }
-                _ => false,
-            }
+            v.payload.is_some_and(|payload| {
+                self.inline_payloads(payload)
+                    .into_iter()
+                    .any(|ty| match ty {
+                        Type::Enum(id) => {
+                            id == target || self.enum_contains_by_value(id, target, seen)
+                        }
+                        Type::Struct(id) if !self.structs[id.0].reference => {
+                            self.struct_contains_enum_by_value(id, target)
+                        }
+                        _ => false,
+                    })
+            })
         })
     }
     fn struct_contains_enum_by_value(&self, from: StructId, target: EnumId) -> bool {
         self.structs[from.0].fields.iter().any(|field| {
-            let mut ty = field.ty;
-            while let Type::Option(id) = ty {
-                ty = self.options[id.0].element;
-            }
-            match ty {
-                Type::Enum(id) => id == target,
-                Type::Struct(id) if !self.structs[id.0].reference => {
-                    self.struct_contains_enum_by_value(id, target)
-                }
-                _ => false,
-            }
+            self.inline_payloads(field.ty)
+                .into_iter()
+                .any(|ty| match ty {
+                    Type::Enum(id) => id == target,
+                    Type::Struct(id) if !self.structs[id.0].reference => {
+                        self.struct_contains_enum_by_value(id, target)
+                    }
+                    _ => false,
+                })
         })
     }
     /// True when the assignment writes into an object reached by reference.
@@ -1852,6 +2020,24 @@ impl Checker<'_> {
             ExprKind::Group(inner) => self.through_reference(inner),
             _ => false,
         }
+    }
+}
+
+/// A `Result` seen as the two-variant enum it behaves like. `Ok` is variant 0
+/// and `Err` variant 1, the same order the backend gives its tag.
+fn result_as_enum(info: ResultInfo) -> EnumInfo {
+    EnumInfo {
+        name: "Result".into(),
+        variants: vec![
+            VariantInfo {
+                name: "Ok".into(),
+                payload: Some(info.ok),
+            },
+            VariantInfo {
+                name: "Err".into(),
+                payload: Some(info.err),
+            },
+        ],
     }
 }
 

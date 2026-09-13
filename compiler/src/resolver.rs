@@ -15,6 +15,8 @@ pub enum Builtin {
     Print,
     Some,
     None,
+    Ok,
+    Err,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
@@ -75,6 +77,8 @@ pub fn resolve(program: &Program) -> ResolveOutput {
     resolver.insert("Some", SymbolKind::Builtin(Builtin::Some), None);
     resolver.insert("None", SymbolKind::Builtin(Builtin::None), None);
     resolver.insert("null", SymbolKind::Builtin(Builtin::None), None);
+    resolver.insert("Ok", SymbolKind::Builtin(Builtin::Ok), None);
+    resolver.insert("Err", SymbolKind::Builtin(Builtin::Err), None);
     resolver.enter(program.span);
     for declaration in &program.enums {
         resolver.declare(&declaration.name, SymbolKind::Enum);
@@ -241,6 +245,7 @@ impl Resolver {
             StatementKind::IfLet {
                 binding,
                 value,
+                pattern: _,
                 then_block,
                 else_branch,
             } => {
@@ -302,9 +307,9 @@ impl Resolver {
         match &expr.kind {
             ExprKind::Literal(_) => {}
             ExprKind::Identifier(name) => self.reference(name),
-            ExprKind::Group(inner) | ExprKind::Unary { operand: inner, .. } => {
-                self.expression(inner)
-            }
+            ExprKind::Group(inner)
+            | ExprKind::Try(inner)
+            | ExprKind::Unary { operand: inner, .. } => self.expression(inner),
             ExprKind::Binary { left, right, .. } => {
                 self.expression(left);
                 self.expression(right);

@@ -142,6 +142,7 @@ impl Lexer<'_> {
                 '<' => Less,
                 '>' => Greater,
                 '!' => Bang,
+                '?' => Question,
                 _ => {
                     self.error(
                         start,

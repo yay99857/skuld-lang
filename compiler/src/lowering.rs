@@ -65,6 +65,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
         enums: typed.enums.clone(),
         arrays: typed.arrays.clone(),
         options: typed.options.clone(),
+        results: typed.results.clone(),
         functions,
         entry: typed.entry,
         span: typed.syntax.span,
@@ -142,11 +143,17 @@ fn statement(source: &ast::Statement, typed: &TypedProgram) -> h::Statement {
             else_branch: else_branch.as_ref().map(|s| Box::new(statement(s, typed))),
         },
         ast::StatementKind::IfLet {
+            pattern,
             binding,
             value,
             then_block,
             else_branch,
         } => h::StatementKind::IfLet {
+            pattern: match pattern {
+                ast::IfLetPattern::Some => h::IfLetPattern::Some,
+                ast::IfLetPattern::Ok => h::IfLetPattern::Ok,
+                ast::IfLetPattern::Err => h::IfLetPattern::Err,
+            },
             binding: typed.resolution.declarations[&binding.span.start],
             value: expression(value, typed),
             then_block: block(then_block, typed),
@@ -163,8 +170,15 @@ fn statement(source: &ast::Statement, typed: &TypedProgram) -> h::Statement {
         ast::StatementKind::Continue => h::StatementKind::Continue,
         ast::StatementKind::Match { value, arms } => {
             let lowered_value = expression(value, typed);
-            let Type::Enum(enum_id) = lowered_value.ty else {
-                unreachable!("checked match target must be enum");
+            // A `Result` reaches the backend as a two-variant enum, so a match
+            // over it only differs in where the variant index comes from.
+            let variant_index = |name: &str| match lowered_value.ty {
+                Type::Enum(enum_id) => typed.enums[enum_id.0]
+                    .find_variant(name)
+                    .expect("checked variant"),
+                Type::Result(_) if name == "Ok" => crate::types::ResultInfo::OK,
+                Type::Result(_) => crate::types::ResultInfo::ERR,
+                _ => unreachable!("checked match target must be an enum or Result"),
             };
             let lowered_arms = arms
                 .iter()
@@ -176,9 +190,7 @@ fn statement(source: &ast::Statement, typed: &TypedProgram) -> h::Statement {
                             binding,
                             ..
                         } => {
-                            let variant_index = typed.enums[enum_id.0]
-                                .find_variant(&variant_name.text)
-                                .expect("checked variant");
+                            let variant_index = variant_index(&variant_name.text);
                             let binding_id = binding
                                 .as_ref()
                                 .map(|name| typed.resolution.declarations[&name.span.start]);
@@ -244,6 +256,7 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
         ast::ExprKind::Weak(value) => {
             h::ExprKind::Weak(value.as_ref().map(|v| Box::new(expression(v, typed))))
         }
+        ast::ExprKind::Try(inner) => h::ExprKind::Try(Box::new(expression(inner, typed))),
         ast::ExprKind::Interpolation(parts) => h::ExprKind::Interpolation(
             parts
                 .iter()
@@ -410,6 +423,12 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
                     (Some(Type::Option(_)), "is_none") => {
                         Some(h::ExprKind::IsNone(Box::new(expression(object, typed))))
                     }
+                    (Some(Type::Result(_)), "is_ok") => {
+                        Some(h::ExprKind::IsOk(Box::new(expression(object, typed))))
+                    }
+                    (Some(Type::Result(_)), "is_err") => {
+                        Some(h::ExprKind::IsErr(Box::new(expression(object, typed))))
+                    }
                     (Some(Type::Array(_)), "len") => {
                         Some(h::ExprKind::ArrayLen(Box::new(expression(object, typed))))
                     }
@@ -453,9 +472,15 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
                 unreachable!("internal compiler bug: indirect checked call")
             };
             let id = typed.resolution.references[&name.span.start];
-            if typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::Some) {
+            let constructor = match typed.resolution.symbols[id.0].kind {
+                SymbolKind::Builtin(Builtin::Some) => Some(h::ExprKind::Some as fn(_) -> _),
+                SymbolKind::Builtin(Builtin::Ok) => Some(h::ExprKind::Ok as fn(_) -> _),
+                SymbolKind::Builtin(Builtin::Err) => Some(h::ExprKind::Err as fn(_) -> _),
+                _ => None,
+            };
+            if let Some(constructor) = constructor {
                 return h::Expr {
-                    kind: h::ExprKind::Some(Box::new(expression(&arguments[0], typed))),
+                    kind: constructor(Box::new(expression(&arguments[0], typed))),
                     ty: typed.expressions[&(source.span.start, source.span.end)],
                     span: source.span,
                 };

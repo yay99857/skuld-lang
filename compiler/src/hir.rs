@@ -14,6 +14,7 @@ pub struct Program {
     pub(crate) enums: Vec<crate::types::EnumInfo>,
     pub(crate) arrays: Vec<crate::types::ArrayInfo>,
     pub(crate) options: Vec<crate::types::OptionInfo>,
+    pub(crate) results: Vec<crate::types::ResultInfo>,
     pub(crate) functions: Vec<Function>,
     pub(crate) entry: SymbolId,
     pub(crate) span: Span,
@@ -64,6 +65,7 @@ pub(crate) enum StatementKind {
         else_branch: Option<Box<Statement>>,
     },
     IfLet {
+        pattern: IfLetPattern,
         binding: SymbolId,
         value: Expr,
         then_block: Block,
@@ -87,6 +89,14 @@ pub(crate) enum StatementKind {
         iterable: ForIterable,
         body: Block,
     },
+}
+/// Which inline payload an `if let` reads. The value's own type says whether
+/// that is an `Option` or a `Result`; this only picks the side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IfLetPattern {
+    Some,
+    Ok,
+    Err,
 }
 #[derive(Debug)]
 pub(crate) enum ForIterable {
@@ -169,6 +179,13 @@ pub(crate) enum ExprKind {
     None,
     IsSome(Box<Expr>),
     IsNone(Box<Expr>),
+    Ok(Box<Expr>),
+    Err(Box<Expr>),
+    IsOk(Box<Expr>),
+    IsErr(Box<Expr>),
+    /// `value?`. Yields the success payload, or returns the error from the
+    /// enclosing function, whose `Result` type the backend already knows.
+    Try(Box<Expr>),
     EnumVariant {
         variant_index: usize,
         payload: Option<Box<Expr>>,

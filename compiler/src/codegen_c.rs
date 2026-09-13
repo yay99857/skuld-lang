@@ -10,6 +10,8 @@ pub fn emit_c(program: &Program) -> String {
         enums: program.enums.clone(),
         arrays: program.arrays.clone(),
         options: program.options.clone(),
+        results: program.results.clone(),
+        current_return: Type::Void,
     };
     for index in 0..program.arrays.len() {
         emitter.line(&format!("typedef struct skuld_a{index} skuld_a{index};"));
@@ -25,6 +27,7 @@ pub fn emit_c(program: &Program) -> String {
     let types: Vec<_> = (0..program.structs.len())
         .map(|i| Type::Struct(crate::types::StructId(i)))
         .chain((0..program.options.len()).map(|i| Type::Option(crate::types::OptionId(i))))
+        .chain((0..program.results.len()).map(|i| Type::Result(crate::types::ResultId(i))))
         .chain((0..program.enums.len()).map(|i| Type::Enum(crate::types::EnumId(i))))
         .collect();
     let mut order = Vec::new();
@@ -36,7 +39,7 @@ pub fn emit_c(program: &Program) -> String {
             }
             let complete = |field: Type| match field {
                 Type::Struct(id) => program.structs[id.0].reference || order.contains(&field),
-                Type::Option(_) => order.contains(&field),
+                Type::Option(_) | Type::Result(_) => order.contains(&field),
                 Type::Enum(_) => order.contains(&field),
                 _ => true,
             };
@@ -46,6 +49,9 @@ pub fn emit_c(program: &Program) -> String {
                     .iter()
                     .all(|field| complete(field.ty)),
                 Type::Option(id) => complete(program.options[id.0].element),
+                Type::Result(id) => {
+                    complete(program.results[id.0].ok) && complete(program.results[id.0].err)
+                }
                 Type::Enum(id) => program.enums[id.0]
                     .variants
                     .iter()
@@ -66,6 +72,16 @@ pub fn emit_c(program: &Program) -> String {
                 emitter.line(&format!(
                     "typedef struct {{ bool some; {} value; }} skuld_o{};",
                     emitter.c_type(program.options[id.0].element),
+                    id.0
+                ));
+                continue;
+            }
+            Type::Result(id) => {
+                let info = program.results[id.0];
+                emitter.line(&format!(
+                    "typedef struct {{ int64_t tag; union {{ {} v0; {} v1; }} payload; }} skuld_r{};",
+                    emitter.c_type(info.ok),
+                    emitter.c_type(info.err),
                     id.0
                 ));
                 continue;
@@ -150,6 +166,7 @@ pub fn emit_c(program: &Program) -> String {
         .map(|i| Type::Struct(crate::types::StructId(i)))
         .chain((0..program.arrays.len()).map(|i| Type::Array(crate::types::ArrayId(i))))
         .chain((0..program.options.len()).map(|i| Type::Option(crate::types::OptionId(i))))
+        .chain((0..program.results.len()).map(|i| Type::Result(crate::types::ResultId(i))))
         .chain((0..program.enums.len()).map(|i| Type::Enum(crate::types::EnumId(i))))
         .filter(|ty| emitter.managed(*ty))
         .collect();
@@ -183,6 +200,7 @@ pub fn emit_c(program: &Program) -> String {
             function.name, function.span.start, function.span.end
         ));
         emitter.line(&format!("{} {{", emitter.signature(function)));
+        emitter.current_return = function.return_type;
         emitter.indent += 1;
         for parameter in &function.parameters {
             emitter.line(&format!(
@@ -242,6 +260,10 @@ struct Emitter {
     enums: Vec<crate::types::EnumInfo>,
     arrays: Vec<crate::types::ArrayInfo>,
     options: Vec<crate::types::OptionInfo>,
+    results: Vec<crate::types::ResultInfo>,
+    /// The enclosing function's return type, which `?` needs to build its
+    /// early `Err` return without carrying it through the whole HIR.
+    current_return: Type,
 }
 fn type_name(structs: &[StructInfo], ty: Type) -> String {
     match ty {
@@ -252,6 +274,7 @@ fn type_name(structs: &[StructInfo], ty: Type) -> String {
         Type::Void => "void".into(),
         Type::Weak(_) => "skuld_weak".into(),
         Type::Option(id) => format!("skuld_o{}", id.0),
+        Type::Result(id) => format!("skuld_r{}", id.0),
         Type::Enum(id) => format!("skuld_e{}", id.0),
         Type::Array(id) => format!("skuld_a{} *", id.0),
         // A class value is a pointer to a shared object; a struct is the
@@ -303,18 +326,34 @@ impl Emitter {
             Type::Struct(id) => format!("skuld_s{}", id.0),
             Type::Array(id) => format!("skuld_a{}", id.0),
             Type::Option(id) => format!("skuld_o{}", id.0),
+            Type::Result(id) => format!("skuld_r{}", id.0),
             Type::Enum(id) => format!("skuld_e{}", id.0),
             _ => unreachable!("aggregate type"),
         }
     }
     fn enum_helpers(&mut self, id: crate::types::EnumId) {
-        let name = format!("skuld_e{}", id.0);
         let managed_variants: Vec<(usize, Type)> = self.enums[id.0]
             .variants
             .iter()
             .enumerate()
             .filter_map(|(i, v)| v.payload.filter(|ty| self.managed(*ty)).map(|ty| (i, ty)))
             .collect();
+        self.tagged_helpers(format!("skuld_e{}", id.0), &managed_variants);
+    }
+    fn result_helpers(&mut self, id: crate::types::ResultId) {
+        let info = self.results[id.0];
+        let managed_variants: Vec<(usize, Type)> = [
+            (crate::types::ResultInfo::OK, info.ok),
+            (crate::types::ResultInfo::ERR, info.err),
+        ]
+        .into_iter()
+        .filter(|(_, ty)| self.managed(*ty))
+        .collect();
+        self.tagged_helpers(format!("skuld_r{}", id.0), &managed_variants);
+    }
+    /// Retain, release and assign for an inline tag-plus-payload value. Enums
+    /// and `Result` share one layout, so they share one implementation.
+    fn tagged_helpers(&mut self, name: String, managed_variants: &[(usize, Type)]) {
         self.line(&format!(
             "static inline {name} {name}_retain({name} value) {{"
         ));
@@ -322,7 +361,7 @@ impl Emitter {
         if !managed_variants.is_empty() {
             self.line("switch (value.tag) {");
             self.indent += 1;
-            for &(index, payload) in &managed_variants {
+            for &(index, payload) in managed_variants {
                 self.line(&format!("case {index}:"));
                 self.indent += 1;
                 let retained = self.retained(payload, &format!("value.payload.v{index}"));
@@ -345,7 +384,7 @@ impl Emitter {
         if !managed_variants.is_empty() {
             self.line("switch (slot->tag) {");
             self.indent += 1;
-            for &(index, payload) in &managed_variants {
+            for &(index, payload) in managed_variants {
                 let release_fn = self.release_function(payload).unwrap();
                 self.line(&format!("case {index}:"));
                 self.indent += 1;
@@ -374,6 +413,10 @@ impl Emitter {
     fn aggregate_helpers(&mut self, ty: Type) {
         if let Type::Option(id) = ty {
             self.option_helpers(id);
+            return;
+        }
+        if let Type::Result(id) = ty {
+            self.result_helpers(id);
             return;
         }
         if let Type::Enum(id) = ty {
@@ -603,6 +646,9 @@ impl Emitter {
         match ty {
             Type::String | Type::Array(_) | Type::Weak(_) => true,
             Type::Option(id) => self.managed(self.options[id.0].element),
+            Type::Result(id) => {
+                self.managed(self.results[id.0].ok) || self.managed(self.results[id.0].err)
+            }
             Type::Enum(id) => self.enums[id.0]
                 .variants
                 .iter()
@@ -623,6 +669,7 @@ impl Emitter {
         match ty {
             Type::String => format!("skuld_string_retain({value})"),
             Type::Option(id) if self.managed(ty) => format!("skuld_o{}_retain({value})", id.0),
+            Type::Result(id) if self.managed(ty) => format!("skuld_r{}_retain({value})", id.0),
             Type::Weak(_) => format!("skuld_weak_retain({value})"),
             Type::Array(id) => format!("skuld_a{}_retain({value})", id.0),
             Type::Struct(id) if self.managed(ty) => format!("skuld_s{}_retain({value})", id.0),
@@ -634,6 +681,7 @@ impl Emitter {
         match ty {
             Type::String => Some("skuld_string_release".into()),
             Type::Option(id) if self.managed(ty) => Some(format!("skuld_o{}_release", id.0)),
+            Type::Result(id) if self.managed(ty) => Some(format!("skuld_r{}_release", id.0)),
             Type::Weak(_) => Some("skuld_weak_release".into()),
             Type::Array(id) => Some(format!("skuld_a{}_release", id.0)),
             Type::Struct(id) if self.managed(ty) => Some(format!("skuld_s{}_release", id.0)),
@@ -653,6 +701,7 @@ impl Emitter {
         match ty {
             Type::String => Some("skuld_string_assign".into()),
             Type::Option(id) if self.managed(ty) => Some(format!("skuld_o{}_assign", id.0)),
+            Type::Result(id) if self.managed(ty) => Some(format!("skuld_r{}_assign", id.0)),
             Type::Weak(_) => Some("skuld_weak_assign".into()),
             Type::Array(id) => Some(format!("skuld_a{}_assign", id.0)),
             Type::Struct(id) if self.managed(ty) => Some(format!("skuld_s{}_assign", id.0)),
@@ -759,24 +808,44 @@ impl Emitter {
                 }
             }
             StatementKind::IfLet {
+                pattern,
                 binding,
                 value,
                 then_block,
                 else_branch,
             } => {
-                let Type::Option(id) = value.ty else {
-                    unreachable!("checked if let")
+                let (payload, slot) = match (pattern, value.ty) {
+                    (IfLetPattern::Some, Type::Option(id)) => {
+                        (self.options[id.0].element, ".value".to_string())
+                    }
+                    (IfLetPattern::Ok, Type::Result(id)) => (
+                        self.results[id.0].ok,
+                        format!(".payload.v{}", crate::types::ResultInfo::OK),
+                    ),
+                    (IfLetPattern::Err, Type::Result(id)) => (
+                        self.results[id.0].err,
+                        format!(".payload.v{}", crate::types::ResultInfo::ERR),
+                    ),
+                    _ => unreachable!("checked if let"),
                 };
-                let payload = self.options[id.0].element;
+                let present = match pattern {
+                    IfLetPattern::Some => ".some".to_string(),
+                    IfLetPattern::Ok => {
+                        format!(".tag == {}", crate::types::ResultInfo::OK)
+                    }
+                    IfLetPattern::Err => {
+                        format!(".tag == {}", crate::types::ResultInfo::ERR)
+                    }
+                };
                 let value = self.expression(value);
-                self.line(&format!("if ({value}.some) {{"));
+                self.line(&format!("if ({value}{present}) {{"));
                 self.indent += 1;
                 self.line(&format!(
                     "{}{} skuld_v{} = {};",
                     self.cleanup(payload),
                     self.c_type(payload),
                     binding.0,
-                    self.retained(payload, &format!("{value}.value"))
+                    self.retained(payload, &format!("{value}{slot}"))
                 ));
                 self.line(&format!("(void)skuld_v{};", binding.0));
                 self.block_contents(then_block);
@@ -815,10 +884,20 @@ impl Emitter {
             StatementKind::Break => self.line("break;"),
             StatementKind::Continue => self.line("continue;"),
             StatementKind::Match { value, arms } => {
-                let Type::Enum(id) = value.ty else {
-                    unreachable!("checked match")
+                // Enums and `Result` share the tag-plus-payload layout, so the
+                // only difference here is where a variant's payload type lives.
+                let payloads: Vec<Option<Type>> = match value.ty {
+                    Type::Enum(id) => self.enums[id.0]
+                        .variants
+                        .iter()
+                        .map(|variant| variant.payload)
+                        .collect(),
+                    Type::Result(id) => {
+                        let info = self.results[id.0];
+                        vec![Some(info.ok), Some(info.err)]
+                    }
+                    _ => unreachable!("checked match"),
                 };
-                let enum_info = self.enums[id.0].clone();
                 let target = self.expression(value);
                 let mut first = true;
                 for arm in arms {
@@ -836,9 +915,8 @@ impl Emitter {
                             self.line(&cond);
                             self.indent += 1;
                             if let Some(binding_id) = binding {
-                                let payload_ty = enum_info.variants[*variant_index]
-                                    .payload
-                                    .expect("checked variant payload");
+                                let payload_ty =
+                                    payloads[*variant_index].expect("checked variant payload");
                                 self.line(&format!(
                                     "{}{} skuld_v{} = {};",
                                     self.cleanup(payload_ty),
@@ -1046,6 +1124,53 @@ impl Emitter {
             }
             ExprKind::None => {
                 self.store(expr.ty, &format!("({}){{0}}", self.c_type(expr.ty)), true)
+            }
+            ExprKind::Ok(value) | ExprKind::Err(value) => {
+                let tag = if matches!(expr.kind, ExprKind::Ok(_)) {
+                    crate::types::ResultInfo::OK
+                } else {
+                    crate::types::ResultInfo::ERR
+                };
+                let rendered = self.expression(value);
+                let retained = self.retained(value.ty, &rendered);
+                let c_ty = self.c_type(expr.ty);
+                self.store(
+                    expr.ty,
+                    &format!("({c_ty}){{.tag = {tag}, .payload = {{.v{tag} = {retained}}}}}"),
+                    true,
+                )
+            }
+            ExprKind::IsOk(value) | ExprKind::IsErr(value) => {
+                let tag = if matches!(expr.kind, ExprKind::IsOk(_)) {
+                    crate::types::ResultInfo::OK
+                } else {
+                    crate::types::ResultInfo::ERR
+                };
+                let value = self.expression(value);
+                self.temporary(Type::Bool, &format!("{value}.tag == {tag}"))
+            }
+            ExprKind::Try(value) => {
+                let Type::Result(id) = value.ty else {
+                    unreachable!("checked `?`")
+                };
+                let ok = self.results[id.0].ok;
+                let err = self.results[id.0].err;
+                let rendered = self.expression(value);
+                // The operand is kept in an owning slot so that the early
+                // return below releases it like any other local.
+                let slot = self.temporary(value.ty, &rendered);
+                let error = crate::types::ResultInfo::ERR;
+                let returned = self.c_type(self.current_return);
+                let payload = self.retained(err, &format!("{slot}.payload.v{error}"));
+                self.line(&format!("if ({slot}.tag == {error}) {{"));
+                self.indent += 1;
+                self.line(&format!(
+                    "return ({returned}){{.tag = {error}, .payload = {{.v{error} = {payload}}}}};"
+                ));
+                self.indent -= 1;
+                self.line("}");
+                let success = crate::types::ResultInfo::OK;
+                self.temporary(ok, &format!("{slot}.payload.v{success}"))
             }
             ExprKind::EnumVariant {
                 variant_index,

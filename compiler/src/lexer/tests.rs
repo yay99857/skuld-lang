@@ -48,7 +48,7 @@ fn keywords_and_identifiers() {
 #[test]
 fn operators_and_delimiters() {
     assert_eq!(
-        kinds("( ) { } [ ] , . : -> + - * / % = == != < > <= >= ! && || += -= *= /="),
+        kinds("( ) { } [ ] , . : -> + - * / % = == != < > <= >= ! ? && || += -= *= /="),
         vec![
             LeftParen,
             RightParen,
@@ -73,6 +73,7 @@ fn operators_and_delimiters() {
             LessEqual,
             GreaterEqual,
             Bang,
+            Question,
             AndAnd,
             OrOr,
             PlusEqual,
@@ -86,6 +87,21 @@ fn operators_and_delimiters() {
         kinds("===!==+++="),
         vec![
             EqualEqual, Equal, BangEqual, Equal, Plus, Plus, PlusEqual, Eof
+        ]
+    );
+    // `?` never pairs with a neighbour, and `>>` is two closers, not a shift,
+    // so a nested generic type closes without any special lexer rule.
+    assert_eq!(
+        kinds("a?? >> >>="),
+        vec![
+            Identifier("a".into()),
+            Question,
+            Question,
+            Greater,
+            Greater,
+            Greater,
+            GreaterEqual,
+            Eof
         ]
     );
 }

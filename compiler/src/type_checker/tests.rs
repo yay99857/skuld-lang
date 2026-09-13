@@ -533,7 +533,12 @@ fn enum_and_match_type_checking() {
         "enum Color { Red, Green, Blue }\nfunc main() {\n    let c = Color.Red\n    match c {\n        Color.Red: { print(1) }\n        Color.Green: { print(2) }\n        Color.Blue: { print(3) }\n    }\n}",
     );
     valid(
-        "enum Result { Ok(int), Err(string) }\nfunc eval(r: Result) -> int {\n    match r {\n        Result.Ok(val): return val\n        Result.Err(msg): return 0\n    }\n}\nfunc main() {}",
+        "enum Outcome { Good(int), Bad(string) }\nfunc eval(r: Outcome) -> int {\n    match r {\n        Outcome.Good(val): return val\n        Outcome.Bad(msg): return 0\n    }\n}\nfunc main() {}",
+    );
+    // `Option` and `Result` name builtin types and cannot be declared.
+    fails(
+        "enum Result { Good, Bad }\nfunc main() {}",
+        DiagnosticCode::DuplicateDeclaration,
     );
     fails(
         "enum E { A, B }\nfunc main() {\n    let e = E.A\n    match e {\n        E.A: {}\n    }\n}",
@@ -541,6 +546,67 @@ fn enum_and_match_type_checking() {
     );
     fails(
         "enum List { Cons(List), Nil }\nfunc main() {}",
+        DiagnosticCode::InvalidValueType,
+    );
+}
+
+#[test]
+fn result_type_checking() {
+    valid(
+        "func read(n: int) -> Result<int, string> {\n    if n < 0 { return Err(\"negative\") }\n    return Ok(n)\n}\nfunc twice(n: int) -> Result<int, string> {\n    let value = read(n)?\n    return Ok(value * 2)\n}\nfunc main() {\n    match twice(2) {\n        Ok(v): print(v)\n        Err(e): print(e)\n    }\n    if let Ok(v) = twice(2) { print(v) }\n    if let Err(e) = twice(-1) { print(e) }\n    print(twice(2).is_ok())\n    print(twice(2).is_err())\n}",
+    );
+    // Interned by payload pair: the same `Result<T, E>` is the same type, and a
+    // different pair is not.
+    let typed = check(
+        "func a() -> Result<int, string> { return Ok(1) }\nfunc b() -> Result<int, string> { return Ok(2) }\nfunc c() -> Result<string, int> { return Err(3) }\nfunc main() {}",
+    )
+    .expect("checked");
+    assert_eq!(typed.results().len(), 2);
+
+    // Neither side can be inferred from the other, so a constructor needs an
+    // expected type; `?` needs an enclosing `Result` with the same error type.
+    fails("func main() { let x = Ok(1) }", DiagnosticCode::UnknownType);
+    fails(
+        "func main() { let x = Err(\"boom\") }",
+        DiagnosticCode::UnknownType,
+    );
+    fails(
+        "func f() -> Result<int, string> { return Ok(\"text\") }\nfunc main() {}",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "func f() -> Result<int, string> { return Ok(1, 2) }\nfunc main() {}",
+        DiagnosticCode::ArgumentCount,
+    );
+    fails("func main() { let f = Ok }", DiagnosticCode::ArgumentCount);
+    fails(
+        "func f() -> Result<int, string> { return Ok(1) }\nfunc main() { let x = f()? }",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "enum E { Bad }\nfunc f() -> Result<int, string> { return Ok(1) }\nfunc g() -> Result<int, E> { return Ok(f()?) }\nfunc main() {}",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "func f() -> Result<int, string> { let x = 1? \n return Ok(x) }\nfunc main() {}",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "func f() -> Result<int, string> { return Ok(1) }\nfunc main() { match f() { Ok(v): print(v) } }",
+        DiagnosticCode::NonExhaustiveMatch,
+    );
+    fails(
+        "func main() { let x: Option<int> = 1\n if let Ok(v) = x { print(v) } }",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "struct Result { x: int }\nfunc main() {}",
+        DiagnosticCode::DuplicateDeclaration,
+    );
+    // A value type cannot reach itself through a `Result`, which stores both
+    // payloads inline and so adds no indirection.
+    fails(
+        "struct Node { next: Result<Node, string> }\nfunc main() {}",
         DiagnosticCode::InvalidValueType,
     );
 }

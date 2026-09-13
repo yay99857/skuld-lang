@@ -55,6 +55,7 @@ pub enum TokenKind {
     LessEqual,
     GreaterEqual,
     Bang,
+    Question,
     AndAnd,
     OrOr,
     PlusEqual,

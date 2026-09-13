@@ -583,6 +583,60 @@ fn option_syntax_errors_and_nesting_are_diagnosed() {
 }
 
 #[test]
+fn result_types_patterns_and_try_parse() {
+    // `Result<T, E>` closes like `Option<T>`, including the `>=` that the lexer
+    // hands over as one token in an annotation followed by an initializer.
+    let source = "func read(): Result<int, string> { return Ok(1) }\nfunc main() {\n    let a: Result<int, string>= read()\n    if let Ok(value) = a { print(value) }\n    if let Err(reason) = a { print(reason) }\n}";
+    let result = parse(source);
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let program = result.program.expect("parsed");
+    let TypeRef::Result { ok, err, .. } = program.functions[0]
+        .return_type
+        .as_ref()
+        .expect("return type")
+    else {
+        panic!("Result return type")
+    };
+    assert!(matches!(**ok, TypeRef::Named(ref name) if name.text == "int"));
+    assert!(matches!(**err, TypeRef::Named(ref name) if name.text == "string"));
+    let patterns: Vec<IfLetPattern> = program.functions[1]
+        .body
+        .statements
+        .iter()
+        .filter_map(|statement| match &statement.kind {
+            StatementKind::IfLet { pattern, .. } => Some(*pattern),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(patterns, vec![IfLetPattern::Ok, IfLetPattern::Err]);
+
+    // `?` is postfix and binds tighter than any operator, so it applies to the
+    // call it follows rather than to the surrounding expression.
+    let expr = expr("read()? + read()?");
+    let ExprKind::Binary { left, right, .. } = expr.kind else {
+        panic!("binary")
+    };
+    assert!(matches!(left.kind, ExprKind::Try(_)));
+    assert!(matches!(right.kind, ExprKind::Try(_)));
+
+    for source in [
+        "func main() { let x: Result<int> = None }",
+        "func main() { let x: Result<int, = None }",
+        "func main() { let x: Result<, string> = None }",
+        "func main() { if let Ok() = None {} }",
+    ] {
+        let result = parse(source);
+        assert!(result.program.is_none(), "{source}");
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .all(|d| d.span.start <= d.span.end && d.span.end <= source.len())
+        );
+    }
+}
+
+#[test]
 fn colon_return_and_direct_if_let_parse() {
     let source = "struct Calc { compute(x: int): int { return x } }\nfunc add(a: int, b: int): int { return a + b }\nfunc main() { if let ans = None {} }";
     let result = parse(source);

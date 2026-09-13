@@ -65,16 +65,33 @@ pub struct Name {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeRef {
     Named(Name),
-    Option { element: Box<TypeRef>, span: Span },
-    Weak { class: Name, span: Span },
-    Array { element: Box<TypeRef>, span: Span },
+    Option {
+        element: Box<TypeRef>,
+        span: Span,
+    },
+    Result {
+        ok: Box<TypeRef>,
+        err: Box<TypeRef>,
+        span: Span,
+    },
+    Weak {
+        class: Name,
+        span: Span,
+    },
+    Array {
+        element: Box<TypeRef>,
+        span: Span,
+    },
 }
 
 impl TypeRef {
     pub fn span(&self) -> Span {
         match self {
             Self::Named(name) => name.span,
-            Self::Array { span, .. } | Self::Weak { span, .. } | Self::Option { span, .. } => *span,
+            Self::Array { span, .. }
+            | Self::Weak { span, .. }
+            | Self::Option { span, .. }
+            | Self::Result { span, .. } => *span,
         }
     }
 }
@@ -121,6 +138,7 @@ pub enum StatementKind {
         else_branch: Option<Box<Statement>>,
     },
     IfLet {
+        pattern: IfLetPattern,
         binding: Name,
         value: Expr,
         then_block: Block,
@@ -144,6 +162,15 @@ pub enum StatementKind {
         iterable: ForIterable,
         body: Block,
     },
+}
+
+/// Which builtin payload an `if let` destructures. A bare binding and
+/// `Some(name)` are the same pattern; `Ok`/`Err` select a `Result` side.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IfLetPattern {
+    Some,
+    Ok,
+    Err,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -238,6 +265,8 @@ pub enum ExprKind {
     Array(Vec<Expr>),
     /// `weak(value)` or a contextually typed empty `weak()`.
     Weak(Option<Box<Expr>>),
+    /// `value?`. Unwraps a `Result`, returning its `Err` from the function.
+    Try(Box<Expr>),
     /// `arr[index]`. Reads an element from an array.
     Index {
         object: Box<Expr>,
