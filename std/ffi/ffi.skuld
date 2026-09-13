@@ -1,0 +1,25 @@
+// The two pointer operations that read no memory.
+//
+// A foreign function that allocates answers with a null pointer when it
+// cannot, and one that takes an optional callback wants a null pointer to say
+// there is none. Skuld can write neither, and the foreign boundary is what
+// keeps it that way: no arithmetic, no dereferencing, nothing managed.
+//
+// These two are the exception that proves the rule, because neither reads
+// through a pointer. `null()` produces the null pointer and `is_null()` says
+// whether a pointer is it. Everything else about a foreign pointer stays
+// opaque: it can be held, handed back to the library that made it, and
+// nothing more.
+
+unsafe extern "C" {
+    func sk_null() -> *void
+    func sk_is_null(value: *void) -> i64
+}
+
+pub func null() -> *void {
+    return sk_null()
+}
+
+pub func is_null(value: *void) -> bool {
+    return sk_is_null(value) != 0
+}

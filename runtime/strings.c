@@ -328,6 +328,18 @@ int64_t sk_arg_copy(int64_t index, unsigned char *out, uint64_t capacity) {
     return len;
 }
 
+/* The two pointer operations that read no memory.
+ *
+ * A foreign function that allocates answers with NULL when it cannot, and one
+ * that takes an optional callback wants NULL to say there is none. Skuld can
+ * neither write a null pointer nor compare one, and giving it a way to would
+ * mean giving it pointer arithmetic and dereferencing too. These two do
+ * neither: one produces the null pointer, the other reports whether a pointer
+ * is it. Nothing is read through a pointer here or anywhere else. */
+void *sk_null(void) { return NULL; }
+
+int64_t sk_is_null(void *value) { return value == NULL ? 1 : 0; }
+
 /* The reason the last foreign call failed.
  *
  * `errno` is a macro over a function returning a pointer, and `strerror`
