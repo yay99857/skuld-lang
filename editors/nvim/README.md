@@ -70,10 +70,15 @@ the documented path. Neovim 0.11+ discovers that file on any runtimepath entry;
 `vim.lsp.enable("skuld")` is what starts it.
 
 What it answers: diagnostics on open and on every keystroke, including for the
-files an open file imports, and completion — variants after an enum name,
-exports after an import qualifier, fields and methods after a value, and
-keywords, the prelude and what is in scope otherwise. What it does not answer
-yet: hover, go-to-definition and find-references, so `K` and `gd` stay silent.
+files an open file imports; completion — variants after an enum name, exports
+after an import qualifier, fields and methods after a value, and keywords, the
+prelude and what is in scope otherwise; hover (`K`), which reports a
+declaration the way it is written; and go-to-definition (`gd`), which follows a
+qualified name into the module that declared it, opening a file you never had
+open. What it does not answer yet: find-references, rename and formatting.
+
+A prelude binding such as `print` has a hover but no definition: it belongs to
+the language, and there is nowhere to send you.
 
 Two behaviours worth knowing before filing a bug. Completion answers from the
 last check that **succeeded**, because a half-typed line rarely parses; a file

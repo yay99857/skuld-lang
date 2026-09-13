@@ -427,7 +427,7 @@ Not sequenced with the milestones above and not blocking any of them.
   the resolver, and the escape set is the exact one the lexer accepts, so an
   invalid escape is shown as the error `E0004` would report. It carries no
   semantic knowledge; a capitalised name reads as a type by convention only.
-- **Language server — implemented, diagnostics and completion.** `lsp/` is the `skuld-lsp`
+- **Language server — implemented: diagnostics, completion, hover, definition.** `lsp/` is the `skuld-lsp`
   binary: LSP over stdio, reporting the diagnostics the checker produces and
   nothing else. The protocol is written in the crate rather than taken from a
   dependency, so the workspace still has none — the same choice rust-analyzer,
@@ -461,8 +461,15 @@ Not sequenced with the milestones above and not blocking any of them.
     decides: enum variants, a module's exports, or the fields and methods of a
     value's type, the builtin ones included. Filtering is the client's, not
     the server's, or the two disagree.
-- **Still planned.** Hover, go-to-definition and find-references, which the
-  tables now exposed on `TypedProgram` make reachable. `LANGUAGE.md` names
+  - **Hover and definition share one lookup** from a position to a symbol, a
+    member or a type; only the answer differs. A declaration and a use answer
+    alike. The file a declaration lives in is not in the checker's tables — a
+    type knows its module, not its file — so it is found in the syntax the
+    program was loaded from, the only record of where something was written.
+    The prelude has a hover and no definition: it belongs to the language.
+- **Still planned.** Find-references and rename, which want a use table read
+  the other way round, and formatting, which wants the syntax to stop moving.
+  `LANGUAGE.md` names
   `fmt`, `test`, `doc` and `new` as future commands; the official formatter in
   particular has been deferred since the beginning and can land whenever the
   syntax stops moving.
