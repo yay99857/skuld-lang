@@ -248,7 +248,11 @@ fn fmt_formats_in_place_and_check_detects_drift() {
     std::fs::write(&path, unformatted).expect("write unformatted");
 
     // --check fails when file needs formatting
-    let check_fail = cli().args(["fmt", "--check"]).arg(&path).output().expect("start CLI");
+    let check_fail = cli()
+        .args(["fmt", "--check"])
+        .arg(&path)
+        .output()
+        .expect("start CLI");
     assert_eq!(check_fail.status.code(), Some(1));
     assert_eq!(std::fs::read_to_string(&path).expect("read"), unformatted);
 
@@ -262,7 +266,11 @@ fn fmt_formats_in_place_and_check_detects_drift() {
     );
 
     // --check now passes
-    let check_ok = cli().args(["fmt", "--check"]).arg(&path).output().expect("start CLI");
+    let check_ok = cli()
+        .args(["fmt", "--check"])
+        .arg(&path)
+        .output()
+        .expect("start CLI");
     assert!(check_ok.status.success());
 
     // formatting invalid code fails and does not overwrite
@@ -271,9 +279,11 @@ fn fmt_formats_in_place_and_check_detects_drift() {
     let fmt_invalid = cli().arg("fmt").arg(&path).output().expect("start CLI");
     assert_eq!(fmt_invalid.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&fmt_invalid.stderr);
-    assert!(stderr.contains("error[E1001]"), "expected diagnostic: {stderr}");
+    assert!(
+        stderr.contains("error[E1001]"),
+        "expected diagnostic: {stderr}"
+    );
     assert_eq!(std::fs::read_to_string(&path).expect("read"), invalid);
 
     std::fs::remove_file(path).expect("cleanup");
 }
-

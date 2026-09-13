@@ -1,9 +1,4 @@
-use crate::{
-    ast::*,
-    diagnostic::Diagnostic,
-    parser::parse,
-    span::Span,
-};
+use crate::{ast::*, diagnostic::Diagnostic, parser::parse, span::Span};
 
 #[derive(Debug, Clone)]
 struct Comment {
@@ -198,8 +193,8 @@ impl<'a> Formatter<'a> {
             let comment_start = self.comments[self.comment_idx].span.start;
             // The comment is on the same line if there is no newline between
             // the end of the code and the comment.
-            let on_same_line = comment_start <= scan
-                || !self.source[line_end_pos..comment_start].contains('\n');
+            let on_same_line =
+                comment_start <= scan || !self.source[line_end_pos..comment_start].contains('\n');
             if on_same_line {
                 self.push(" ");
                 let text = self.comments[self.comment_idx].text.clone();
@@ -336,10 +331,7 @@ impl<'a> Formatter<'a> {
             }
         }
         self.push(" {");
-        let header_end = st
-            .conforms
-            .last()
-            .map_or(st.name.span.end, |p| p.span.end);
+        let header_end = st.conforms.last().map_or(st.name.span.end, |p| p.span.end);
         self.emit_trailing_comment(header_end);
         self.indent();
 
