@@ -1,0 +1,7 @@
+class Point {
+    x: int
+}
+
+func main() {
+    let p = Point { x: 1 }
+}

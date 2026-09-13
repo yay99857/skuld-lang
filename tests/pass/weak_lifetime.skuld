@@ -1,0 +1,28 @@
+class User { name: string }
+struct Handle { value: weak User }
+func expired() -> weak User {
+    let user = new User(name: "a" + "b")
+    return weak(user)
+}
+func promote() -> User {
+    let user = new User(name: "ret" + "ained")
+    let weak_user = weak(user)
+    return weak_user.get()
+}
+func main() {
+    let dead = expired()
+    print(dead.alive())
+    let handles = [Handle { value: dead }]
+    print(handles[0].value.alive())
+    let alive = promote()
+    print(alive.name)
+    var i = 0
+    while i < 4 {
+        i += 1
+        let user = new User(name: "loop" + "!")
+        let ref = weak(user)
+        if i == 1 { continue }
+        if i == 3 { break }
+        print(ref.get().name)
+    }
+}

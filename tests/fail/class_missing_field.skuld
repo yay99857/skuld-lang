@@ -1,0 +1,8 @@
+class Point {
+    x: int
+    y: int
+}
+
+func main() {
+    let p = new Point(x: 1)
+}

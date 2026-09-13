@@ -18,6 +18,8 @@ pub enum TokenKind {
     Loop,
     Break,
     Continue,
+    New,
+    Weak,
     Class,
     Struct,
     Impl,

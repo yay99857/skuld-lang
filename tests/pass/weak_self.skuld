@@ -1,0 +1,17 @@
+class Node { back: weak Node }
+func main() {
+    var watch: weak Node = weak()
+    {
+        let node = new Node(back: weak())
+        node.back = weak(node)
+        node.back = node.back
+        watch = node.back
+        print(watch.alive())
+    }
+    print(watch.alive())
+    watch = weak()
+    {
+        let node = new Node(back: weak())
+        node.back = weak(node)
+    }
+}

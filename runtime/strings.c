@@ -1,4 +1,4 @@
-/* Skuld managed strings. Embedded verbatim into generated C; this file is the
+/* Skuld managed memory. Embedded verbatim into generated C; this file is the
  * single source for retain/release, so the compiler never restates it.
  *
  * Reference counts are NOT atomic. Skuld has no threads, and paying for atomic
@@ -6,8 +6,8 @@
  * threads means revisiting this file, not the code generator.
  *
  * There is no cycle collector, by design: this is reference counting, not a
- * garbage collector. Strings are immutable and cannot form cycles, so nothing
- * here can leak; aggregates that can will need `weak` when they arrive. */
+ * garbage collector. Strong cycles through classes/arrays require explicit
+ * breaking or weak class back-links. */
 
 typedef struct {
     size_t count;
@@ -105,4 +105,65 @@ static inline skuld_string skuld_string_from_float(double value) {
 static inline skuld_string skuld_string_from_bool(bool value) {
     return value ? (skuld_string){(const unsigned char *)"true", 4, NULL}
                  : (skuld_string){(const unsigned char *)"false", 5, NULL};
+}
+
+/* Shared allocation header for classes and arrays. One implicit weak count
+ * keeps the header alive during destruction of the last strong reference. */
+typedef struct skuld_object {
+    size_t strong;
+    size_t weak;
+    void (*destroy)(struct skuld_object *);
+} skuld_object;
+typedef skuld_object *skuld_weak;
+
+static inline void skuld_object_init(skuld_object *object, void (*destroy)(skuld_object *)) {
+    object->strong = 1;
+    object->weak = 1;
+    object->destroy = destroy;
+}
+static inline void *skuld_object_retain(skuld_object *object) {
+    if (object->strong == SIZE_MAX) skuld_fail("reference count overflow", 0);
+    object->strong += 1;
+    return object;
+}
+static inline skuld_weak skuld_weak_retain(skuld_weak value) {
+    if (value != NULL) {
+        if (value->weak == SIZE_MAX) skuld_fail("weak reference count overflow", 0);
+        value->weak += 1;
+    }
+    return value;
+}
+static inline void skuld_weak_release(skuld_weak *slot) {
+    if (*slot != NULL && --(*slot)->weak == 0) free(*slot);
+    *slot = NULL;
+}
+static inline void skuld_weak_assign(skuld_weak *slot, skuld_weak value) {
+    skuld_weak previous = *slot;
+    *slot = skuld_weak_retain(value);
+    skuld_weak_release(&previous);
+}
+static inline void skuld_object_release(skuld_object *object) {
+    if (--object->strong == 0) {
+        object->destroy(object);
+        skuld_weak_release(&object);
+    }
+}
+static inline bool skuld_weak_alive(skuld_weak value) {
+    return value != NULL && value->strong != 0;
+}
+static inline void *skuld_weak_get(skuld_weak value, size_t byte) {
+    if (!skuld_weak_alive(value)) skuld_fail("expired weak reference", byte);
+    return skuld_object_retain(value);
+}
+static inline void *skuld_allocate(size_t base, size_t count, size_t element, size_t byte) {
+    size_t bytes;
+    if (__builtin_mul_overflow(count, element, &bytes) ||
+        __builtin_add_overflow(base, bytes, &bytes)) skuld_fail("allocation size overflow", byte);
+    void *value = malloc(bytes);
+    if (value == NULL) skuld_fail("out of memory", byte);
+    return value;
+}
+static inline size_t skuld_index(int64_t index, size_t length, size_t byte) {
+    if (index < 0 || (uint64_t)index >= length) skuld_fail("array index out of bounds", byte);
+    return (size_t)index;
 }

@@ -1,0 +1,27 @@
+class Node {
+    name: string
+    children: []Node
+    parent: weak Node
+    add(child: Node) {
+        this.children = [child]
+        child.parent = weak(this)
+    }
+}
+func main() {
+    var observer: weak Node = weak()
+    print(observer.alive())
+    {
+        let parent = new Node(name: "pa" + "rent", children: [], parent: weak())
+        let child = new Node(name: "child", children: [], parent: weak())
+        parent.add(child)
+        observer = weak(child)
+        print(child.parent.alive())
+        print(child.parent.get().name)
+        let shared = observer
+        let promoted = shared.get()
+        print(promoted.name)
+    }
+    print(observer.alive())
+    observer = weak()
+    print(observer.alive())
+}

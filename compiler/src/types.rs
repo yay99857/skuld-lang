@@ -5,15 +5,28 @@ use std::fmt;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StructId(pub usize);
 
+/// Index into the checked program's array table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ArrayId(pub usize);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ArrayInfo {
+    pub element: Type,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
     Int,
     Float,
     Bool,
     String,
     Void,
-    /// A value-semantics record; copied on assignment and argument passing.
+    /// A declared struct or class; its table entry determines value/reference semantics.
     Struct(StructId),
+    /// A reference-counted heap array.
+    Array(ArrayId),
+    /// A non-owning class reference, which may be empty or expired.
+    Weak(StructId),
     /// Recovery only; never present in a successfully checked program.
     Error,
 }
@@ -32,6 +45,8 @@ impl fmt::Display for Type {
             Self::Void => "void",
             // Only the checker knows struct names; it renders them itself.
             Self::Struct(_) => "<struct>",
+            Self::Array(_) => "<array>",
+            Self::Weak(_) => "<weak>",
             Self::Error => "<error>",
         })
     }

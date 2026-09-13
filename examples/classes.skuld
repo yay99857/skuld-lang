@@ -1,0 +1,27 @@
+class Counter {
+    value: int
+
+    // Methods carry no `func` prefix; `this` is the implicit receiver.
+    // Unlike structs, classes have reference semantics, so a method can mutate
+    // fields of the instance.
+    increment() {
+        this.value += 1
+    }
+
+    add(amount: int) -> Counter {
+        this.value += amount
+        return this
+    }
+}
+
+func main() {
+    let first = new Counter(value: 10)
+    first.increment()
+
+    // Classes share state by reference: both bindings refer to the same object.
+    let second = first
+    second.add(5)
+
+    print("first: ${first.value}")
+    print("second: ${second.value}")
+}

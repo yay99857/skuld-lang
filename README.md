@@ -10,7 +10,8 @@ func main() {
 
 Skuld now checks and runs small native programs through the complete pipeline:
 lexer → parser → AST → resolver → type checker → HIR → C → clang → executable.
-Demos 0–2 work: hello, typed functions/variables and conditional control flow.
+Demos 0–3 work: hello, typed functions/variables, conditional flow and classes
+with methods and interpolation. Loops, structs, weak references and arrays work too.
 
 Skuld is an independent language with its own syntax, semantics and identity.
 TypeScript is only one reference for readability, alongside Go, V and Rust;
@@ -19,9 +20,8 @@ Design decisions follow Skuld's needs, not resemblance to another language.
 The existing `func`, `->`, immutable `let` and mutable `var` remain unchanged.
 
 The user's [test.skuld](test.skuld) contains evolving syntax demonstrations.
-The [planned class design](LANGUAGE.md#classes-structs-and-memory--planned) now
-uses methods such as `hello()`, implicit `this` and `new User(...)`. These are
-specification proposals, not implemented compiler features; initialization,
+Classes are implemented with methods such as `hello()`, implicit `this`,
+reference semantics and `new User(...)` construction; initialization,
 global-statement and sorting questions are documented separately.
 
 The priorities are simplicity, strong static typing, useful diagnostics and
@@ -111,9 +111,9 @@ string and appends a newline. The previous `fn`, `function` and `println` spelli
 
 Integer overflow and division/remainder by zero produce runtime errors instead
 of C undefined behavior. String literals reference immutable static bytes;
-Unicode and embedded NUL are preserved. Concatenation allocates and is
-reference counted. There is no string mutation,
-concatenation, interpolation, array support, class support or ARC yet. See
+Unicode and embedded NUL are preserved. Concatenation and classes allocate
+and are reference counted. There is no string mutation or cycle collector. Homogeneous arrays and weak
+class references are supported; strong cycles require weak links or explicit breaking. See
 [LANGUAGE.md](LANGUAGE.md) for the complete implemented/planned distinction.
 
 ## Architecture and verification
@@ -137,7 +137,8 @@ Language fixtures are documented in [tests/README.md](tests/README.md).
 
 ## Progress and next milestone
 
-The verified milestone is the complete native pipeline, Demos 0–2 and loops.
+The verified milestones include the complete native pipeline, Demos 0–3, loops,
+structs, weak class references and arrays.
 Rust builds the compiler, and clang compiles the emitted C. Programs execute
 natively without JavaScript or a VM.
 
@@ -145,8 +146,8 @@ natively without JavaScript or a VM.
 diverges, so it satisfies a non-void return type.
 
 `struct` declares a value type with fields, methods, record construction and
-field assignment. Values copy on assignment, so two bindings never share
-state. Methods take an implicit, immutable `this`.
+field assignment. Assignment copies value fields; class and array fields keep
+their shared references. Methods take an implicit, immutable `this`.
 
 Strings are reference counted: `+` concatenates and the result is freed when
 its last reference goes away. Counts are not atomic, there is no garbage
@@ -155,8 +156,26 @@ collector and no cycle collector; literals never allocate.
 `"${value}"` interpolates, accepting what `print` accepts and lowering to
 concatenation.
 
-Next: classes (Demo 3), which reuse this runtime and add reference semantics
-along with the reference cycles that come with them. Structs, managed memory, modules, standard library, official
-formatter, broader tooling, portability and eventual self-hosting remain ahead.
+`class` declares a reference type with fields, methods, `new` construction
+and reference semantics: multiple bindings share mutable state. Allocation is
+heap-based and reference counted.
+
+`weak User` holds a non-owning class reference. `weak(user)` creates one,
+`alive()` checks it and `get()` promotes it, trapping if expired. Weak parent
+links avoid ownership cycles without introducing null or a cycle collector.
+
+Arrays use `[]int` and `[1, 2, 3]`, with shared references, checked indexes and
+`len()`. Their length is fixed; growth, sorting and callbacks remain future work.
+
+```bash
+cargo run -p skuld-cli -- run examples/classes.skuld
+cargo run -p skuld-cli -- run examples/weak.skuld
+cargo run -p skuld-cli -- run examples/arrays.skuld
+```
+
+This closes the classes, weak references and initial arrays milestones.
+Array growth and iteration, Option/Result, modules, a standard library, the official
+formatter, broader tooling, portability and eventual self-hosting remain ahead;
+the next implementation milestone has not been selected.
 Status is reported as completed milestones, not as a completion percentage, and
 implies neither production readiness nor measured Go/Rust performance.

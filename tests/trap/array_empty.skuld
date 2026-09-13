@@ -1,0 +1,2 @@
+func main() { let x: []int = []
+x[0] = 1 }

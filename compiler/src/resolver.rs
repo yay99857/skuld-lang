@@ -271,10 +271,24 @@ impl Resolver {
             }
             // The type name and the field labels are not value names; only the
             // field values are resolved here.
-            ExprKind::StructLiteral { fields, .. } => {
+            ExprKind::StructLiteral { fields, .. } | ExprKind::New { fields, .. } => {
                 for field in fields {
                     self.expression(&field.value);
                 }
+            }
+            ExprKind::Weak(value) => {
+                if let Some(value) = value {
+                    self.expression(value);
+                }
+            }
+            ExprKind::Array(elements) => {
+                for element in elements {
+                    self.expression(element);
+                }
+            }
+            ExprKind::Index { object, index } => {
+                self.expression(object);
+                self.expression(index);
             }
         }
     }

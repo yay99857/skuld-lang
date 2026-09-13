@@ -1,0 +1,15 @@
+class Cell {
+    value: int
+}
+
+struct Wrapper {
+    cell: Cell
+}
+
+func main() {
+    let c = new Cell(value: 42)
+    var w1 = Wrapper { cell: c }
+    let w2 = w1
+    w1.cell.value = 100
+    print(w2.cell.value)
+}

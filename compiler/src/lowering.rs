@@ -58,6 +58,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
     }
     h::Program {
         structs: typed.structs.clone(),
+        arrays: typed.arrays.clone(),
         functions,
         entry: typed.entry,
         span: typed.syntax.span,
@@ -66,23 +67,35 @@ pub fn lower(typed: TypedProgram) -> h::Program {
 /// Walk a chain of field accesses down to the local it is rooted in.
 fn place(target: &ast::Expr, typed: &TypedProgram) -> h::Place {
     match &target.kind {
-        ast::ExprKind::Identifier(name) => h::Place {
-            base: typed.resolution.references[&name.span.start],
-            fields: Vec::new(),
-        },
+        ast::ExprKind::Group(inner) => place(inner, typed),
+        ast::ExprKind::Identifier(name) => {
+            h::Place::Local(typed.resolution.references[&name.span.start])
+        }
         ast::ExprKind::Member { object, member } => {
-            let mut place = place(object, typed);
             let Some(Type::Struct(id)) = typed.expression_type(object.span) else {
                 unreachable!("internal compiler bug: unchecked field assignment")
             };
             let index = typed.structs[id.0]
                 .fields
                 .iter()
-                .position(|field| field.name == member.text)
-                .expect("internal compiler bug: checked access to a missing field");
-            place.fields.push(index);
-            place
+                .position(|f| f.name == member.text)
+                .expect("checked field");
+            if typed.structs[id.0].reference {
+                h::Place::ReferenceField {
+                    object: Box::new(expression(object, typed)),
+                    index,
+                }
+            } else {
+                h::Place::Field {
+                    base: Box::new(place(object, typed)),
+                    index,
+                }
+            }
         }
+        ast::ExprKind::Index { object, index } => h::Place::Index {
+            object: Box::new(expression(object, typed)),
+            index: Box::new(expression(index, typed)),
+        },
         _ => unreachable!("internal compiler bug: unchecked assignment target"),
     }
 }
@@ -145,6 +158,16 @@ fn strip_groups(mut expr: &ast::Expr) -> &ast::Expr {
 }
 fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
     let kind = match &source.kind {
+        ast::ExprKind::Array(elements) => {
+            h::ExprKind::Array(elements.iter().map(|e| expression(e, typed)).collect())
+        }
+        ast::ExprKind::Index { object, index } => h::ExprKind::Index {
+            object: Box::new(expression(object, typed)),
+            index: Box::new(expression(index, typed)),
+        },
+        ast::ExprKind::Weak(value) => {
+            h::ExprKind::Weak(value.as_ref().map(|v| Box::new(expression(v, typed))))
+        }
         ast::ExprKind::Interpolation(parts) => h::ExprKind::Interpolation(
             parts
                 .iter()
@@ -156,22 +179,19 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
                 })
                 .collect(),
         ),
-        ast::ExprKind::StructLiteral { fields, .. } => {
+        ast::ExprKind::StructLiteral { fields, .. } | ast::ExprKind::New { fields, .. } => {
             let Some(Type::Struct(id)) = typed.expression_type(source.span) else {
                 unreachable!("internal compiler bug: unchecked struct literal")
             };
-            // Source order is free; the backend lays fields out in declaration
-            // order, so reorder here and keep evaluation left to right by
-            // evaluating into that order at construction time.
-            let declared = &typed.structs[id.0].fields;
-            let values = declared
+            let values = fields
                 .iter()
-                .map(|declared| {
-                    let initializer = fields
+                .map(|field| {
+                    let index = typed.structs[id.0]
+                        .fields
                         .iter()
-                        .find(|field| field.name.text == declared.name)
-                        .expect("internal compiler bug: checked literal misses a field");
-                    expression(&initializer.value, typed)
+                        .position(|f| f.name == field.name.text)
+                        .expect("checked field");
+                    (index, expression(&field.value, typed))
                 })
                 .collect();
             h::ExprKind::StructLiteral { id, fields: values }
@@ -252,6 +272,26 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
         },
         ast::ExprKind::Call { callee, arguments } => {
             if let ast::ExprKind::Member { object, member } = &strip_groups(callee).kind {
+                let object_type = typed.expression_type(object.span);
+                let special = match (object_type, member.text.as_str()) {
+                    (Some(Type::Array(_)), "len") => {
+                        Some(h::ExprKind::ArrayLen(Box::new(expression(object, typed))))
+                    }
+                    (Some(Type::Weak(_)), "alive") => {
+                        Some(h::ExprKind::WeakAlive(Box::new(expression(object, typed))))
+                    }
+                    (Some(Type::Weak(_)), "get") => {
+                        Some(h::ExprKind::WeakGet(Box::new(expression(object, typed))))
+                    }
+                    _ => None,
+                };
+                if let Some(kind) = special {
+                    return h::Expr {
+                        kind,
+                        ty: typed.expressions[&(source.span.start, source.span.end)],
+                        span: source.span,
+                    };
+                }
                 let Some(Type::Struct(id)) = typed.expression_type(object.span) else {
                     unreachable!("internal compiler bug: unchecked method call")
                 };

@@ -1,0 +1,30 @@
+class Pair {
+    a: int
+    b: int
+}
+struct Value { a: int
+    b: int }
+class Holder { item: Pair }
+func next(value: int) -> int { print(value)
+    return value }
+func swap(holder: Holder) -> int {
+    holder.item = new Pair(a: 100, b: 200)
+    return 10
+}
+func main() {
+    let p = new Pair(b: next(2), a: next(1))
+    let v = Value { b: next(4), a: next(3) }
+    print(p.a + v.b)
+    let holder = new Holder(item: p)
+    holder.item.a += swap(holder)
+    print(p.a)
+    print(holder.item.a)
+    let values = [next(5), next(6)]
+    values[next(0)] += next(7)
+    print(values[0])
+    var array = [1, 2]
+    let alias = array
+    array[0] = (array = [10, 20])[1]
+    print(alias[0])
+    print(array[0])
+}

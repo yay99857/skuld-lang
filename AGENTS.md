@@ -15,10 +15,11 @@ accurate; documenting a future feature is not a request to implement it.
 - Treat it as a living syntax reference, not an executable test or proof that
   a feature is implemented. The current sketches include classes, methods
   without a `func` prefix, `this`, `new`, arrays and sorting callbacks.
-- The updated planned class syntax in `LANGUAGE.md` adopts `hello()` methods,
+- The implemented class syntax in `LANGUAGE.md` adopts `hello()` methods,
   implicit `this` and `new User(...)` construction. Top-level functions retain
   `func`. Do not restore the older class `func greet(self)` or
-  `User { ... }` syntax. Constructors and field initialization still need design;
+  `User { ... }` syntax. User-defined constructors and field defaults still need design;
+  current construction requires every named field;
   global statements and sorting callbacks remain experimental proposals.
 - Read comments as design feedback. Examples marked for revision are not
   settled syntax. An `undefined` output comment does not establish an undefined
@@ -47,8 +48,8 @@ accurate; documenting a future feature is not a request to implement it.
 - Initial semantic numeric aliases are platform-independent `int = i64` and
   `float = f64`. Avoid implicit coercions. Lexical integer magnitudes use `u64`
   so the signed minimum can later be handled correctly by semantic analysis.
-- Prefer composition over inheritance. Structs will have value/copy semantics;
-  classes will have reference semantics with future ARC. Do not introduce
+- Prefer composition over inheritance. Structs have value/copy semantics;
+  classes have reference semantics with reference counting. Do not introduce
   inheritance, GC, a borrow checker or Rust's ownership system.
 - No normal `null` value. Future optional values and errors use `Option` and
   `Result`; exceptions are not the primary error mechanism.
@@ -60,10 +61,11 @@ accurate; documenting a future feature is not a request to implement it.
   package exposing the `skuld` binary. There are currently no external crate
   dependencies. Add dependencies only for a concrete need.
 - Implemented: the entire source → lexer → parser → AST → resolver → type
-  checker → HIR → C → clang pipeline, native Demos 0–2 and loops. Scalar types
+  checker → HIR → C → clang pipeline, native Demos 0–3 and loops. Scalar types
   are int, float, bool, string and void; functions, locals, calls, returns,
-  conditionals, `while`, `loop`, `break`, `continue`, structs and
-  reference-counted string concatenation and interpolation execute. Parameters and `let` bindings are immutable.
+  conditionals, `while`, `loop`, `break`, `continue`, structs, classes and
+  reference-counted string concatenation and interpolation execute. Weak class
+  references and homogeneous arrays execute too. Parameters and `let` bindings are immutable.
 - `lex`, `parse`, `resolve` inspect individual stages. `check` performs full
   static checking without clang; `emit-c` emits checked C; `run` builds and
   executes in a private temporary directory, keeping nothing; `build` keeps the
@@ -86,14 +88,24 @@ accurate; documenting a future feature is not a request to implement it.
   functions with a leading receiver. Struct names live in a type namespace
   owned by the checker, and method names in a scope of their own, so neither
   resolves as an ordinary value name.
+- Classes are implemented with reference semantics: fields, methods with implicit
+  `this`, `new Class(...)` construction, field access and field assignment through
+  references. Assigning into a class field is allowed on `let` bindings and through
+  `this`. Heap allocation is reference counted.
 - Memory is reference counted with non-atomic counts, no garbage collector and
   no cycle collector. The runtime is `runtime/strings.c`, embedded verbatim in
   generated C; do not restate retain/release in the code generator. Ownership
   is emitted with cleanup attributes: fresh values are adopted, borrowed values
   retained on entry, arguments borrowed, returns retained.
-- Next milestone: classes, which reuse this runtime and add reference
-  semantics plus the cycle problem that needs `weak`. Members
-  are parser syntax only and are rejected by checking until their milestone.
+- Weak class references use `weak Class`, `weak(value)` and contextually typed
+  empty `weak()`. `alive()` checks liveness; `get()` retains the target or traps
+  if empty/expired. Weak references do not keep managed fields alive. No Option
+  type or normal null value was introduced.
+- Arrays use `[]T`, literals, checked int indexes and `len()`. Length is fixed;
+  references share element mutations even through `let`. Managed elements are
+  retained and released. Growth, sorting, callbacks and `for` remain future work.
+- Completed: classes, weak references and initial arrays. The next milestone
+  has not been selected; do not infer authorization for further features.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built
@@ -142,7 +154,7 @@ checking are stable.
 Do not implement generics, macros, async/await, threads, channels, reflection,
 decorators, annotations, a package registry, compiler plugins, compile-time
 execution, operator overloading, user-defined conversions, LLVM or Cranelift
-before Demo 3. Interfaces, enums, arrays, Option/Result, FFI, ARC and the official
+before Demo 3. Interfaces, enums, Option/Result, FFI and the official
 formatter remain future work unless explicitly included in the active task.
 Do not build a standard library or memory-management runtime ahead of need.
 

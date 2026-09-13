@@ -22,9 +22,9 @@ with its diagnostic code until its milestone arrives.
 Reserved-syntax fixtures are deliberate tripwires: when a milestone lands, the
 fixture stops failing and the suite goes red. That is the signal to promote it
 to `pass/` with a `.out`, not to delete it. Loops went through exactly that:
-`reserved_loops` became `pass/while_loop`, and `reserved_iteration` (`E1003`),
-`reserved_members` (`E0110`) and `reserved_declaration` (`E1002`) now hold the
-reserved-syntax coverage until their own milestones.
+`reserved_loops` became `pass/while_loop`, and classes similarly added `pass/class_reference_semantics`
+while `reserved_declaration` (`E1002`, covering `interface`), `reserved_iteration` (`E1003`)
+and `reserved_members` (`E0110`) hold reserved-syntax coverage until their own milestones.
 
 A promoted fixture must terminate. `loop` with no `break` never returns, so it
 belongs in `fail/` or must carry an exit; never park an unbounded loop in
@@ -34,3 +34,9 @@ belongs in `fail/` or must carry an exit; never park an unbounded loop in
 left-to-right evaluation, boolean short-circuiting, compound assignment
 snapshots, precedence and lexical shadowing. Changing any of those should
 break a fixture.
+
+Classes, weak references and arrays have native fixtures for shared mutations,
+managed fields/elements, weak expiration and cycle breaking. Bounds and expired
+promotion failures live in `trap/`; type errors live in `fail/`. Every `pass/`
+fixture also runs with address, leak and undefined-behavior sanitizers through
+`cli/tests/native.rs`, where clang is required.

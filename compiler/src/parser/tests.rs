@@ -438,3 +438,85 @@ fn struct_bodies_mix_fields_and_methods() {
     assert_eq!(declaration.methods[0].name.text, "area");
     assert!(declaration.methods[0].parameters.is_empty());
 }
+
+#[test]
+fn class_bodies_and_new_expressions() {
+    let program = program(
+        "class User {\n    name: string\n    hello() {\n        print(this.name)\n    }\n}\nfunc main() {\n    let u = new User(name: \"Ada\")\n}",
+    );
+    assert_eq!(program.structs.len(), 1);
+    let class_decl = &program.structs[0];
+    assert_eq!(class_decl.kind, TypeDeclKind::Reference);
+    assert_eq!(class_decl.name.text, "User");
+    assert_eq!(class_decl.fields.len(), 1);
+    assert_eq!(class_decl.fields[0].name.text, "name");
+    assert_eq!(class_decl.methods.len(), 1);
+    assert_eq!(class_decl.methods[0].name.text, "hello");
+
+    let statement = &program.functions[0].body.statements[0];
+    let StatementKind::Variable(var) = &statement.kind else {
+        panic!("variable statement");
+    };
+    let ExprKind::New { name, fields } = &var.initializer.kind else {
+        panic!("new expression");
+    };
+    assert_eq!(name.text, "User");
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0].name.text, "name");
+}
+
+#[test]
+fn arrays_weak_types_spans_and_multiline_indexing() {
+    let source = "class User {}\nfunc main() {\nlet refs: []weak User = [weak(new User())]\nlet value = [1, 2,]\n[0] + 3\n}";
+    let parsed = program(source);
+    let StatementKind::Variable(refs) = &parsed.functions[0].body.statements[0].kind else {
+        panic!("variable")
+    };
+    let reference = refs.type_ref.as_ref().expect("annotation");
+    assert_eq!(
+        &source[reference.span().start..reference.span().end],
+        "[]weak User"
+    );
+    let StatementKind::Variable(value) = &parsed.functions[0].body.statements[1].kind else {
+        panic!("variable")
+    };
+    let ExprKind::Binary {
+        left,
+        op: BinaryOp::Add,
+        ..
+    } = &value.initializer.kind
+    else {
+        panic!("addition")
+    };
+    assert!(matches!(left.kind, ExprKind::Index { .. }));
+    assert_eq!(&source[left.span.start..left.span.end], "[1, 2,]\n[0]");
+}
+
+#[test]
+fn nested_array_types_are_bounded_and_malformed_arrays_recover() {
+    let source = format!("func main() {{ let x: {}int = [] }}", "[]".repeat(1000));
+    let output = parse(&source);
+    assert!(output.program.is_none());
+    assert!(
+        output
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::SyntaxLimit)
+    );
+    for source in [
+        "func main() { let x = [1,,2] }",
+        "func main() { let x = [1,2 }",
+        "func main() { let x: [int = [] }",
+        "func main() { let x = weak(1, 2) }",
+    ] {
+        let output = parse(source);
+        assert!(output.program.is_none(), "{source}");
+        assert!(!output.diagnostics.is_empty());
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .all(|d| d.span.start <= d.span.end && d.span.end <= source.len())
+        );
+    }
+}

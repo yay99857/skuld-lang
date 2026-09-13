@@ -1,0 +1,3 @@
+struct A { x: int }
+func make() -> A { return A { x: 1 } }
+func main() { make().x = 2 }

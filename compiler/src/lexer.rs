@@ -178,6 +178,8 @@ impl Lexer<'_> {
             "loop" => Loop,
             "break" => Break,
             "continue" => Continue,
+            "new" => New,
+            "weak" => Weak,
             "class" => Class,
             "struct" => Struct,
             "impl" => Impl,

@@ -1,0 +1,1 @@
+func main() { print([1].len(2)) }

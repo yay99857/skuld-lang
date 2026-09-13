@@ -1,0 +1,16 @@
+class Counter {
+    value: int
+}
+
+func bump(c: Counter) {
+    c.value += 10
+}
+
+func main() {
+    let a = new Counter(value: 1)
+    let b = a
+    b.value += 5
+    bump(a)
+    print(a.value)
+    print(b.value)
+}

@@ -1,0 +1,19 @@
+class User {
+    name: string
+    greeting: string
+
+    hello() {
+        print("${this.greeting}, ${this.name}!")
+    }
+
+    rename(to: string) -> User {
+        this.name = to
+        return this
+    }
+}
+
+func main() {
+    let u = new User(name: "Ada", greeting: "Hello")
+    u.hello()
+    u.rename("Grace").hello()
+}

@@ -1,0 +1,10 @@
+class First { second: Second }
+class Second { value: Value }
+struct Value { text: string }
+struct Tree { children: []Tree }
+func main() {
+    let first = new First(second: new Second(value: Value { text: "for" + "ward" }))
+    print(first.second.value.text)
+    let tree = Tree { children: [Tree { children: [] }] }
+    print(tree.children.len())
+}

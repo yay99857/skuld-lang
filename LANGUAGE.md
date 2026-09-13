@@ -3,8 +3,8 @@
 Status labels: **Implemented** means available now; **Planned** describes future
 intent, not accepted/executable programs; **Experimental** denotes provisional
 choices. The complete single-file native pipeline, Demos 0–2, loops, structs,
-reference-counted strings and interpolation are implemented. Classes, arrays and self-hosting
-remain planned.
+reference-counted strings, interpolation, classes, weak references and arrays are
+implemented. Self-hosting remains planned.
 
 ## Philosophy — Planned
 
@@ -34,7 +34,7 @@ An official `skuld fmt` will eventually be the authority on style.
    claims; a C backend alone does not guarantee this result.
 3. Prefer simplicity, predictability and actionable diagnostics. Keep concrete
    numeric types, value semantics for structs and reference semantics for
-   classes; future ARC must make allocation and reference-management costs
+   classes; reference counting must make allocation and reference-management costs
    understandable. Do not introduce a GC or borrow checker.
 4. Build small verified milestones in order: lexer → AST/parser → resolver →
    type checker → HIR → C backend → native Demo 0, then Demos 1–3. Keep stages
@@ -54,7 +54,7 @@ Function declarations use `func`, replacing the earlier `fn` and `function` spel
 The builtin is `print`, replacing `println`; neither old spelling is an alias.
 The old words are ordinary identifiers and can be explicitly declared by users.
 
-Keywords: `func let var return if else while loop break continue class struct
+Keywords: `func let var return if else while loop break continue new weak class struct
 impl`.
 Reserved future keywords: `interface enum match import for in static extern`.
 `true` and `false` produce boolean literal tokens. Type names and `print` are
@@ -137,24 +137,24 @@ is type-checked. A void function may use bare `return` or `return void_call()`.
 
 Precedence, weakest to strongest: assignment; logical or; logical and;
 equality; comparison; addition/subtraction; multiplication/division/modulo;
-unary; call/member; primary. Calls and members include `foo(1, 2)`, `user.name`
+unary; call/member/index; primary. Calls and members include `foo(1, 2)`, `user.name`
 and `user.greet()`. The parser preserves spans and remains separate from resolution and type
 checking. Assignment is right-associative; other binary operators are
 left-associative. Unary `+`, `-`, `!` bind below calls and members. Parentheses
-produce explicit group nodes. Assignment targets must be identifiers or member
-accesses syntactically, but only variable targets are supported semantically
-now. Assignments preserve the target type and yield the assigned value.
+produce explicit group nodes. Assignment targets are identifiers, member accesses or array indexes. Struct
+field writes require a mutable place; writes through class or array references
+can use an immutable binding. Assignments preserve the target type and yield the assigned value.
 Comparison chains are parsed left-associatively and then type-checked normally.
-Only direct function/builtin calls, optionally grouped, are supported; callable
-values, indirect calls and all member operations are rejected by the type checker. Trailing commas are accepted in parameter and
+Direct function/builtin calls, optionally grouped, and type-checked method calls
+are supported. Callable values and indirect calls are rejected by the checker. Trailing commas are accepted in parameter and
 argument lists. Local declarations require an initializer; annotations are
 optional, but function parameters require types. AST type references preserve
 source names, including unknown names; these are not semantic type values.
 
 Blocks, return, expression statements, variables, `if`/`else` (including
 `else if`), `while`, `loop`, `break` and `continue` are parsed. Later:
-`for item in items`, `0..10`, `0..=10` and arrays `[1, 2, 3]` with type
-syntax `[]int`.
+`for item in items`, `0..10` and `0..=10`. Arrays `[1, 2, 3]` with type
+syntax `[]int` are implemented below.
 
 ### Loops — Implemented
 
@@ -175,7 +175,7 @@ entry.
 
 The parser reads line breaks from source gaps between byte spans; the lexer
 still emits no newline tokens. Expressions greedily continue through operators,
-call parentheses and member dots, including across newlines and comments:
+call parentheses, member dots and index brackets, including across newlines and comments:
 
 ```skuld
 let result =
@@ -195,8 +195,8 @@ by the value and `)` on later lines. No semicolons are accepted.
 `skuld_compiler::parse(&str) -> ParseOutput` coordinates lexing and the manual
 parser; it returns an optional `Program` and diagnostics. Lexical errors stop
 parsing. Syntax errors recover at statement/declaration boundaries; no partial
-AST is exposed if any error occurs. Only top-level function declarations are
-accepted. Empty files parse successfully but fail full checking without main.
+AST is exposed if any error occurs. Top-level function, struct and class
+declarations are accepted. Empty files parse successfully but fail full checking without main.
 Duplicate names and unknown value names are checked by the resolver; types,
 entrypoints, return completeness and mutability are checked by the type checker.
 `let age: int = "hello"` is syntactically valid but fails checking with E0102.
@@ -255,12 +255,16 @@ work on int and float; `%` only on int. Numeric ordering returns bool. Equality
 and inequality work on matching int, float, bool or string values. Strings
 compare byte content, not pointer identity. `&&`, `||` and `!` require bool;
 there is no truthiness or implicit int/float conversion. Unary `+` and `-`
-require numbers. Function values, chars, members and unknown types produce
+require numbers. Function values, chars, invalid member accesses and unknown types produce
 explicit diagnostics rather than reaching code generation.
 
 Evaluation is left to right, including call arguments. `&&` and `||`
 short-circuit. Assignment evaluates its RHS and returns the new value;
 compound assignment snapshots the target's old value before evaluating its RHS.
+Class receivers and array indexes are evaluated once before the RHS, and the
+containing allocation stays alive even if the RHS replaces another reference.
+Construction evaluates field initializers in source order, independently of
+the declaration order used for field layout.
 Generated temporaries preserve these rules despite C's unspecified operand
 and argument evaluation order.
 
@@ -317,9 +321,11 @@ struct Vec2 {
     y: float
 }
 
-var point = Vec2 { x: 10.0, y: 20.0 }
-point.x = 1.0
-print(point.y)
+func main() {
+    var point = Vec2 { x: 10.0, y: 20.0 }
+    point.x = 1.0
+    print(point.y)
+}
 ```
 
 Fields are declared one per line, following the statement-boundary rule.
@@ -332,8 +338,9 @@ A struct cannot contain itself. A value type has no indirection, so the size
 would not exist; the checker rejects it rather than the C compiler.
 
 Values copy on assignment, argument passing and return. Assigning to `v.x` or
-`v.i.x` requires the binding it is rooted in to be a `var`; a field of a `let`
-or of a parameter is immutable.
+`v.i.x` through value fields requires the binding it is rooted in to be a `var`;
+those fields of a `let` or parameter are immutable. Class and array fields
+share references on copy, and mutation through those references is allowed.
 
 Struct names live in a type namespace. The value resolver never sees them,
 which is why resolution still reports only value names.
@@ -356,12 +363,13 @@ struct Rectangle {
 ```
 
 Methods are declared in the type body without `func` and without an explicit
-receiver, matching the planned class syntax. `this` is the current value.
+receiver, matching the class syntax. `this` is the current value.
 
 `this` is bound as an ordinary parameter, so it is immutable: a method cannot
 assign to `this.field`, and since structs copy, the receiver is a copy and a
-method never modifies its caller. Mutating methods await the receiver rules
-that the class work will settle.
+method never modifies its caller's value fields. Reference-valued fields retain
+their sharing rules: a method can mutate an object or array referenced by a
+struct field. Mutating value receivers remain future work.
 
 A method name is not in ordinary scope. A sibling method is reached through
 `this`, and a plain function cannot see methods at all. A method is not a
@@ -370,21 +378,22 @@ value either: `r.area` is an error and `r.area()` is the call.
 Lowering turns a method into a function with the receiver as a leading
 argument, so methods cost no more than a call.
 
-Classes remain planned below.
+Classes are implemented below.
 
-## Memory — Implemented for strings
+## Memory — Implemented for strings, classes, arrays and weak references
 
-Skuld manages memory with **reference counting, not a garbage collector**. A
-value is freed when its last reference goes away, at a point the programmer can
-predict.
+Skuld manages memory with **reference counting, not a garbage collector**. Owning slots release their values when their lexical block exits. The last
+strong reference releases the payload; class allocation storage can remain
+until its last weak reference is also released.
 
 Counts are **not atomic**: the language has no threads, so paying for atomic
 operations on every copy would cost without buying anything. Introducing
 threads means revisiting the runtime, not the code generator.
 
 There is **no cycle collector**, by design. Strings are immutable and cannot
-form cycles. Aggregates that can will need `weak` references when they arrive;
-that is a language feature, not a collector.
+form cycles. Class and array graphs can form strong cycles, which must be
+broken explicitly or designed with weak class links. Weak references do not
+automatically detect or collect cycles.
 
 String literals keep pointing at static bytes and never allocate. Only values
 built at run time, such as concatenation results, are heap allocated.
@@ -416,58 +425,136 @@ Generated code releases every owning slot on every exit path, including
 copying one retains its fields and dropping one releases them. See
 [runtime/README.md](runtime/README.md) for the emitted ownership rules.
 
-Classes will reuse this runtime; they add reference semantics and the cycle
-problem that comes with them.
+Classes and arrays reuse this runtime with reference semantics. Weak class
+references allow back-links without keeping the target alive. Compiler-created
+owning temporaries currently live until the containing block exits, so weak
+expiration can occur later than the last source-level use.
 
-## Classes and memory — Planned
+## Classes — Implemented
 
-The user's [test.skuld](test.skuld) is the living reference for syntax proposals.
-The planned class syntax below follows that direction; it is not supported by
-the current compiler. These choices replace the earlier explicit `self`
-parameter, `func`-prefixed class methods and class record construction.
+The user's [test.skuld](test.skuld) provided the direction for class syntax.
+Classes are managed reference types with heap allocation and reference counting.
+Unlike structs, two bindings to a class share the same underlying object.
 
 ```skuld
 class User {
     name: string
-    address: Address
+    greeting: string
 
     hello() {
-        print("Hello, my name is " + this.name)
+        print("${this.greeting}, my name is ${this.name}")
+    }
+
+    rename(to: string) -> User {
+        this.name = to
+        return this
     }
 }
 
-// Construction syntax; constructor and initialization rules are still open.
-// Address must also be declared before this can become a complete example.
-var user: User = new User()
+func main() {
+    let user = new User(name: "Ada", greeting: "Hello")
+    let alias = user
+    alias.rename("Grace")
+    user.hello()
+}
 ```
 
 Class methods use `hello()` or `is_adult() -> bool` without `func` and
 without an explicit receiver parameter. `this` denotes the implicit current
 instance inside instance methods. Top-level functions retain `func`.
 Fields keep explicit type annotations, and method parameters and non-void
-returns retain explicit types. Class construction uses `new User(...)`;
-`User { ... }` is no longer the planned class construction syntax.
+returns retain explicit types.
 
-Constructor declarations, constructor arguments, field defaults and definite
-initialization rules still need a design before implementation. In particular,
-`new User()` does not promise that required fields can remain uninitialized.
-The `undefined` output comment in the sketch is not an adopted language value:
-Skuld must not expose uninitialized field reads as JavaScript-style undefined.
-The sketch's lowercase `address` does not declare a type or establish an alias;
-the specification uses `Address` as a placeholder for a separately declared type.
+Class construction uses `new ClassName(field: value, ...)`. Every field must be
+initialized in construction; there are no uninitialized reads, field defaults
+or JavaScript-style `undefined` values. Constructing a class with `User { ... }`
+or a struct with `new Struct(...)` is rejected.
 
-The example's string `+` is implemented concatenation, and interpolation is
-implemented as well.
+Reference semantics and memory rules:
+- An immutable `let` binding holds a constant reference to a mutable object: assigning
+  to `user.name` or `this.name` is permitted. Rebinding `user` itself or assigning
+  directly to `this` is governed by binding mutability and rejected for immutable bindings.
+- Class fields can refer to the enclosing class or other classes without size cycles,
+  because references are pointers.
+- Classes allocate on the heap and begin with reference count 1. Passing, copying and
+  returning adjust reference counts via retain and release. When count reaches zero,
+  managed fields are released. Allocation storage is freed once no weak references remain.
+- Weak references to break reference cycles are implemented below.
 
-Structs are implemented with fields and methods; see the section below. They
-adopt the class receiver shape: no `func`, no explicit receiver, `this` for
-the current value. Mutating receivers remain unsettled.
+## Weak class references — Implemented
 
-Structs have value/copy semantics. Classes are managed reference types with
-future ARC. No inheritance, garbage collector, borrow checker or Rust ownership
-system. Future runtime operations include retain/release and string/array
-allocation. No runtime is required for lexical analysis. HIR will eventually
-lower methods to calls such as `User_greet(user)`.
+`weak User` is a distinct, statically typed non-owning reference. `weak(user)`
+creates one from a class reference. Empty `weak()` needs an expected weak type
+from an annotation, assignment, field, parameter, array element or return type.
+There is no implicit strong/weak conversion and no normal null value.
+
+```skuld
+class User { name: string }
+
+func main() {
+    var observer: weak User = weak()
+    {
+        let user = new User(name: "Ada")
+        observer = weak(user)
+        if observer.alive() {
+            let retained = observer.get()
+            print(retained.name)
+        }
+    }
+    print(observer.alive()) // false
+}
+```
+
+`alive() -> bool` reports whether a strong target still exists. `get() -> User`
+promotes to a new strong reference. Calling `get()` on an empty or expired
+reference traps with `expired weak reference` and a source byte offset; it never
+returns a dangling reference. Check and promote next to each other, since other
+expressions can release the target between the two calls. An Option-returning
+promotion API awaits Option support. Neither method takes arguments.
+
+Weak values can be copied, assigned, passed, returned and stored in structs,
+classes and arrays. They keep allocation bookkeeping alive, not the target's
+managed fields. Only classes support weak references in this milestone.
+Use a weak parent link with a strong child link to avoid ownership cycles; see
+[examples/weak.skuld](examples/weak.skuld).
+
+## Arrays — Implemented
+
+```skuld
+func main() {
+    let numbers: []int = [1, 4, 6, 7, 3]
+    let alias = numbers
+    alias[0] += 10
+    print(numbers[0]) // 11
+    print(numbers.len()) // 5
+    let rows: [][]int = [[], [1, 2]]
+    rows[0] = [3]
+}
+```
+
+Arrays are homogeneous, heap allocated and reference counted. Their length is
+fixed at construction. Assignment, arguments and returns share the array;
+`let` prevents rebinding but permits writing an element, like class fields.
+Reading a struct element copies its value; reading a class or array element
+shares that reference. Elements can have any implemented non-void value type,
+including structs, classes, arrays and weak references.
+
+Nonempty literals infer an element type locally. Empty `[]` needs an expected
+array type from an annotation, assignment, field, parameter, enclosing array
+or return type. Mixed element types and implicit numeric conversions are
+rejected. Trailing commas are accepted. No general or bidirectional inference
+across unrelated expressions is promised.
+
+`values[index]` requires an `int`. Reads and writes check both bounds, including
+negative indexes, and trap with `array index out of bounds` on failure.
+`values.len() -> int` returns the length and takes no arguments. Indexing binds
+with calls and member access and continues across newlines. Array elements
+and index expressions evaluate left to right; compound writes snapshot the old
+element before evaluating the RHS.
+
+Growth, slicing, array equality, sorting, callbacks and `for` iteration remain
+planned. Strong cycles through classes and arrays still require explicit
+breaking or weak class links; arrays themselves cannot be weakened yet.
 
 ## Demonstration proposals — Experimental
 
@@ -478,10 +565,11 @@ or automatically implement every construct it contains.
 - Global variable declarations and calls in the sketch demonstrate a possible
   source layout. Executable global statements are still rejected, and
   `func main()` remains the entrypoint. Adopting implicit entrypoints or
-  module initialization requires a separate decision; the class example above
-  is a syntax sketch, not an exception to the current rule.
-- Array literals such as `[1, 4, 6, 7, 3]` remain planned, with the existing
-  proposed array type syntax `[]int`.
+  module initialization requires a separate decision. The root sketch also
+  omits required field initializers in `new User()`; executable examples supply
+  all fields and run statements inside `func main()`.
+- Array literals such as `[1, 4, 6, 7, 3]` and the type syntax `[]int` are now
+  implemented; the sketch's global placement is still unsupported.
 - `numbers.sort((a, b) => a - b)` is explicitly marked for revision by the user.
   It is not the approved final sorting or callback syntax. Callback typing,
   lambda syntax, in-place versus copying sort and the sorting API remain open.
@@ -507,10 +595,12 @@ self-hosting remain long-term possibilities.
 
 **Experimental:** the demonstration proposals above are documentation-only;
 no experimental compiler features are enabled. The full native pipeline, functions, scalar values,
-variables and conditional execution (Demos 0–2) are **Implemented**.
+variables, conditional execution and classes with methods/interpolation
+(Demos 0–3) are **Implemented**.
 
-Loops, classes, structs, interpolation, arrays and managed-memory runtime
-behavior remain **Planned**. No generics, macros, async/await, threads, channels,
+Loops, structs, classes, interpolation, weak class references, arrays and
+reference-counted runtime behavior are **Implemented**. Interfaces, enums,
+Option/Result, modules and the remaining capabilities above are **Planned**. No generics, macros, async/await, threads, channels,
 reflection, decorators, annotations, package registry, compiler plugins,
 compile-time execution, operator overloading or user-defined conversions will
 be implemented before Demo 3. Inheritance is excluded from the core design.

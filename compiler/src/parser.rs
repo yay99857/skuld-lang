@@ -153,7 +153,27 @@ impl Parser<'_> {
         result
     }
     fn type_ref(&mut self) -> Parsed<TypeRef> {
-        Ok(TypeRef::Named(self.name("a type name")?))
+        self.nested(|p| p.type_ref_inner())
+    }
+    fn type_ref_inner(&mut self) -> Parsed<TypeRef> {
+        if self.at(&TokenKind::Weak) {
+            let start = self.bump().span.start;
+            let class = self.name("a class name after `weak`")?;
+            let span = Span::new(start, class.span.end);
+            return Ok(TypeRef::Weak { class, span });
+        }
+        if self.at(&TokenKind::LeftBracket) {
+            let start = self.bump().span.start;
+            self.expect(&TokenKind::RightBracket, "`]` after `[` in an array type")?;
+            let element = self.type_ref()?;
+            let end = element.span().end;
+            Ok(TypeRef::Array {
+                element: Box::new(element),
+                span: Span::new(start, end),
+            })
+        } else {
+            Ok(TypeRef::Named(self.name("a type name")?))
+        }
     }
 
     fn program(mut self) -> ParseOutput {
@@ -161,7 +181,7 @@ impl Parser<'_> {
         let mut structs = Vec::new();
         while !self.at(&TokenKind::Eof) {
             let start = self.position;
-            if self.at(&TokenKind::Struct) {
+            if self.at(&TokenKind::Struct) || self.at(&TokenKind::Class) {
                 match self.struct_declaration() {
                     Ok(declaration) => structs.push(declaration),
                     Err(diagnostic) => {
@@ -207,9 +227,14 @@ impl Parser<'_> {
     }
     /// One field per line, matching the statement-boundary rule elsewhere.
     fn struct_declaration(&mut self) -> Parsed<StructDecl> {
-        let start = self.expect(&TokenKind::Struct, "`struct`")?.span.start;
-        let name = self.name("a struct name")?;
-        self.expect(&TokenKind::LeftBrace, "`{` to begin the struct body")?;
+        let (kind, noun) = if self.at(&TokenKind::Class) {
+            (TypeDeclKind::Reference, "class")
+        } else {
+            (TypeDeclKind::Value, "struct")
+        };
+        let start = self.bump().span.start;
+        let name = self.name(&format!("a {noun} name"))?;
+        self.expect(&TokenKind::LeftBrace, "`{` to begin the body")?;
         let mut fields = Vec::new();
         let mut methods = Vec::new();
         while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
@@ -236,10 +261,11 @@ impl Parser<'_> {
             }
         }
         let end = self
-            .expect(&TokenKind::RightBrace, "`}` to close the struct body")?
+            .expect(&TokenKind::RightBrace, "`}` to close the body")?
             .span
             .end;
         Ok(StructDecl {
+            kind,
             name,
             fields,
             methods,
@@ -428,7 +454,7 @@ impl Parser<'_> {
                 self.bump();
                 StatementKind::Continue
             }
-            Class | Impl | Interface | Enum | Match | Import | For | Static | Extern => {
+            Impl | Interface | Enum | Match | Import | For | Static | Extern => {
                 return Err(self.error(
                     DiagnosticCode::UnsupportedSyntax,
                     "this syntax is reserved for a later milestone",
@@ -478,10 +504,16 @@ impl Parser<'_> {
             }
         }
     }
-    fn struct_literal(&mut self, name: Name) -> Parsed<ExprKind> {
-        self.expect(&TokenKind::LeftBrace, "`{` to begin the fields")?;
+    fn field_initializers(
+        &mut self,
+        open: &TokenKind,
+        close: &TokenKind,
+        open_message: &str,
+        close_message: &str,
+    ) -> Parsed<Vec<FieldInit>> {
+        self.expect(open, open_message)?;
         let mut fields = Vec::new();
-        while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
+        while !self.at(close) && !self.at(&TokenKind::Eof) {
             let start = self.current().span.start;
             let field = self.name("a field name")?;
             self.expect(&TokenKind::Colon, "`:` and a field value")?;
@@ -495,7 +527,16 @@ impl Parser<'_> {
                 break;
             }
         }
-        self.expect(&TokenKind::RightBrace, "`}` after the fields")?;
+        self.expect(close, close_message)?;
+        Ok(fields)
+    }
+    fn struct_literal(&mut self, name: Name) -> Parsed<ExprKind> {
+        let fields = self.field_initializers(
+            &TokenKind::LeftBrace,
+            &TokenKind::RightBrace,
+            "`{` to begin the fields",
+            "`}` after the fields",
+        )?;
         Ok(ExprKind::StructLiteral { name, fields })
     }
     fn if_statement(&mut self) -> Parsed<Statement> {
@@ -588,9 +629,49 @@ impl Parser<'_> {
                     ExprKind::Identifier(name)
                 }
             }
+            TokenKind::Weak => {
+                self.bump();
+                self.expect(&TokenKind::LeftParen, "`(` after `weak`")?;
+                let value = if self.at(&TokenKind::RightParen) {
+                    None
+                } else {
+                    Some(Box::new(
+                        self.with_struct_literals(true, |p| p.expression())?,
+                    ))
+                };
+                self.expect(&TokenKind::RightParen, "`)` after weak reference")?;
+                ExprKind::Weak(value)
+            }
+            TokenKind::New => {
+                self.bump();
+                let name = self.name("a class name after `new`")?;
+                let fields = self.field_initializers(
+                    &TokenKind::LeftParen,
+                    &TokenKind::RightParen,
+                    "`(` after the class name",
+                    "`)` after the fields",
+                )?;
+                ExprKind::New { name, fields }
+            }
             TokenKind::InterpolationBegin(text) => {
                 self.bump();
                 self.interpolation(text)?
+            }
+            TokenKind::LeftBracket => {
+                self.bump();
+                let mut elements = Vec::new();
+                if !self.at(&TokenKind::RightBracket) {
+                    loop {
+                        elements.push(self.with_struct_literals(true, |p| p.expression())?);
+                        if self.take(&TokenKind::Comma).is_none()
+                            || self.at(&TokenKind::RightBracket)
+                        {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&TokenKind::RightBracket, "`]` after array elements")?;
+                ExprKind::Array(elements)
             }
             TokenKind::LeftParen => {
                 self.bump();
@@ -620,6 +701,23 @@ impl Parser<'_> {
         };
         loop {
             self.expression_limit()?;
+            if self.at(&TokenKind::LeftBracket) {
+                self.bump();
+                let index = self.with_struct_literals(true, |p| p.expression())?;
+                let end = self
+                    .expect(&TokenKind::RightBracket, "`]` after array index")?
+                    .span
+                    .end;
+                let span = Span::new(left.span.start, end);
+                left = Expr {
+                    kind: ExprKind::Index {
+                        object: Box::new(left),
+                        index: Box::new(index),
+                    },
+                    span,
+                };
+                continue;
+            }
             if self.at(&TokenKind::LeftParen) {
                 self.bump();
                 let mut arguments = Vec::new();
@@ -666,7 +764,10 @@ impl Parser<'_> {
             }
             let op_span = self.bump().span;
             if matches!(op, Infix::Assignment(_))
-                && !matches!(left.kind, ExprKind::Identifier(_) | ExprKind::Member { .. })
+                && !matches!(
+                    left.kind,
+                    ExprKind::Identifier(_) | ExprKind::Member { .. } | ExprKind::Index { .. }
+                )
             {
                 return Err(Diagnostic {
                     code: DiagnosticCode::InvalidAssignmentTarget,

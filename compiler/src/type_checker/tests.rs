@@ -381,3 +381,79 @@ fn interpolation_accepts_what_print_accepts() {
         DiagnosticCode::TypeMismatch,
     );
 }
+
+#[test]
+fn classes_construct_with_new_and_have_reference_semantics() {
+    valid("class User { name: string }\nfunc main() { let u = new User(name: \"Ada\") }");
+    fails(
+        "class User { name: string }\nfunc main() { let u = User { name: \"Ada\" } }",
+        DiagnosticCode::InvalidAssignment,
+    );
+    fails(
+        "struct S { n: int }\nfunc main() { let s = new S(n: 1) }",
+        DiagnosticCode::InvalidAssignment,
+    );
+    valid("class Box { val: int }\nfunc main() { let b = new Box(val: 1)\nb.val = 2 }");
+    valid("class Box {\n    val: int\n    inc() {\n        this.val = 2\n    }\n}\nfunc main() {}");
+    fails(
+        "class Box {\n    val: int\n    reset() {\n        this = new Box(val: 0)\n    }\n}\nfunc main() {}",
+        DiagnosticCode::ImmutableAssignment,
+    );
+    valid("class Node { next: Node }\nfunc main() {}");
+    fails(
+        "class Box { val: int }\nfunc main() { let b = new Box(val: 1)\nprint(b) }",
+        DiagnosticCode::InvalidValueType,
+    );
+}
+
+#[test]
+fn arrays_and_weak_references_use_local_expected_types() {
+    valid(
+        "class User {}\nfunc use(values: [][]int, ref: weak User) {}\nfunc empty() -> []int { return ([]) }\nfunc main() {\nlet nested: [][]int = [[], [1]]\nuse([[]], weak())\nvar ref: weak User = (weak())\nref = weak(new User())\nlet refs: []weak User = [weak(), weak(new User())]\n}",
+    );
+    fails(
+        "func main() { let a: []int = [][0] }",
+        DiagnosticCode::UnknownType,
+    );
+    fails(
+        "func main() { let a: []int = [[]].len() }",
+        DiagnosticCode::UnknownType,
+    );
+    fails(
+        "class A {}\nfunc main() { let a: weak A = weak().get() }",
+        DiagnosticCode::InvalidValueType,
+    );
+    fails(
+        "func main() { let a = [[1], [true]] }",
+        DiagnosticCode::TypeMismatch,
+    );
+}
+
+#[test]
+fn invalid_method_arguments_are_checked_even_with_wrong_arity() {
+    let source = "class A { f() {} }\nfunc main() { new A().f(1 + true) }";
+    let errors = check(source).expect_err("invalid call");
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.code == DiagnosticCode::ArgumentCount)
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|d| d.code == DiagnosticCode::TypeMismatch)
+    );
+}
+
+#[test]
+fn weak_types_do_not_resolve_as_value_names() {
+    valid("class A {}\nfunc main() { let A = 1\nlet ref: weak A = weak(new A())\nprint(A) }");
+    fails(
+        "struct A {}\nfunc main() { let ref: weak A = weak() }",
+        DiagnosticCode::InvalidValueType,
+    );
+    fails(
+        "class A {}\nclass B {}\nfunc main() { let refs: []weak A = [weak(new B())] }",
+        DiagnosticCode::TypeMismatch,
+    );
+}

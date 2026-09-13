@@ -8,8 +8,17 @@ pub struct Program {
     pub span: Span,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeDeclKind {
+    /// `struct`: copied on assignment, no identity.
+    Value,
+    /// `class`: a reference to a shared, reference-counted object.
+    Reference,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructDecl {
+    pub kind: TypeDeclKind,
     pub name: Name,
     pub fields: Vec<FieldDecl>,
     /// Declared without `func` and without an explicit receiver; `this` is
@@ -27,8 +36,7 @@ pub struct FieldDecl {
 
 impl FieldDecl {
     pub fn type_ref_span(&self) -> Span {
-        let TypeRef::Named(name) = &self.type_ref;
-        name.span
+        self.type_ref.span()
     }
 }
 
@@ -42,6 +50,17 @@ pub struct Name {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeRef {
     Named(Name),
+    Weak { class: Name, span: Span },
+    Array { element: Box<TypeRef>, span: Span },
+}
+
+impl TypeRef {
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Named(name) => name.span,
+            Self::Array { span, .. } | Self::Weak { span, .. } => *span,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -155,6 +174,20 @@ pub enum ExprKind {
     },
     /// `"text ${value} more"`. Always yields a string.
     Interpolation(Vec<InterpolationPart>),
+    /// `new User(name: "Ada")`. Allocates a reference-counted object.
+    New {
+        name: Name,
+        fields: Vec<FieldInit>,
+    },
+    /// `[1, 2, 3]`. Allocates a reference-counted array.
+    Array(Vec<Expr>),
+    /// `weak(value)` or a contextually typed empty `weak()`.
+    Weak(Option<Box<Expr>>),
+    /// `arr[index]`. Reads an element from an array.
+    Index {
+        object: Box<Expr>,
+        index: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

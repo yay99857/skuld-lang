@@ -11,6 +11,7 @@ use crate::{
 pub struct Program {
     /// Declaration order, which is also the emitted field layout.
     pub(crate) structs: Vec<StructInfo>,
+    pub(crate) arrays: Vec<crate::types::ArrayInfo>,
     pub(crate) functions: Vec<Function>,
     pub(crate) entry: SymbolId,
     pub(crate) span: Span,
@@ -104,16 +105,25 @@ pub(crate) enum ExprKind {
         target: CallTarget,
         arguments: Vec<Expr>,
     },
-    /// Field values in declaration order, not source order.
+    /// Field values in source order, each paired with its layout index.
     StructLiteral {
         id: StructId,
-        fields: Vec<Expr>,
+        fields: Vec<(usize, Expr)>,
     },
     Field {
         object: Box<Expr>,
         index: usize,
     },
     Interpolation(Vec<InterpolationPart>),
+    Array(Vec<Expr>),
+    Index {
+        object: Box<Expr>,
+        index: Box<Expr>,
+    },
+    Weak(Option<Box<Expr>>),
+    ArrayLen(Box<Expr>),
+    WeakAlive(Box<Expr>),
+    WeakGet(Box<Expr>),
 }
 
 #[derive(Debug)]
@@ -121,11 +131,13 @@ pub(crate) enum InterpolationPart {
     Text(String),
     Value(Expr),
 }
-/// An assignable location: a local, optionally followed by field steps.
+/// A checked place. Reference receivers are evaluated and kept alive before the RHS.
 #[derive(Debug)]
-pub(crate) struct Place {
-    pub base: SymbolId,
-    pub fields: Vec<usize>,
+pub(crate) enum Place {
+    Local(SymbolId),
+    Field { base: Box<Place>, index: usize },
+    ReferenceField { object: Box<Expr>, index: usize },
+    Index { object: Box<Expr>, index: Box<Expr> },
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum CallTarget {

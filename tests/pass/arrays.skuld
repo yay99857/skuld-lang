@@ -1,0 +1,28 @@
+struct Item { text: string }
+class Box { items: []Item }
+func empty() -> []int { return [] }
+func size(values: []int) -> int { return values.len() }
+func main() {
+    let values = [1, 4, 6, 7, 3]
+    let alias = values
+    alias[0] += 9
+    print(values[0])
+    print(values.len())
+    print(size([]))
+    print(empty().len())
+    let nested: [][]string = [[], ["a" + "b"]]
+    nested[0] = ["hello"]
+    nested[1][0] += "c"
+    print(nested[0][0])
+    print(nested[1][0])
+    let box = new Box(items: [Item { text: "a" + "b" }])
+    box.items[0].text += "c"
+    print(box.items[0].text)
+    let copy = box.items[0]
+    box.items[0].text = "changed"
+    print(copy.text)
+    let bools = [true, false]
+    print(bools[1])
+    let floats = [1.5, 2.5]
+    print(floats[0] + floats[1])
+}

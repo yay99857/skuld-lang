@@ -1,0 +1,21 @@
+func sum(values: []int) -> int {
+    var total = 0
+    var index = 0
+    while index < values.len() {
+        total += values[index]
+        index += 1
+    }
+    return total
+}
+
+func main() {
+    let numbers = [1, 4, 6, 7, 3]
+    let alias = numbers
+    alias[0] = 10
+    print(sum(numbers)) // 30
+
+    let rows: [][]string = [[], ["hello" + "!"]]
+    rows[0] = ["Skuld"]
+    print(rows[0][0])
+    print(rows[1][0])
+}

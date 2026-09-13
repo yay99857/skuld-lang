@@ -1,0 +1,3 @@
+class A { x: int }
+func main() { let x = weak(new A(x: 1))
+print(x.x) }

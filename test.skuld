@@ -1,0 +1,15 @@
+class User {
+    name: string
+    address: address
+
+    hello() {
+        print("Hello, my name is " + this.name)
+      }
+}
+
+var user: User = new User()
+
+print(user.name) // Output: undefined
+
+var numbers = [1,4,6,7,3]
+var sort_numbers = numbers.sort((a, b) => a - b) // Fix this trash

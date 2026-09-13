@@ -7,77 +7,116 @@ pub fn emit_c(program: &Program) -> String {
         indent: 0,
         next_temp: 0,
         structs: program.structs.clone(),
+        arrays: program.arrays.clone(),
     };
-    // Declaration order is a valid definition order: a value type cannot
-    // contain itself, and the checker rejects any cycle.
+    for index in 0..program.arrays.len() {
+        emitter.line(&format!("typedef struct skuld_a{index} skuld_a{index};"));
+    }
+    // A class is a pointer, so it only needs a name before its body; this also
+    // lets a class refer to itself.
     for (index, declaration) in program.structs.iter().enumerate() {
+        if declaration.reference {
+            emitter.line(&format!("typedef struct skuld_s{index} skuld_s{index};"));
+        }
+    }
+    // A value type embedded in another must be complete first. The checker has
+    // already rejected value cycles, so this ordering always exists.
+    let mut order: Vec<usize> = Vec::new();
+    let mut placed = vec![false; program.structs.len()];
+    while order.len() < program.structs.len() {
+        let mut progressed = false;
+        for index in 0..program.structs.len() {
+            if placed[index] {
+                continue;
+            }
+            let ready = program.structs[index]
+                .fields
+                .iter()
+                .all(|field| match field.ty {
+                    Type::Struct(id) => program.structs[id.0].reference || placed[id.0],
+                    _ => true,
+                });
+            if ready {
+                placed[index] = true;
+                order.push(index);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            unreachable!("internal compiler bug: value type cycle reached the backend");
+        }
+    }
+    for index in order {
+        let declaration = &program.structs[index];
         emitter.line("");
         emitter.line(&format!(
-            "/* struct {}: source bytes {}..{} */",
-            declaration.name, declaration.span.start, declaration.span.end
+            "/* {} {}: source bytes {}..{} */",
+            if declaration.reference {
+                "class"
+            } else {
+                "struct"
+            },
+            declaration.name,
+            declaration.span.start,
+            declaration.span.end
         ));
-        emitter.line("typedef struct {");
+        if declaration.reference {
+            emitter.line(&format!("struct skuld_s{index} {{"));
+        } else {
+            emitter.line("typedef struct {");
+        }
         emitter.indent += 1;
+        if declaration.reference {
+            emitter.line("skuld_object header;");
+        }
         for (position, field) in declaration.fields.iter().enumerate() {
             emitter.line(&format!(
                 "{} f{position}; /* {} */",
-                c_type(field.ty),
+                emitter.c_type(field.ty),
                 field.name
             ));
         }
         emitter.indent -= 1;
-        emitter.line(&format!("}} skuld_s{index};"));
+        if declaration.reference {
+            emitter.line("};");
+        } else {
+            emitter.line(&format!("}} skuld_s{index};"));
+        }
     }
-    for index in 0..program.structs.len() {
-        if !emitter.managed(Type::Struct(crate::types::StructId(index))) {
-            continue;
-        }
-        let fields: Vec<_> = emitter.structs[index]
-            .fields
-            .iter()
-            .enumerate()
-            .filter(|(_, field)| emitter.managed(field.ty))
-            .map(|(position, field)| (position, field.ty))
-            .collect();
-        emitter.line("");
+    // Complete array layouts after value types; arrays themselves are pointers.
+    for (index, array) in program.arrays.iter().enumerate() {
         emitter.line(&format!(
-            "static inline skuld_s{index} skuld_s{index}_retain(skuld_s{index} value) {{"
+            "struct skuld_a{index} {{ skuld_object header; size_t len; {} data[]; }};",
+            emitter.c_type(array.element)
         ));
-        emitter.indent += 1;
-        for (position, ty) in &fields {
-            let retained = emitter.retained(*ty, &format!("value.f{position}"));
-            emitter.line(&format!("value.f{position} = {retained};"));
-        }
-        emitter.line("return value;");
-        emitter.indent -= 1;
-        emitter.line("}");
+    }
+    let managed: Vec<_> = (0..program.structs.len())
+        .map(|i| Type::Struct(crate::types::StructId(i)))
+        .chain((0..program.arrays.len()).map(|i| Type::Array(crate::types::ArrayId(i))))
+        .filter(|ty| emitter.managed(*ty))
+        .collect();
+    // Prototypes permit forward references and mutually referring classes.
+    for ty in &managed {
+        let name = emitter.c_type(*ty);
+        let prefix = emitter.aggregate_prefix(*ty);
         emitter.line(&format!(
-            "static inline void skuld_s{index}_release(skuld_s{index} *slot) {{"
+            "static inline {name} {prefix}_retain({name} value);"
         ));
-        emitter.indent += 1;
-        for (position, ty) in &fields {
-            let release = emitter
-                .release_function(*ty)
-                .expect("managed field has a release");
-            emitter.line(&format!("{release}(&slot->f{position});"));
-        }
-        emitter.indent -= 1;
-        emitter.line("}");
         emitter.line(&format!(
-            "static inline void skuld_s{index}_assign(skuld_s{index} *slot, skuld_s{index} value) {{"
+            "static inline void {prefix}_release({name} *slot);"
         ));
-        emitter.indent += 1;
-        emitter.line(&format!("skuld_s{index} previous = *slot;"));
-        emitter.line(&format!("*slot = skuld_s{index}_retain(value);"));
-        emitter.line(&format!("skuld_s{index}_release(&previous);"));
-        emitter.indent -= 1;
-        emitter.line("}");
+        emitter.line(&format!(
+            "static inline void {prefix}_assign({name} *slot, {name} value);"
+        ));
+    }
+    for ty in managed {
+        emitter.aggregate_helpers(ty);
     }
     if !program.structs.is_empty() {
         emitter.line("");
     }
     for function in &program.functions {
-        emitter.line(&format!("{};", signature(function)));
+        emitter.line(&format!("{};", emitter.signature(function)));
     }
     for function in &program.functions {
         emitter.line("");
@@ -85,7 +124,7 @@ pub fn emit_c(program: &Program) -> String {
             "/* {}: source bytes {}..{} */",
             function.name, function.span.start, function.span.end
         ));
-        emitter.line(&format!("{} {{", signature(function)));
+        emitter.line(&format!("{} {{", emitter.signature(function)));
         emitter.indent += 1;
         for parameter in &function.parameters {
             emitter.line(&format!(
@@ -119,39 +158,20 @@ fn string_literal(value: &str) -> String {
         value.len()
     )
 }
-fn place_expression(place: &Place) -> String {
-    let mut rendered = format!("skuld_v{}", place.base.0);
-    for index in &place.fields {
-        rendered.push_str(&format!(".f{index}"));
-    }
-    rendered
-}
-fn c_type(ty: Type) -> String {
-    match ty {
-        Type::Int => "int64_t".into(),
-        Type::Float => "double".into(),
-        Type::Bool => "bool".into(),
-        Type::String => "skuld_string".into(),
-        Type::Void => "void".into(),
-        // C struct assignment copies, which is exactly value semantics.
-        Type::Struct(id) => format!("skuld_s{}", id.0),
-        Type::Error => unreachable!("internal compiler bug: error type in HIR"),
-    }
-}
-fn signature(function: &Function) -> String {
+fn signature_of(structs: &[StructInfo], function: &Function) -> String {
     let params = if function.parameters.is_empty() {
         "void".into()
     } else {
         function
             .parameters
             .iter()
-            .map(|p| format!("{} skuld_v{}", c_type(p.ty), p.id.0))
+            .map(|p| format!("{} skuld_v{}", type_name(structs, p.ty), p.id.0))
             .collect::<Vec<_>>()
             .join(", ")
     };
     format!(
         "{} skuld_f{}({params})",
-        c_type(function.return_type),
+        type_name(structs, function.return_type),
         function.id.0
     )
 }
@@ -161,24 +181,191 @@ struct Emitter {
     next_temp: usize,
     /// Needed to decide which types own a reference and must be released.
     structs: Vec<StructInfo>,
+    arrays: Vec<crate::types::ArrayInfo>,
+}
+fn type_name(structs: &[StructInfo], ty: Type) -> String {
+    match ty {
+        Type::Int => "int64_t".into(),
+        Type::Float => "double".into(),
+        Type::Bool => "bool".into(),
+        Type::String => "skuld_string".into(),
+        Type::Void => "void".into(),
+        Type::Weak(_) => "skuld_weak".into(),
+        Type::Array(id) => format!("skuld_a{} *", id.0),
+        // A class value is a pointer to a shared object; a struct is the
+        // object itself, and C assignment copies it, which is value semantics.
+        Type::Struct(id) if structs[id.0].reference => format!("skuld_s{} *", id.0),
+        Type::Struct(id) => format!("skuld_s{}", id.0),
+        Type::Error => unreachable!("internal compiler bug: error type in HIR"),
+    }
 }
 impl Emitter {
+    fn aggregate_prefix(&self, ty: Type) -> String {
+        match ty {
+            Type::Struct(id) => format!("skuld_s{}", id.0),
+            Type::Array(id) => format!("skuld_a{}", id.0),
+            _ => unreachable!("aggregate type"),
+        }
+    }
+    fn aggregate_helpers(&mut self, ty: Type) {
+        let name = self.c_type(ty);
+        let prefix = self.aggregate_prefix(ty);
+        let reference = match ty {
+            Type::Array(_) => true,
+            Type::Struct(id) => self.structs[id.0].reference,
+            _ => unreachable!(),
+        };
+        let fields: Vec<_> = match ty {
+            Type::Struct(id) => self.structs[id.0]
+                .fields
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| self.managed(f.ty))
+                .map(|(i, f)| (i, f.ty))
+                .collect(),
+            _ => Vec::new(),
+        };
+        if reference {
+            self.line(&format!(
+                "static void {prefix}_destroy(skuld_object *object) {{"
+            ));
+            self.indent += 1;
+            self.line(&format!("{name} value = ({name})object;"));
+            self.line("(void)value;");
+            for (index, field) in &fields {
+                self.line(&format!(
+                    "{}(&value->f{index});",
+                    self.release_function(*field).expect("managed field")
+                ));
+            }
+            if let Type::Array(id) = ty
+                && let Some(release) = self.release_function(self.arrays[id.0].element)
+            {
+                self.line(&format!(
+                    "for (size_t i = 0; i < value->len; ++i) {release}(&value->data[i]);"
+                ));
+            }
+            self.indent -= 1;
+            self.line("}");
+        }
+        self.line(&format!(
+            "static inline {name} {prefix}_retain({name} value) {{"
+        ));
+        self.indent += 1;
+        if reference {
+            self.line("skuld_object_retain(&value->header);");
+        } else {
+            for (index, field) in &fields {
+                self.line(&format!(
+                    "value.f{index} = {};",
+                    self.retained(*field, &format!("value.f{index}"))
+                ));
+            }
+        }
+        self.line("return value;");
+        self.indent -= 1;
+        self.line("}");
+        self.line(&format!(
+            "static inline void {prefix}_release({name} *slot) {{"
+        ));
+        self.indent += 1;
+        if reference {
+            self.line("skuld_object_release(&(*slot)->header);");
+        } else {
+            for (index, field) in &fields {
+                self.line(&format!(
+                    "{}(&slot->f{index});",
+                    self.release_function(*field).expect("managed field")
+                ));
+            }
+        }
+        self.indent -= 1;
+        self.line("}");
+        self.line(&format!(
+            "static inline void {prefix}_assign({name} *slot, {name} value) {{"
+        ));
+        self.indent += 1;
+        self.line(&format!("{name} previous = *slot;"));
+        self.line(&format!("*slot = {prefix}_retain(value);"));
+        self.line(&format!("{prefix}_release(&previous);"));
+        self.indent -= 1;
+        self.line("}");
+    }
+    fn allocate(&mut self, ty: Type, count: usize, byte: usize) -> String {
+        let prefix = self.aggregate_prefix(ty);
+        let element = match ty {
+            Type::Array(id) => format!("sizeof({})", self.c_type(self.arrays[id.0].element)),
+            _ => "0".into(),
+        };
+        let name = self.store(
+            ty,
+            &format!("skuld_allocate(sizeof({prefix}), {count}, {element}, {byte})"),
+            true,
+        );
+        self.line(&format!(
+            "skuld_object_init(&{name}->header, {prefix}_destroy);"
+        ));
+        if matches!(ty, Type::Array(_)) {
+            self.line(&format!("{name}->len = {count};"));
+        }
+        name
+    }
+    fn index_place(&mut self, object: &Expr, index: &Expr) -> String {
+        let value = self.expression(object);
+        let subscript = self.expression(index);
+        let checked = self.temporary(
+            Type::Int,
+            &format!(
+                "(int64_t)skuld_index({subscript}, {value}->len, {})",
+                index.span.start
+            ),
+        );
+        format!("{value}->data[{checked}]")
+    }
+    fn place(&mut self, place: &Place) -> String {
+        match place {
+            Place::Local(id) => format!("skuld_v{}", id.0),
+            Place::Field { base, index } => {
+                let base = self.place(base);
+                format!("{base}.f{index}")
+            }
+            Place::ReferenceField { object, index } => {
+                let object = self.expression(object);
+                format!("{object}->f{index}")
+            }
+            Place::Index { object, index } => self.index_place(object, index),
+        }
+    }
+
+    fn c_type(&self, ty: Type) -> String {
+        type_name(&self.structs, ty)
+    }
+    fn signature(&self, function: &Function) -> String {
+        signature_of(&self.structs, function)
+    }
     /// A type owns references when it is a string or holds one, directly or
     /// through another struct. Unmanaged values need no retain, release or
     /// cleanup, so they cost exactly what they did before.
     fn managed(&self, ty: Type) -> bool {
         match ty {
-            Type::String => true,
-            Type::Struct(id) => self.structs[id.0]
-                .fields
-                .iter()
-                .any(|field| self.managed(field.ty)),
+            Type::String | Type::Array(_) | Type::Weak(_) => true,
+            // A class always owns a reference; a struct owns one only if a
+            // field does.
+            Type::Struct(id) => {
+                self.structs[id.0].reference
+                    || self.structs[id.0]
+                        .fields
+                        .iter()
+                        .any(|field| self.managed(field.ty))
+            }
             _ => false,
         }
     }
     fn retained(&self, ty: Type, value: &str) -> String {
         match ty {
             Type::String => format!("skuld_string_retain({value})"),
+            Type::Weak(_) => format!("skuld_weak_retain({value})"),
+            Type::Array(id) => format!("skuld_a{}_retain({value})", id.0),
             Type::Struct(id) if self.managed(ty) => format!("skuld_s{}_retain({value})", id.0),
             _ => value.into(),
         }
@@ -186,6 +373,8 @@ impl Emitter {
     fn release_function(&self, ty: Type) -> Option<String> {
         match ty {
             Type::String => Some("skuld_string_release".into()),
+            Type::Weak(_) => Some("skuld_weak_release".into()),
+            Type::Array(id) => Some(format!("skuld_a{}_release", id.0)),
             Type::Struct(id) if self.managed(ty) => Some(format!("skuld_s{}_release", id.0)),
             _ => None,
         }
@@ -201,6 +390,8 @@ impl Emitter {
     fn assign_function(&self, ty: Type) -> Option<String> {
         match ty {
             Type::String => Some("skuld_string_assign".into()),
+            Type::Weak(_) => Some("skuld_weak_assign".into()),
+            Type::Array(id) => Some(format!("skuld_a{}_assign", id.0)),
             Type::Struct(id) if self.managed(ty) => Some(format!("skuld_s{}_assign", id.0)),
             _ => None,
         }
@@ -222,7 +413,10 @@ impl Emitter {
             self.retained(ty, value)
         };
         let cleanup = self.cleanup(ty);
-        self.line(&format!("{cleanup}{} {name} = {initializer};", c_type(ty)));
+        self.line(&format!(
+            "{cleanup}{} {name} = {initializer};",
+            self.c_type(ty)
+        ));
         name
     }
     fn temporary(&mut self, ty: Type, value: &str) -> String {
@@ -260,7 +454,7 @@ impl Emitter {
                 let cleanup = self.cleanup(*ty);
                 self.line(&format!(
                     "{cleanup}{} skuld_v{} = {initial};",
-                    c_type(*ty),
+                    self.c_type(*ty),
                     id.0
                 ));
                 self.line(&format!("(void)skuld_v{};", id.0));
@@ -355,18 +549,75 @@ impl Emitter {
             }
             ExprKind::Local(id) => self.temporary(expr.ty, &format!("skuld_v{}", id.0)),
             ExprKind::StructLiteral { id, fields } => {
-                // Fields are evaluated in declaration order into temporaries
-                // first, so the initializer itself contains no side effects.
                 let values: Vec<_> = fields
                     .iter()
-                    .map(|field| {
+                    .map(|(index, field)| {
                         let value = self.expression(field);
-                        self.retained(field.ty, &value)
+                        (*index, self.retained(field.ty, &value))
                     })
                     .collect();
+                if !self.structs[id.0].reference {
+                    let initializers: Vec<_> = values
+                        .iter()
+                        .map(|(index, value)| format!(".f{index} = {value}"))
+                        .collect();
+                    return self.store(
+                        expr.ty,
+                        &format!("(skuld_s{}){{{}}}", id.0, initializers.join(", ")),
+                        true,
+                    );
+                }
+                let name = self.allocate(expr.ty, 0, expr.span.start);
+                for (position, value) in values {
+                    self.line(&format!("{name}->f{position} = {value};"));
+                }
+                name
+            }
+            ExprKind::Array(elements) => {
+                let Type::Array(id) = expr.ty else {
+                    unreachable!("checked array")
+                };
+                let element_type = self.arrays[id.0].element;
+                let values: Vec<_> = elements
+                    .iter()
+                    .map(|element| self.expression(element))
+                    .collect();
+                let name = self.allocate(expr.ty, elements.len(), expr.span.start);
+                for (position, value) in values.iter().enumerate() {
+                    self.line(&format!(
+                        "{name}->data[{position}] = {};",
+                        self.retained(element_type, value)
+                    ));
+                }
+                name
+            }
+            ExprKind::Index { object, index } => {
+                let place = self.index_place(object, index);
+                self.temporary(expr.ty, &place)
+            }
+            ExprKind::ArrayLen(object) => {
+                let value = self.expression(object);
+                self.temporary(Type::Int, &format!("(int64_t){value}->len"))
+            }
+            ExprKind::Weak(value) => {
+                let value = match value {
+                    Some(value) => {
+                        let value = self.expression(value);
+                        format!("skuld_weak_retain(&{value}->header)")
+                    }
+                    None => "NULL".into(),
+                };
+                self.store(expr.ty, &value, true)
+            }
+            ExprKind::WeakAlive(object) => {
+                let value = self.expression(object);
+                self.temporary(Type::Bool, &format!("skuld_weak_alive({value})"))
+            }
+            ExprKind::WeakGet(object) => {
+                let value = self.expression(object);
                 self.store(
                     expr.ty,
-                    &format!("(skuld_s{}){{{}}}", id.0, values.join(", ")),
+                    &format!("skuld_weak_get({value}, {})", expr.span.start),
                     true,
                 )
             }
@@ -427,7 +678,11 @@ impl Emitter {
             }
             ExprKind::Field { object, index } => {
                 let value = self.expression(object);
-                self.temporary(expr.ty, &format!("{value}.f{index}"))
+                let arrow = match object.ty {
+                    Type::Struct(id) if self.structs[id.0].reference => "->",
+                    _ => ".",
+                };
+                self.temporary(expr.ty, &format!("{value}{arrow}f{index}"))
             }
             ExprKind::Unary {
                 op,
@@ -482,7 +737,7 @@ impl Emitter {
                 value,
                 op_span,
             } => {
-                let place = place_expression(target);
+                let place = self.place(target);
                 // Compound assignment snapshots the old value before its RHS.
                 let old = if *op != AssignmentOp::Assign {
                     Some(self.temporary(expr.ty, &place))

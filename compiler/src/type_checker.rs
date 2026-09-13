@@ -4,7 +4,7 @@ use crate::{
     diagnostic::{Diagnostic, DiagnosticCode},
     resolver::{Resolution, SymbolId, SymbolKind},
     span::Span,
-    types::{StructId, Type},
+    types::{ArrayId, ArrayInfo, StructId, Type},
 };
 use std::collections::BTreeMap;
 
@@ -25,8 +25,12 @@ pub struct TypedProgram {
     pub(crate) signatures: BTreeMap<SymbolId, Signature>,
     pub(crate) entry: SymbolId,
     pub(crate) structs: Vec<StructInfo>,
+    pub(crate) arrays: Vec<ArrayInfo>,
 }
 impl TypedProgram {
+    pub fn arrays(&self) -> &[ArrayInfo] {
+        &self.arrays
+    }
     pub fn syntax(&self) -> &Program {
         &self.syntax
     }
@@ -54,6 +58,9 @@ pub(crate) fn type_check(
         loops: Vec::new(),
         structs: Vec::new(),
         struct_names: BTreeMap::new(),
+        arrays: Vec::new(),
+        array_types: BTreeMap::new(),
+        expected_context: None,
     };
     // Structs are collected before signatures so functions may use them, and
     // before field types so a struct can refer to one declared later.
@@ -72,6 +79,7 @@ pub(crate) fn type_check(
         }
         checker.structs.push(StructInfo {
             name: declaration.name.text.clone(),
+            reference: declaration.kind == TypeDeclKind::Reference,
             fields: Vec::new(),
             methods: Vec::new(),
             span: declaration.span,
@@ -95,17 +103,6 @@ pub(crate) fn type_check(
                 );
                 continue;
             }
-            if ty == Type::Struct(StructId(index)) {
-                checker.error(
-                    DiagnosticCode::InvalidValueType,
-                    field.type_ref_span(),
-                    format!(
-                        "struct `{}` cannot contain itself; a value type has no indirection",
-                        declaration.name.text
-                    ),
-                );
-                continue;
-            }
             fields.push(FieldInfo {
                 name: field.name.text.clone(),
                 ty,
@@ -113,6 +110,29 @@ pub(crate) fn type_check(
             });
         }
         checker.structs[index].fields = fields;
+    }
+    // A value type has no indirection, so containing itself — directly or
+    // through other value types — would have no size. A class field is a
+    // reference, which breaks any such chain.
+    for index in 0..checker.structs.len() {
+        if checker.structs[index].reference {
+            continue;
+        }
+        if checker.contains_by_value(
+            StructId(index),
+            StructId(index),
+            &mut vec![false; checker.structs.len()],
+        ) {
+            let declaration = &syntax.structs[index];
+            checker.error(
+                DiagnosticCode::InvalidValueType,
+                declaration.name.span,
+                format!(
+                    "struct `{}` contains itself by value; a value type has no indirection, so it would have no size",
+                    declaration.name.text
+                ),
+            );
+        }
     }
     // Method signatures come after fields so a method can use any field type,
     // and after every struct exists so signatures may mention other structs.
@@ -148,16 +168,13 @@ pub(crate) fn type_check(
                     ),
                 );
             }
-            let parameters: Vec<_> = method
-                .parameters
-                .iter()
-                .map(|p| {
-                    let ty = checker.type_ref(&p.type_ref, false);
-                    let parameter = checker.declaration(&p.name);
-                    checker.symbol_types[parameter.0] = ty;
-                    ty
-                })
-                .collect();
+            let mut parameters = Vec::new();
+            for parameter in &method.parameters {
+                let ty = checker.type_ref(&parameter.type_ref, false);
+                parameters.push(ty);
+                let param_id = checker.declaration(&parameter.name);
+                checker.symbol_types[param_id.0] = ty;
+            }
             let return_type = method
                 .return_type
                 .as_ref()
@@ -170,8 +187,12 @@ pub(crate) fn type_check(
                     return_type,
                 },
             );
-            // `this` is an immutable parameter, like every other parameter.
-            let this = checker.resolution.declarations[&method.body.span.start];
+            let this = checker
+                .resolution
+                .declarations
+                .get(&method.body.span.start)
+                .copied()
+                .expect("internal compiler bug: method body has no receiver symbol");
             checker.symbol_types[this.0] = receiver;
             methods.push(MethodInfo {
                 name: method.name.text.clone(),
@@ -181,22 +202,19 @@ pub(crate) fn type_check(
         checker.structs[index].methods = methods;
     }
     for function in &syntax.functions {
-        let parameters: Vec<_> = function
-            .parameters
-            .iter()
-            .map(|p| {
-                let ty = checker.type_ref(&p.type_ref, false);
-                let id = checker.declaration(&p.name);
-                checker.symbol_types[id.0] = ty;
-                ty
-            })
-            .collect();
+        let id = checker.declaration(&function.name);
+        let mut parameters = Vec::new();
+        for parameter in &function.parameters {
+            let ty = checker.type_ref(&parameter.type_ref, false);
+            parameters.push(ty);
+            let param_id = checker.declaration(&parameter.name);
+            checker.symbol_types[param_id.0] = ty;
+        }
         let return_type = function
             .return_type
             .as_ref()
-            .map(|t| checker.type_ref(t, true))
+            .map(|r| checker.type_ref(r, true))
             .unwrap_or(Type::Void);
-        let id = checker.declaration(&function.name);
         checker.signatures.insert(
             id,
             Signature {
@@ -211,19 +229,34 @@ pub(crate) fn type_check(
         .find(|f| f.name.text == "main")
         .map(|f| checker.declaration(&f.name));
     match entry {
-        Some(id) => {
-            let signature = &checker.signatures[&id];
-            if !signature.parameters.is_empty() || signature.return_type != Type::Void {
-                checker.error(
-                    DiagnosticCode::InvalidEntrypoint,
-                    resolution.symbols[id.0].span.unwrap_or(syntax.span),
-                    "entrypoint must have signature `func main()` (void return, no parameters)",
-                );
-            }
+        Some(id) if !checker.signatures[&id].parameters.is_empty() => {
+            let function = syntax
+                .functions
+                .iter()
+                .find(|f| f.name.text == "main")
+                .unwrap();
+            checker.error(
+                DiagnosticCode::InvalidEntrypoint,
+                function.name.span,
+                "`func main()` cannot take parameters",
+            );
         }
+        Some(id) if checker.signatures[&id].return_type != Type::Void => {
+            let function = syntax
+                .functions
+                .iter()
+                .find(|f| f.name.text == "main")
+                .unwrap();
+            checker.error(
+                DiagnosticCode::InvalidEntrypoint,
+                function.name.span,
+                "`func main()` must return `void`",
+            );
+        }
+        Some(_) => {}
         None => checker.error(
             DiagnosticCode::InvalidEntrypoint,
-            Span::new(syntax.span.end, syntax.span.end),
+            Span::new(0, 0),
             "missing entrypoint `func main()`",
         ),
     }
@@ -251,6 +284,7 @@ pub(crate) fn type_check(
     }
     let Checker {
         structs,
+        arrays,
         expressions,
         symbol_types,
         signatures,
@@ -262,6 +296,7 @@ pub(crate) fn type_check(
         syntax,
         resolution,
         structs,
+        arrays,
         expressions,
         symbol_types,
         signatures,
@@ -283,11 +318,17 @@ struct Checker<'a> {
     structs: Vec<StructInfo>,
     /// Struct name to table index, for resolving type names and constructions.
     struct_names: BTreeMap<String, StructId>,
+    /// Interned array types; `Type::Array` indexes this.
+    arrays: Vec<ArrayInfo>,
+    array_types: BTreeMap<Type, ArrayId>,
+    expected_context: Option<Type>,
 }
 
 #[derive(Debug, Clone)]
 pub struct StructInfo {
     pub name: String,
+    /// A class is a reference to a shared object; a struct is a value.
+    pub reference: bool,
     /// Field order is declaration order, which the backend layout follows.
     pub fields: Vec<FieldInfo>,
     pub methods: Vec<MethodInfo>,
@@ -336,38 +377,83 @@ impl Checker<'_> {
     fn type_name(&self, ty: Type) -> String {
         match ty {
             Type::Struct(id) => self.structs[id.0].name.clone(),
+            Type::Array(id) => format!("[]{}", self.type_name(self.arrays[id.0].element)),
+            Type::Weak(id) => format!("weak {}", self.structs[id.0].name),
             other => other.to_string(),
         }
     }
-    fn type_ref(&mut self, reference: &TypeRef, allow_void: bool) -> Type {
-        let TypeRef::Named(name) = reference;
-        let ty = match name.text.as_str() {
-            "int" => Type::Int,
-            "float" => Type::Float,
-            "bool" => Type::Bool,
-            "string" => Type::String,
-            "void" => Type::Void,
-            other if self.struct_names.contains_key(other) => {
-                Type::Struct(self.struct_names[other])
-            }
-            _ => {
-                self.error(
-                    DiagnosticCode::UnknownType,
-                    name.span,
-                    format!("unknown or unsupported type `{}`", name.text),
-                );
-                Type::Error
-            }
-        };
-        if ty == Type::Void && !allow_void {
-            self.error(
-                DiagnosticCode::InvalidValueType,
-                name.span,
-                "`void` is only allowed as a function return type",
-            );
-            Type::Error
+    fn array_type(&mut self, element: Type) -> Type {
+        if let Some(&id) = self.array_types.get(&element) {
+            Type::Array(id)
         } else {
-            ty
+            let id = ArrayId(self.arrays.len());
+            self.arrays.push(ArrayInfo { element });
+            self.array_types.insert(element, id);
+            Type::Array(id)
+        }
+    }
+    fn type_ref(&mut self, reference: &TypeRef, allow_void: bool) -> Type {
+        match reference {
+            TypeRef::Weak { class, span } => {
+                let ty = self.type_ref(&TypeRef::Named(class.clone()), false);
+                match ty {
+                    Type::Struct(id) if self.structs[id.0].reference => Type::Weak(id),
+                    Type::Error => Type::Error,
+                    _ => {
+                        self.error(
+                            DiagnosticCode::InvalidValueType,
+                            *span,
+                            "weak references require a class type",
+                        );
+                        Type::Error
+                    }
+                }
+            }
+            TypeRef::Named(name) => {
+                let ty = match name.text.as_str() {
+                    "int" => Type::Int,
+                    "float" => Type::Float,
+                    "bool" => Type::Bool,
+                    "string" => Type::String,
+                    "void" => Type::Void,
+                    other if self.struct_names.contains_key(other) => {
+                        Type::Struct(self.struct_names[other])
+                    }
+                    _ => {
+                        self.error(
+                            DiagnosticCode::UnknownType,
+                            name.span,
+                            format!("unknown or unsupported type `{}`", name.text),
+                        );
+                        Type::Error
+                    }
+                };
+                if ty == Type::Void && !allow_void {
+                    self.error(
+                        DiagnosticCode::InvalidValueType,
+                        name.span,
+                        "`void` is only allowed as a function return type",
+                    );
+                    Type::Error
+                } else {
+                    ty
+                }
+            }
+            TypeRef::Array { element, span } => {
+                let element_type = self.type_ref(element, false);
+                if element_type == Type::Error {
+                    Type::Error
+                } else if element_type == Type::Void {
+                    self.error(
+                        DiagnosticCode::InvalidValueType,
+                        *span,
+                        "array element type cannot be `void`",
+                    );
+                    Type::Error
+                } else {
+                    self.array_type(element_type)
+                }
+            }
         }
     }
     fn expect_type(&mut self, expected: Type, found: Type, span: Span) {
@@ -393,7 +479,14 @@ impl Checker<'_> {
     fn statement(&mut self, statement: &Statement) -> bool {
         match &statement.kind {
             StatementKind::Variable(variable) => {
+                let annotated = variable
+                    .type_ref
+                    .as_ref()
+                    .map(|reference| self.type_ref(reference, false));
+                let previous_expected = self.expected_context;
+                self.expected_context = annotated;
                 let inferred = self.expression(&variable.initializer);
+                self.expected_context = previous_expected;
                 if inferred == Type::Void {
                     self.error(
                         DiagnosticCode::InvalidValueType,
@@ -401,8 +494,7 @@ impl Checker<'_> {
                         "cannot store a `void` expression in a variable",
                     );
                 }
-                let ty = if let Some(reference) = &variable.type_ref {
-                    let annotated = self.type_ref(reference, false);
+                let ty = if let Some(annotated) = annotated {
                     self.expect_type(annotated, inferred, variable.initializer.span);
                     annotated
                 } else {
@@ -417,10 +509,13 @@ impl Checker<'_> {
                 false
             }
             StatementKind::Return(value) => {
+                let previous_expected = self.expected_context;
+                self.expected_context = Some(self.return_type);
                 let found = value
                     .as_ref()
                     .map(|e| self.expression(e))
                     .unwrap_or(Type::Void);
+                self.expected_context = previous_expected;
                 self.expect_type(
                     self.return_type,
                     found,
@@ -483,12 +578,16 @@ impl Checker<'_> {
             }
         }
     }
-    fn struct_literal(&mut self, name: &Name, fields: &[FieldInit]) -> Type {
+    fn construction(&mut self, name: &Name, fields: &[FieldInit], new: bool) -> Type {
         let Some(id) = self.struct_names.get(&name.text).copied() else {
             self.error(
                 DiagnosticCode::UnknownType,
                 name.span,
-                format!("unknown struct `{}`", name.text),
+                format!(
+                    "unknown {} `{}`",
+                    if new { "class" } else { "struct" },
+                    name.text
+                ),
             );
             // Still check the values so their own errors are reported.
             for field in fields {
@@ -496,13 +595,28 @@ impl Checker<'_> {
             }
             return Type::Error;
         };
+        if self.structs[id.0].reference != new {
+            let (found, expected) = if new {
+                ("struct", format!("`{} {{ ... }}`", name.text))
+            } else {
+                ("class", format!("`new {}(...)`", name.text))
+            };
+            self.error(
+                DiagnosticCode::InvalidAssignment,
+                name.span,
+                format!("`{}` is a {found}; construct it with {expected}", name.text),
+            );
+        }
         let mut initialized = vec![false; self.structs[id.0].fields.len()];
         for field in fields {
-            let found = self.expression(&field.value);
-            let Some((index, declared)) = self.structs[id.0]
+            let declared_field = self.structs[id.0]
                 .field(&field.name.text)
-                .map(|(index, declared)| (index, declared.clone()))
-            else {
+                .map(|(index, declared)| (index, declared.clone()));
+            let previous = self.expected_context;
+            self.expected_context = declared_field.as_ref().map(|(_, d)| d.ty);
+            let found = self.expression(&field.value);
+            self.expected_context = previous;
+            let Some((index, declared)) = declared_field else {
                 self.error(
                     DiagnosticCode::UnknownName,
                     field.name.span,
@@ -563,6 +677,7 @@ impl Checker<'_> {
         is_min
     }
     fn expression(&mut self, expr: &Expr) -> Type {
+        let expected = self.expected_context.take();
         let ty = match &expr.kind {
             ExprKind::Literal(literal) => match literal {
                 Literal::Integer(value) => {
@@ -599,7 +714,10 @@ impl Checker<'_> {
                     }
                 }
             }
-            ExprKind::Group(inner) => self.expression(inner),
+            ExprKind::Group(inner) => {
+                self.expected_context = expected;
+                self.expression(inner)
+            }
             ExprKind::Unary {
                 op,
                 operand,
@@ -643,9 +761,20 @@ impl Checker<'_> {
                 op_span,
             } => {
                 let target_type = self.expression(target);
+                if assignment_root(target).is_none()
+                    && !self.through_reference(target)
+                    && target_type != Type::Error
+                {
+                    self.error(DiagnosticCode::InvalidAssignment, target.span, "assignment requires a variable or a field/index reached through a reference");
+                }
                 // Assigning to `v.x` needs the mutability of `v`: a field of an
-                // immutable binding is immutable too.
-                if let Some(name) = assignment_root(target) {
+                // immutable binding is immutable too. A class is different: the
+                // binding holds a reference, and the object it refers to is
+                // shared and mutable, so only rebinding the reference is
+                // governed by `let`.
+                if let Some(name) =
+                    assignment_root(target).filter(|_| !self.through_reference(target))
+                {
                     let id = self.reference(name);
                     let symbol = &self.resolution.symbols[id.0];
                     match symbol.kind {
@@ -674,7 +803,10 @@ impl Checker<'_> {
                         ),
                     }
                 }
+                let previous_expected = self.expected_context;
+                self.expected_context = Some(target_type);
                 let value_type = self.expression(value);
+                self.expected_context = previous_expected;
                 self.expect_type(target_type, value_type, value.span);
                 if *op != AssignmentOp::Assign {
                     let binary = match op {
@@ -735,7 +867,123 @@ impl Checker<'_> {
                     }
                 }
             }
-            ExprKind::StructLiteral { name, fields } => self.struct_literal(name, fields),
+            ExprKind::Weak(value) => {
+                match value {
+                    Some(value) => {
+                        let ty = self.expression(value);
+                        match ty {
+                            Type::Struct(id) if self.structs[id.0].reference => Type::Weak(id),
+                            Type::Error => Type::Error,
+                            _ => {
+                                self.error(
+                                    DiagnosticCode::InvalidValueType,
+                                    value.span,
+                                    "weak() requires a class reference",
+                                );
+                                Type::Error
+                            }
+                        }
+                    }
+                    None => match expected {
+                        Some(ty @ Type::Weak(_)) => ty,
+                        _ => {
+                            self.error(DiagnosticCode::InvalidValueType, expr.span, "empty weak() requires a weak class type annotation or expected type");
+                            Type::Error
+                        }
+                    },
+                }
+            }
+            ExprKind::Array(elements) => {
+                let previous_expected = self.expected_context;
+                let expected_elem = match expected {
+                    Some(Type::Array(id)) => Some(self.arrays[id.0].element),
+                    _ => None,
+                };
+                if elements.is_empty() {
+                    match expected_elem {
+                        Some(elem) => self.array_type(elem),
+                        None => {
+                            self.error(
+                                DiagnosticCode::UnknownType,
+                                expr.span,
+                                "cannot infer element type for empty array literal; explicit type annotation required",
+                            );
+                            Type::Error
+                        }
+                    }
+                } else {
+                    let mut elem_ty = expected_elem;
+                    let mut has_error = false;
+                    for elem in elements {
+                        self.expected_context = elem_ty;
+                        let found = self.expression(elem);
+                        self.expected_context = previous_expected;
+                        if found == Type::Error {
+                            has_error = true;
+                        } else if found == Type::Void {
+                            self.error(
+                                DiagnosticCode::InvalidValueType,
+                                elem.span,
+                                "array element cannot be `void`",
+                            );
+                            has_error = true;
+                        } else {
+                            match elem_ty {
+                                Some(expected) => {
+                                    self.expect_type(expected, found, elem.span);
+                                    if expected != found {
+                                        has_error = true;
+                                    }
+                                }
+                                None => {
+                                    elem_ty = Some(found);
+                                }
+                            }
+                        }
+                    }
+                    if has_error {
+                        Type::Error
+                    } else {
+                        match elem_ty {
+                            Some(elem) => self.array_type(elem),
+                            None => Type::Error,
+                        }
+                    }
+                }
+            }
+            ExprKind::Index { object, index } => {
+                let object_type = self.expression(object);
+                let previous_expected = self.expected_context;
+                self.expected_context = Some(Type::Int);
+                let index_type = self.expression(index);
+                self.expected_context = previous_expected;
+                if index_type != Type::Error {
+                    self.expect_type(Type::Int, index_type, index.span);
+                }
+                match object_type {
+                    Type::Array(id) => {
+                        if index_type == Type::Error || index_type != Type::Int {
+                            Type::Error
+                        } else {
+                            self.arrays[id.0].element
+                        }
+                    }
+                    Type::Error => Type::Error,
+                    other => {
+                        self.error(
+                            DiagnosticCode::InvalidOperator,
+                            expr.span,
+                            format!(
+                                "cannot index into `{}`; only arrays support indexing",
+                                self.type_name(other)
+                            ),
+                        );
+                        Type::Error
+                    }
+                }
+            }
+            ExprKind::StructLiteral { name, fields } => self.construction(name, fields, false),
+            ExprKind::New { name, fields } => self.construction(name, fields, true),
             ExprKind::Interpolation(parts) => {
                 for part in parts {
                     let InterpolationPart::Value(value) = part else {
@@ -761,6 +1009,7 @@ impl Checker<'_> {
                 Type::String
             }
         };
+        self.expected_context = expected;
         self.record(expr, ty)
     }
     fn binary(&mut self, op: BinaryOp, left: Type, right: Type, span: Span) -> Type {
@@ -803,7 +1052,29 @@ impl Checker<'_> {
         span: Span,
     ) -> Type {
         let receiver = self.expression(object);
-        let arg_types: Vec<_> = arguments.iter().map(|arg| self.expression(arg)).collect();
+        let builtin = match (receiver, member.text.as_str()) {
+            (Type::Array(_), "len") => Some(Type::Int),
+            (Type::Weak(_), "alive") => Some(Type::Bool),
+            (Type::Weak(id), "get") => Some(Type::Struct(id)),
+            _ => None,
+        };
+        if let Some(ty) = builtin {
+            for argument in arguments {
+                self.expression(argument);
+            }
+            if !arguments.is_empty() {
+                self.error(
+                    DiagnosticCode::ArgumentCount,
+                    span,
+                    format!(
+                        "method `{}` expects 0 arguments, found {}",
+                        member.text,
+                        arguments.len()
+                    ),
+                );
+            }
+            return ty;
+        }
         let Type::Struct(id) = receiver else {
             if receiver != Type::Error {
                 self.error(
@@ -850,13 +1121,18 @@ impl Checker<'_> {
                     arguments.len()
                 ),
             );
+            for argument in arguments {
+                self.expression(argument);
+            }
             return signature.return_type;
         }
-        for ((expected, found), argument) in
-            signature.parameters.iter().zip(arg_types).zip(arguments)
-        {
+        let previous = self.expected_context;
+        for (expected, argument) in signature.parameters.iter().zip(arguments) {
+            self.expected_context = Some(*expected);
+            let found = self.expression(argument);
             self.expect_type(*expected, found, argument.span);
         }
+        self.expected_context = previous;
         signature.return_type
     }
     fn call(&mut self, callee: &Expr, arguments: &[Expr], span: Span) -> Type {
@@ -872,9 +1148,9 @@ impl Checker<'_> {
         } else {
             None
         };
-        let arg_types: Vec<_> = arguments.iter().map(|arg| self.expression(arg)).collect();
         match id.map(|id| (id, self.resolution.symbols[id.0].kind)) {
             Some((_, SymbolKind::Builtin(_))) => {
+                let arg_types: Vec<_> = arguments.iter().map(|arg| self.expression(arg)).collect();
                 if arguments.len() > 1 {
                     self.error(
                         DiagnosticCode::ArgumentCount,
@@ -891,6 +1167,18 @@ impl Checker<'_> {
                             DiagnosticCode::InvalidValueType,
                             arg.span,
                             "`print` cannot print `void`",
+                        );
+                    } else if !matches!(
+                        ty,
+                        Type::Int | Type::Float | Type::Bool | Type::String | Type::Error
+                    ) {
+                        self.error(
+                            DiagnosticCode::InvalidValueType,
+                            arg.span,
+                            format!(
+                                "`print` cannot print `{}`; only int, float, bool and string have a textual form",
+                                self.type_name(ty)
+                            ),
                         );
                     }
                 }
@@ -909,14 +1197,22 @@ impl Checker<'_> {
                         ),
                     );
                 }
-                for ((arg, found), expected) in
-                    arguments.iter().zip(arg_types).zip(signature.parameters)
-                {
-                    self.expect_type(expected, found, arg.span);
+                let previous = self.expected_context;
+                for (arg, expected) in arguments.iter().zip(&signature.parameters) {
+                    self.expected_context = Some(*expected);
+                    let found = self.expression(arg);
+                    self.expect_type(*expected, found, arg.span);
+                }
+                self.expected_context = previous;
+                for arg in arguments.iter().skip(signature.parameters.len()) {
+                    self.expression(arg);
                 }
                 signature.return_type
             }
             _ => {
+                for arg in arguments {
+                    self.expression(arg);
+                }
                 let ty = self.expression(callee);
                 if ty != Type::Error {
                     self.error(
@@ -931,11 +1227,53 @@ impl Checker<'_> {
     }
 }
 
+impl Checker<'_> {
+    /// Whether `target` is reachable from `from` through value-typed fields.
+    fn contains_by_value(&self, from: StructId, target: StructId, seen: &mut Vec<bool>) -> bool {
+        if seen[from.0] {
+            return false;
+        }
+        seen[from.0] = true;
+        self.structs[from.0].fields.iter().any(|field| {
+            let Type::Struct(id) = field.ty else {
+                return false;
+            };
+            // A reference field stops the chain: it is a pointer.
+            !self.structs[id.0].reference
+                && (id == target || self.contains_by_value(id, target, seen))
+        })
+    }
+    /// True when the assignment writes into an object reached by reference.
+    fn through_reference(&self, target: &Expr) -> bool {
+        match &target.kind {
+            ExprKind::Member { object, .. } => {
+                let ty = self
+                    .expressions
+                    .get(&(object.span.start, object.span.end))
+                    .copied();
+                matches!(ty, Some(Type::Struct(id)) if self.structs[id.0].reference)
+                    || self.through_reference(object)
+            }
+            ExprKind::Index { object, .. } => {
+                let ty = self
+                    .expressions
+                    .get(&(object.span.start, object.span.end))
+                    .copied();
+                matches!(ty, Some(Type::Array(_))) || self.through_reference(object)
+            }
+            ExprKind::Group(inner) => self.through_reference(inner),
+            _ => false,
+        }
+    }
+}
+
 /// The local an assignment ultimately writes through, looking past field steps.
 fn assignment_root(target: &Expr) -> Option<&Name> {
     match &target.kind {
         ExprKind::Identifier(name) => Some(name),
+        ExprKind::Group(inner) => assignment_root(inner),
         ExprKind::Member { object, .. } => assignment_root(object),
+        ExprKind::Index { object, .. } => assignment_root(object),
         _ => None,
     }
 }
