@@ -136,6 +136,12 @@ impl Server {
                 None
             }
 
+            (Some("textDocument/formatting"), Some(id)) => {
+                let edits = self.formatting(message);
+                respond(output, id.clone(), edits);
+                None
+            }
+
             (Some("textDocument/hover"), Some(id)) => {
                 let hover = self.hover(message);
                 respond(output, id.clone(), hover);
@@ -655,6 +661,35 @@ impl Server {
         )
     }
 
+    /// Answer `textDocument/formatting` with the official formatter's output,
+    /// as one edit over the whole document.
+    ///
+    /// A document that does not parse is answered with no edits rather than
+    /// an error: the usual caller is format-on-save, and a dialog about a
+    /// syntax error the editor is already underlining helps nobody. A document
+    /// already formatted is answered the same way, which saves the client a
+    /// no-op undo entry.
+    fn formatting(&self, message: &Json) -> Json {
+        let empty = Json::Array(Vec::new());
+        let Some(path) = document_path(message) else {
+            return empty;
+        };
+        let Some(source) = self.open.get(&path) else {
+            return empty;
+        };
+        let Ok(formatted) = skuld_compiler::format_source(source) else {
+            return empty;
+        };
+        if formatted == *source {
+            return empty;
+        }
+        let positions = Positions::new(source.clone());
+        Json::Array(vec![Json::object([
+            ("range", range_json(&positions, Span::new(0, source.len()))),
+            ("newText", Json::string(formatted)),
+        ])])
+    }
+
     /// Answer `textDocument/hover` with the declaration a reader would
     /// otherwise have to go and find.
     fn hover(&self, message: &Json) -> Json {
@@ -925,6 +960,9 @@ fn initialize_result() -> Json {
             ("positionEncoding", Json::string("utf-16")),
             ("hoverProvider", Json::Bool(true)),
             ("documentSymbolProvider", Json::Bool(true)),
+            // Whole-document only: the formatter reads a program, not a
+            // fragment, so there is no honest answer for a range.
+            ("documentFormattingProvider", Json::Bool(true)),
             ("definitionProvider", Json::Bool(true)),
             ("referencesProvider", Json::Bool(true)),
             (

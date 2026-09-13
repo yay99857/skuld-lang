@@ -199,9 +199,9 @@ fn an_unknown_request_is_refused_but_an_unknown_notification_is_not() {
         ("jsonrpc", Json::string("2.0")),
         ("method", Json::string("textDocument/inventedNotification")),
     ]);
-    // `hover`, `references`, `rename` and the outline are answered now, so
-    // the refused request has to be one the server genuinely does not
-    // implement.
+    // `hover`, `references`, `rename`, the outline and formatting are all
+    // answered now, so the refused request has to be one the server genuinely
+    // does not implement.
     let (out, _) = converse(&[request(7, "textDocument/codeAction"), notification]);
     assert_eq!(out.len(), 1, "a notification must not be answered");
     assert_eq!(out[0].get("id").unwrap().as_i64(), Some(7));
@@ -929,8 +929,8 @@ fn a_document_that_never_checked_is_refused_rather_than_guessed_at() {
     assert!(message.contains("no successful check"), "{message}");
 }
 
-/// A request naming a document and nothing else, which is the shape of
-/// `documentSymbol`.
+/// A request naming a document and nothing else, which is the shape of both
+/// `documentSymbol` and `formatting`.
 fn document_request(id: i64, method: &str, path: &str) -> Json {
     Json::object([
         ("jsonrpc", Json::string("2.0")),
@@ -1012,5 +1012,64 @@ fn an_outline_of_an_unopened_document_is_empty_rather_than_an_error() {
         "textDocument/documentSymbol",
         "/tmp/skuld-lsp-test/never-opened.skuld",
     )]);
+    assert_eq!(result_of(&out, 2), &Json::Array(Vec::new()));
+}
+
+#[test]
+fn the_server_advertises_and_answers_formatting() {
+    let path = "/tmp/skuld-lsp-test/unformatted.skuld";
+    let source = "func main(){\nprint(\"hi\")\n}\n";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        document_request(2, "textDocument/formatting", path),
+    ]);
+    assert_eq!(
+        out[0].path(&["result", "capabilities", "documentFormattingProvider"]),
+        Some(&Json::Bool(true))
+    );
+    let edits = result_of(&out, 2).as_array().expect("an edit list");
+    assert_eq!(edits.len(), 1, "the formatter replaces the whole document");
+    let text = edits[0]
+        .get("newText")
+        .and_then(Json::as_str)
+        .expect("the formatted text");
+    assert_eq!(text, skuld_compiler::format_source(source).unwrap());
+    assert_ne!(text, source);
+    // The range starts at the top of the file and ends past its last line.
+    assert_eq!(
+        edits[0]
+            .path(&["range", "start", "line"])
+            .and_then(Json::as_i64),
+        Some(0)
+    );
+    assert_eq!(
+        edits[0]
+            .path(&["range", "end", "line"])
+            .and_then(Json::as_i64),
+        Some(3)
+    );
+}
+
+#[test]
+fn formatting_an_already_formatted_document_edits_nothing() {
+    let path = "/tmp/skuld-lsp-test/formatted.skuld";
+    let source = skuld_compiler::format_source("func main() {\n    print(\"hi\")\n}\n").unwrap();
+    let (out, _) = converse(&[
+        did_open(path, &source),
+        document_request(2, "textDocument/formatting", path),
+    ]);
+    assert_eq!(result_of(&out, 2), &Json::Array(Vec::new()));
+}
+
+#[test]
+fn formatting_a_document_that_does_not_parse_edits_nothing() {
+    // Format-on-save must not raise a dialog about a syntax error the editor
+    // is already underlining.
+    let path = "/tmp/skuld-lsp-test/broken.skuld";
+    let (out, _) = converse(&[
+        did_open(path, "func main() {\n    print(\n"),
+        document_request(2, "textDocument/formatting", path),
+    ]);
     assert_eq!(result_of(&out, 2), &Json::Array(Vec::new()));
 }
