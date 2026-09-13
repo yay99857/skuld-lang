@@ -885,18 +885,20 @@ let ada = new Account(owner: "Ada", balance: 120)
   Go's uses `encoding/json` into `map[string]any`, which is comparable work and
   not the same code.
 - **Results** (Xeon E5-2640 v3, clang 22 `-O2`, rustc 1.98 `-O`, Go 1.27):
-  arrays 40 ms against 18/219; strings 111 ms against 46/64; dispatch 86 ms
-  against 66/144; JSON 265 ms against Go's 487; map 14 ms against 7/6. Between
-  **1.3x and 2.4x** the faster of Rust and Go, and faster than Go on two
+  arrays 37 ms against 17/209; strings 103 ms against 50/63; dispatch 84 ms
+  against 65/150; JSON 211 ms against Go's 470; map 12 ms against 7/6. Between
+  **1.3x and 2.2x** the faster of Rust and Go, and faster than Go on two
   workloads. The full report, including peak memory and the compiler's own
   timings, is in [`BENCHMARKS.md`](BENCHMARKS.md).
 - **Found by measuring, and fixed:** every read of a managed local took a
   counted copy of it for the length of an expression — a retain and a release
   per index, per field access, per comparison. A binding nothing can reassign
-  already holds that reference, so the read borrows it now: JSON went from
-  582 ms to 265 ms and a byte scan from 433 ms to 121 ms, with
+  already holds that reference, so the read borrows it now — and so does a read
+  through a field of one, where the index runs no code that could replace it.
+  JSON went from 582 ms to 211 ms and a byte scan from 433 ms to 121 ms, with
   `tests/pass/borrowed_reads.skuld` added to keep it safe. Iterating a string's
-  bytes no longer builds the array `bytes()` would answer, either.
+  bytes no longer builds the array `bytes()` would answer, either, and a read
+  no longer checks its index twice.
 - **Found by measuring, and left alone:** the compiler's share of a build is
   under 1% — 4 ms to check a 646-line file against 871 ms for the build — so
   the edit-compile loop is a question of what is asked of clang, not of the
