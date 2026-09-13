@@ -9,9 +9,13 @@
 use crate::complete;
 use crate::json::Json;
 use crate::query;
+use crate::rename::{self, Refusal};
 use crate::rpc::{self, ReadError};
 use crate::text::{Positions, path_to_uri, uri_to_path};
-use skuld_compiler::module::{Errors, ModuleLoader};
+use skuld_compiler::module::{Errors, FileId, ModuleLoader};
+use skuld_compiler::resolver::SymbolId;
+use skuld_compiler::span::Span;
+use skuld_compiler::type_checker::TypedProgram;
 use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -101,6 +105,30 @@ impl Server {
                 None
             }
 
+            (Some("textDocument/references"), Some(id)) => {
+                let locations = self.references(message);
+                respond(output, id.clone(), locations);
+                None
+            }
+
+            (Some("textDocument/prepareRename"), Some(id)) => {
+                match self.prepare_rename(message) {
+                    Ok(range) => respond(output, id.clone(), range),
+                    // A refusal is the answer, not a protocol failure: the
+                    // client shows it instead of offering an edit box.
+                    Err(reason) => respond_error(output, id.clone(), INVALID_REQUEST, &reason),
+                }
+                None
+            }
+
+            (Some("textDocument/rename"), Some(id)) => {
+                match self.rename(message) {
+                    Ok(edit) => respond(output, id.clone(), edit),
+                    Err(reason) => respond_error(output, id.clone(), INVALID_REQUEST, &reason),
+                }
+                None
+            }
+
             (Some("textDocument/hover"), Some(id)) => {
                 let hover = self.hover(message);
                 respond(output, id.clone(), hover);
@@ -151,6 +179,11 @@ impl Server {
             (Some("textDocument/didClose"), _) => {
                 if let Some(path) = document_path(message) {
                     self.open.remove(&path);
+                    // The check goes with it: a closed document's tables
+                    // describe a text nobody is looking at any more, and a
+                    // reference search over every checked program would keep
+                    // finding names in it.
+                    self.checked.remove(&path);
                     // Clear what was published, or the editor keeps showing
                     // diagnostics for a file nobody has open.
                     publish_empty(output, &path);
@@ -294,17 +327,8 @@ impl Server {
         let Some(declaring) = typed.program().files.get(file.0) else {
             return Json::Null;
         };
-        // A module file is named relative to the program root; the entry file
-        // is named as the editor opened it.
-        let target = if file.0 == 0 {
-            path
-        } else {
-            Path::new(&path)
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join(&declaring.name)
-                .to_string_lossy()
-                .into_owned()
+        let Some(target) = file_path(&path, typed, file) else {
+            return Json::Null;
         };
         let positions = Positions::new(declaring.source.clone());
         let start = positions.position(span.start);
@@ -316,6 +340,273 @@ impl Server {
                 Json::object([("start", position_json(start)), ("end", position_json(end))]),
             ),
         ])
+    }
+
+    /// Answer `textDocument/references` with every place a name is written,
+    /// in every program the editor has checked — which is what makes it a
+    /// workspace answer rather than a file one.
+    fn references(&self, message: &Json) -> Json {
+        let empty = Json::Array(Vec::new());
+        let Some(path) = document_path(message) else {
+            return empty;
+        };
+        let Some((source, offset, typed)) = self.position_context(message) else {
+            return empty;
+        };
+        let Ok((symbol, _)) = self.renameable(source, offset, typed) else {
+            return empty;
+        };
+        // The default is to include the declaration; a client that wants only
+        // the uses says so.
+        let with_declaration = !matches!(
+            message.path(&["params", "context", "includeDeclaration"]),
+            Some(Json::Bool(false))
+        );
+        let Some(found) = self.all_occurrences(&path, typed, symbol) else {
+            return empty;
+        };
+        let mut locations = Vec::new();
+        for (file, spans) in &found.by_file {
+            let Ok(text) = self.text_of(file) else {
+                continue;
+            };
+            let positions = Positions::new(text);
+            for span in spans {
+                if !with_declaration && *file == found.declaring && span.start == found.offset {
+                    continue;
+                }
+                locations.push(Json::object([
+                    ("uri", Json::string(path_to_uri(file))),
+                    ("range", range_json(&positions, *span)),
+                ]));
+            }
+        }
+        Json::Array(locations)
+    }
+
+    /// Answer `textDocument/prepareRename`: which range the client should
+    /// offer to edit, or why this name will not move.
+    fn prepare_rename(&self, message: &Json) -> Result<Json, String> {
+        let Some((source, offset, typed)) = self.position_context(message) else {
+            return Err("this document has no successful check to rename from".to_string());
+        };
+        let (_, word) = self.renameable(source, offset, typed)?;
+        let positions = Positions::new(source.clone());
+        Ok(Json::object([
+            (
+                "range",
+                range_json(&positions, Span::new(word.start, word.end)),
+            ),
+            ("placeholder", Json::string(&word.text)),
+        ]))
+    }
+
+    /// Answer `textDocument/rename` with a workspace edit, or refuse.
+    ///
+    /// The refusal is the point of the method. Replacing the text at every
+    /// recorded use is the easy half; the other half is proving that the
+    /// result still means what it meant, which is done by rechecking every
+    /// program the edit touches and comparing where each name resolves.
+    fn rename(&self, message: &Json) -> Result<Json, String> {
+        let path = document_path(message).ok_or("the request names no document")?;
+        let new_name = message
+            .path(&["params", "newName"])
+            .and_then(Json::as_str)
+            .ok_or("the request carries no new name")?
+            .to_string();
+        let Some((source, offset, typed)) = self.position_context(message) else {
+            return Err("this document has no successful check to rename from".to_string());
+        };
+        if !rename::is_identifier(&new_name) {
+            return Err(format!("`{new_name}` is not an identifier"));
+        }
+        let (symbol, word) = self.renameable(source, offset, typed)?;
+        if word.text == new_name {
+            // Nothing to do, and an empty edit says so without an error.
+            return Ok(Json::object([("changes", Json::Object(BTreeMap::new()))]));
+        }
+        let found = self
+            .all_occurrences(&path, typed, symbol)
+            .ok_or("this name has no declaration to rename")?;
+
+        // The edited text of every file the rename touches, over the text
+        // that was actually checked.
+        let mut edited: BTreeMap<String, String> = BTreeMap::new();
+        for (file, spans) in &found.by_file {
+            let text = self.text_of(file)?;
+            edited.insert(
+                file.clone(),
+                replace_all(&text, spans, &word.text, &new_name)?,
+            );
+        }
+        let mut overlay = self.open.clone();
+        for (file, text) in &edited {
+            overlay.insert(file.clone(), text.clone());
+        }
+
+        // Where an offset in the old text sits in the new one: every edit
+        // before it in the same file moves it by the difference in lengths.
+        let delta = new_name.len() as isize - word.text.len() as isize;
+        let shift = |file: &str, offset: usize| -> usize {
+            let before = found.by_file.get(file).map_or(0, |spans| {
+                spans.iter().filter(|span| span.start < offset).count()
+            });
+            (offset as isize + before as isize * delta).max(0) as usize
+        };
+
+        for (document, before) in &self.checked {
+            if !found
+                .by_file
+                .keys()
+                .any(|file| file_in(document, before, file).is_some())
+            {
+                continue;
+            }
+            let after = self
+                .recheck(document, &overlay)
+                .map_err(|reason| format!("renaming to `{new_name}` would not check: {reason}"))?;
+            let old = rename::shape(before, &|file| file_path(document, before, file));
+            let new = rename::shape(&after, &|file| file_path(document, &after, file));
+            if rename::shifted(&old, &shift) != new {
+                return Err(format!(
+                    "renaming to `{new_name}` would change which declaration a name reaches"
+                ));
+            }
+        }
+
+        let mut changes = BTreeMap::new();
+        for (file, spans) in &found.by_file {
+            let positions = Positions::new(self.text_of(file)?);
+            changes.insert(
+                path_to_uri(file),
+                Json::Array(
+                    spans
+                        .iter()
+                        .map(|span| {
+                            Json::object([
+                                ("range", range_json(&positions, *span)),
+                                ("newText", Json::string(&new_name)),
+                            ])
+                        })
+                        .collect(),
+                ),
+            );
+        }
+        Ok(Json::object([("changes", Json::Object(changes))]))
+    }
+
+    /// The symbol at a position, when it is one this server will move. The
+    /// standard library is refused here rather than in `rename`, since a name
+    /// the server cannot rewrite should not be offered an edit box either.
+    fn renameable(
+        &self,
+        source: &str,
+        offset: usize,
+        typed: &TypedProgram,
+    ) -> Result<(SymbolId, crate::query::Word), String> {
+        let (symbol, word) = rename::nameable(source, offset, typed).map_err(Refusal::message)?;
+        if let Some((file, _)) = rename::declaration_key(typed, symbol)
+            && library_file(typed, file)
+        {
+            return Err(
+                "this name is declared in the standard library, which is part of the compiler"
+                    .to_string(),
+            );
+        }
+        Ok((symbol, word))
+    }
+
+    /// Every occurrence of one declaration, across every checked program that
+    /// includes the file it was declared in.
+    ///
+    /// A program is what the editor has open: each document is compiled as
+    /// the entry file of its own program, so a module's uses are found through
+    /// whichever entry file reaches it. A program nothing open reaches is not
+    /// searched, and cannot be: the server is told about documents, not about
+    /// a directory tree.
+    fn all_occurrences(&self, path: &str, typed: &TypedProgram, symbol: SymbolId) -> Option<Found> {
+        let (file, offset) = rename::declaration_key(typed, symbol)?;
+        let declaring = file_path(path, typed, file)?;
+        let mut by_file: BTreeMap<String, Vec<Span>> = BTreeMap::new();
+        for (document, other) in &self.checked {
+            let Some(id) = file_in(document, other, &declaring) else {
+                continue;
+            };
+            // The same declaration in another program is the one written at
+            // the same place in the same file; symbol numbers are private to
+            // each check.
+            let Some(same) = rename::symbol_declared_at(other, id, offset) else {
+                continue;
+            };
+            for occurrence in rename::occurrences(other, same) {
+                if let Some(file) = file_path(document, other, occurrence.file) {
+                    by_file.entry(file).or_default().push(occurrence.span);
+                }
+            }
+        }
+        for spans in by_file.values_mut() {
+            spans.sort_unstable_by_key(|span| span.start);
+            spans.dedup();
+        }
+        Some(Found {
+            declaring,
+            offset,
+            by_file,
+        })
+    }
+
+    /// The text a file was checked with, which is what the recorded offsets
+    /// are offsets into. A buffer that has changed since is refused: editing
+    /// it from stale positions would corrupt it.
+    fn text_of(&self, file: &str) -> Result<String, String> {
+        let mut checked: Option<&str> = None;
+        for (document, typed) in &self.checked {
+            let Some(id) = file_in(document, typed, file) else {
+                continue;
+            };
+            let source = typed.program().files[id.0].source.as_str();
+            if checked.is_some_and(|text| text != source) {
+                return Err(format!(
+                    "`{file}` was checked with two different texts; save it and try again"
+                ));
+            }
+            checked = Some(source);
+        }
+        let checked =
+            checked.ok_or_else(|| format!("`{file}` is not part of a checked program"))?;
+        if self.open.get(file).is_some_and(|open| open != checked) {
+            return Err(format!(
+                "`{file}` has changes that have not checked; fix the errors in it and try again"
+            ));
+        }
+        Ok(checked.to_string())
+    }
+
+    /// Check one document again over the edited texts, the way `publish`
+    /// checks it over the open ones.
+    fn recheck(
+        &self,
+        document: &str,
+        overlay: &BTreeMap<String, String>,
+    ) -> Result<TypedProgram, String> {
+        let source = overlay
+            .get(document)
+            .ok_or_else(|| format!("`{document}` is not open"))?
+            .clone();
+        let root = Path::new(document)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        let name = Path::new(document)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| document.to_string());
+        let mut loader = OpenFirst {
+            root,
+            open: overlay,
+        };
+        skuld_compiler::check_program(&name, &source, &mut loader)
+            .map_err(|errors| first_message(&errors))
     }
 
     /// Answer `textDocument/hover` with the declaration a reader would
@@ -462,6 +753,87 @@ fn declares_main(source: &str) -> bool {
         .is_some_and(|program| program.functions.iter().any(|f| f.name.text == "main"))
 }
 
+/// The occurrences of one declaration, and where the declaration itself is.
+struct Found {
+    declaring: String,
+    offset: usize,
+    by_file: BTreeMap<String, Vec<Span>>,
+}
+
+/// The path of a file of a program whose entry document is `document`. The
+/// entry file is named as the editor opened it; every other file is named
+/// relative to the program root, which is the entry file's directory.
+fn file_path(document: &str, typed: &TypedProgram, file: FileId) -> Option<String> {
+    let loaded = typed.program().files.get(file.0)?;
+    if file.0 == 0 {
+        return Some(document.to_string());
+    }
+    Some(
+        Path::new(document)
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join(&loaded.name)
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+
+/// Which file of a program is the one at `path`, if it has it at all.
+fn file_in(document: &str, typed: &TypedProgram, path: &str) -> Option<FileId> {
+    (0..typed.program().files.len())
+        .map(FileId)
+        .find(|&file| file_path(document, typed, file).is_some_and(|found| found == path))
+}
+
+/// Whether a file came from the embedded standard library rather than from
+/// the program root. Its path would name a directory that does not exist, and
+/// its text belongs to the compiler.
+fn library_file(typed: &TypedProgram, file: FileId) -> bool {
+    let program = typed.program();
+    program.files.get(file.0).is_some_and(|loaded| {
+        program
+            .modules
+            .get(loaded.module.0)
+            .is_some_and(|module| module.path == "std" || module.path.starts_with("std/"))
+    })
+}
+
+/// Replace each span with a new name, refusing if a span does not hold the
+/// old one — the last check that the offsets and the text still agree.
+fn replace_all(text: &str, spans: &[Span], old: &str, new: &str) -> Result<String, String> {
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for span in spans {
+        if span.start < cursor
+            || span.end > text.len()
+            || text.get(span.start..span.end) != Some(old)
+        {
+            return Err("the text no longer holds the name being renamed".to_string());
+        }
+        out.push_str(&text[cursor..span.start]);
+        out.push_str(new);
+        cursor = span.end;
+    }
+    out.push_str(&text[cursor..]);
+    Ok(out)
+}
+
+/// The first thing the compiler said, which is what a one-line refusal has
+/// room for.
+fn first_message(errors: &Errors) -> String {
+    match errors.diagnostics.first() {
+        Some(entry) => entry.diagnostic.message.clone(),
+        None => errors.render().trim_end().to_string(),
+    }
+}
+
+fn range_json(positions: &Positions, span: Span) -> Json {
+    Json::object([
+        ("start", position_json(positions.position(span.start))),
+        ("end", position_json(positions.position(span.end))),
+    ])
+}
+
 fn document_path(message: &Json) -> Option<String> {
     message
         .path(&["params", "textDocument", "uri"])
@@ -480,6 +852,13 @@ fn initialize_result() -> Json {
             ("positionEncoding", Json::string("utf-16")),
             ("hoverProvider", Json::Bool(true)),
             ("definitionProvider", Json::Bool(true)),
+            ("referencesProvider", Json::Bool(true)),
+            (
+                "renameProvider",
+                // Prepare first: a name this server will not move should be
+                // refused before the user types a replacement, not after.
+                Json::object([("prepareProvider", Json::Bool(true))]),
+            ),
             (
                 "completionProvider",
                 Json::object([

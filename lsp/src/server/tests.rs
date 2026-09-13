@@ -199,9 +199,9 @@ fn an_unknown_request_is_refused_but_an_unknown_notification_is_not() {
         ("jsonrpc", Json::string("2.0")),
         ("method", Json::string("textDocument/inventedNotification")),
     ]);
-    // `hover` is answered now, so the refused request has to be one the
-    // server genuinely does not implement.
-    let (out, _) = converse(&[request(7, "textDocument/references"), notification]);
+    // `hover`, `references` and `rename` are answered now, so the refused
+    // request has to be one the server genuinely does not implement.
+    let (out, _) = converse(&[request(7, "textDocument/documentSymbol"), notification]);
     assert_eq!(out.len(), 1, "a notification must not be answered");
     assert_eq!(out[0].get("id").unwrap().as_i64(), Some(7));
     assert_eq!(
@@ -586,4 +586,344 @@ fn definition_crosses_into_the_module_that_declared_the_name() {
             .and_then(Json::as_i64),
         Some(17)
     );
+}
+
+/// A position request with a method and an id of its own, which is how the
+/// reference and rename tests find their answer in the stream.
+fn position_request(id: i64, method: &str, path: &str, line: i64, character: i64) -> Json {
+    Json::object([
+        ("jsonrpc", Json::string("2.0")),
+        ("id", Json::number(id as f64)),
+        ("method", Json::string(method)),
+        (
+            "params",
+            Json::object([
+                (
+                    "textDocument",
+                    Json::object([("uri", Json::string(path_to_uri(path)))]),
+                ),
+                (
+                    "position",
+                    Json::object([
+                        ("line", Json::number(line as f64)),
+                        ("character", Json::number(character as f64)),
+                    ]),
+                ),
+            ]),
+        ),
+    ])
+}
+
+fn references_at(id: i64, path: &str, line: i64, character: i64, declaration: bool) -> Json {
+    let mut message = position_request(id, "textDocument/references", path, line, character);
+    if let Json::Object(members) = &mut message
+        && let Some(Json::Object(params)) = members.get_mut("params")
+    {
+        params.insert(
+            "context".to_string(),
+            Json::object([("includeDeclaration", Json::Bool(declaration))]),
+        );
+    }
+    message
+}
+
+fn rename_at(id: i64, path: &str, line: i64, character: i64, new_name: &str) -> Json {
+    let mut message = position_request(id, "textDocument/rename", path, line, character);
+    if let Json::Object(members) = &mut message
+        && let Some(Json::Object(params)) = members.get_mut("params")
+    {
+        params.insert("newName".to_string(), Json::string(new_name));
+    }
+    message
+}
+
+/// The result of the response with that id.
+fn result(messages: &[Json], id: i64) -> &Json {
+    answer(messages, id)
+        .get("result")
+        .expect("a response with a result")
+}
+
+fn answer(messages: &[Json], id: i64) -> &Json {
+    messages
+        .iter()
+        .rfind(|message| message.get("id").and_then(Json::as_i64) == Some(id))
+        .expect("a response with that id")
+}
+
+/// The edits of a workspace edit, as `(path suffix, line, character, text)`,
+/// so an assertion does not depend on the temporary root.
+fn edits(result: &Json) -> Vec<(String, i64, i64, String)> {
+    let Some(Json::Object(changes)) = result.get("changes") else {
+        panic!("a workspace edit with changes, got {result:?}");
+    };
+    let mut all = Vec::new();
+    for (uri, list) in changes {
+        for edit in list.as_array().expect("a list of edits") {
+            all.push((
+                uri.clone(),
+                edit.path(&["range", "start", "line"])
+                    .and_then(Json::as_i64)
+                    .expect("a line"),
+                edit.path(&["range", "start", "character"])
+                    .and_then(Json::as_i64)
+                    .expect("a character"),
+                edit.get("newText")
+                    .and_then(Json::as_str)
+                    .expect("the new text")
+                    .to_string(),
+            ));
+        }
+    }
+    all.sort();
+    all
+}
+
+const CALLS: &str = "\
+func area(width: int, height: int) -> int {
+    return width * height
+}
+
+func main() {
+    print(area(2, 3))
+    print(area(4, 5))
+}
+";
+
+#[test]
+fn the_server_advertises_references_and_rename() {
+    let (out, _) = converse(&[request(1, "initialize")]);
+    assert_eq!(
+        out[0].path(&["result", "capabilities", "referencesProvider"]),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(
+        out[0].path(&[
+            "result",
+            "capabilities",
+            "renameProvider",
+            "prepareProvider"
+        ]),
+        Some(&Json::Bool(true))
+    );
+}
+
+#[test]
+fn references_report_the_declaration_and_every_use() {
+    let path = fixture_path("lsp_references.skuld");
+    // Line 5, inside the first call to `area`.
+    let (out, _) = converse(&[
+        did_open(&path, CALLS),
+        references_at(20, &path, 5, 11, true),
+        references_at(21, &path, 5, 11, false),
+    ]);
+    let with = result(&out, 20).as_array().expect("locations").to_vec();
+    let lines: Vec<i64> = with
+        .iter()
+        .map(|location| {
+            location
+                .path(&["range", "start", "line"])
+                .and_then(Json::as_i64)
+                .expect("a line")
+        })
+        .collect();
+    assert_eq!(lines, vec![0, 5, 6]);
+    let without = result(&out, 21).as_array().expect("locations").len();
+    assert_eq!(without, 2, "the declaration should have been left out");
+}
+
+#[test]
+fn renaming_a_local_rewrites_its_declaration_and_its_uses() {
+    let path = fixture_path("lsp_rename_local.skuld");
+    let source = "func main() {\n    let total = 2\n    print(total + total)\n}\n";
+    let (out, _) = converse(&[
+        did_open(&path, source),
+        // Line 1, inside `total`.
+        rename_at(22, &path, 1, 10, "sum"),
+    ]);
+    let found = edits(result(&out, 22));
+    assert_eq!(
+        found
+            .iter()
+            .map(|(_, line, character, text)| (*line, *character, text.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(1, 8, "sum"), (2, 10, "sum"), (2, 18, "sum")]
+    );
+}
+
+#[test]
+fn a_rename_refuses_a_name_that_is_not_an_identifier() {
+    let path = fixture_path("lsp_rename_invalid.skuld");
+    let (out, _) = converse(&[did_open(&path, CALLS), rename_at(23, &path, 0, 6, "func")]);
+    let message = answer(&out, 23)
+        .path(&["error", "message"])
+        .and_then(Json::as_str)
+        .expect("a refusal");
+    assert!(message.contains("not an identifier"), "{message}");
+}
+
+#[test]
+fn a_rename_refuses_a_collision_the_checker_would_report() {
+    let path = fixture_path("lsp_rename_collision.skuld");
+    let source = "func main() {\n    let total = 2\n    let sum = 3\n    print(total + sum)\n}\n";
+    let (out, _) = converse(&[did_open(&path, source), rename_at(24, &path, 1, 10, "sum")]);
+    assert!(
+        answer(&out, 24).get("error").is_some(),
+        "a duplicate declaration should have been refused: {:?}",
+        answer(&out, 24)
+    );
+}
+
+#[test]
+fn a_rename_refuses_a_capture_that_would_still_compile() {
+    // Renaming `outer` to `inner` leaves a program that checks perfectly well
+    // and means something else: the print inside the block would read the
+    // block's own binding. Nothing but comparing where each name resolves
+    // catches this.
+    let path = fixture_path("lsp_rename_capture.skuld");
+    let source = "\
+func main() {
+    let outer = 1
+    if true {
+        let inner = 2
+        print(outer + inner)
+    }
+}
+";
+    let (out, _) = converse(&[did_open(&path, source), rename_at(25, &path, 1, 9, "inner")]);
+    let message = answer(&out, 25)
+        .path(&["error", "message"])
+        .and_then(Json::as_str)
+        .expect("a refusal");
+    assert!(
+        message.contains("which declaration a name reaches"),
+        "{message}"
+    );
+}
+
+#[test]
+fn prepare_rename_offers_the_word_and_refuses_the_prelude() {
+    let path = fixture_path("lsp_prepare_rename.skuld");
+    let (out, _) = converse(&[
+        did_open(&path, CALLS),
+        // Line 5, inside `area`.
+        position_request(26, "textDocument/prepareRename", &path, 5, 11),
+        // Line 5, inside `print`.
+        position_request(27, "textDocument/prepareRename", &path, 5, 6),
+    ]);
+    let range = result(&out, 26);
+    assert_eq!(
+        range.get("placeholder").and_then(Json::as_str),
+        Some("area")
+    );
+    assert_eq!(
+        range
+            .path(&["range", "start", "character"])
+            .and_then(Json::as_i64),
+        Some(10)
+    );
+    let message = answer(&out, 27)
+        .path(&["error", "message"])
+        .and_then(Json::as_str)
+        .expect("a refusal");
+    assert!(message.contains("prelude"), "{message}");
+}
+
+#[test]
+fn renaming_an_exported_name_crosses_every_file_of_the_program() {
+    // The milestone's marker: a name declared in a module, used from the file
+    // that imports it, renamed in both at once.
+    let entry = fixture_path("lsp_rename_module.skuld");
+    let module = fixture_path("modules/geometry/point.skuld");
+    let entry_source =
+        "import \"modules/geometry\"\nfunc main() {\n    print(geometry.origin().sum())\n}\n";
+    let (out, _) = converse(&[
+        did_open(&entry, entry_source),
+        // Line 2, inside the qualified `origin`.
+        rename_at(28, &entry, 2, 22, "start"),
+    ]);
+    let found = edits(result(&out, 28));
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(found.iter().any(
+        |(uri, line, _, text)| uri.ends_with("/lsp_rename_module.skuld")
+            && *line == 2
+            && text == "start"
+    ));
+    assert!(
+        found.iter().any(
+            |(uri, line, _, text)| uri.ends_with("/modules/geometry/point.skuld")
+                && *line == 17
+                && text == "start"
+        ),
+        "{found:?}"
+    );
+    // Nothing was written: a workspace edit is the client's to apply.
+    let on_disk = std::fs::read_to_string(&module).expect("the fixture is still there");
+    assert!(on_disk.contains("pub func origin()"));
+}
+
+#[test]
+fn a_rename_refuses_a_buffer_that_has_not_checked_since_it_changed() {
+    let path = fixture_path("lsp_rename_stale.skuld");
+    let (out, _) = converse(&[
+        did_open(&path, CALLS),
+        // Break the file: the last good check is now a text nobody has.
+        // The same lines, with an unfinished one added: the cursor still
+        // rests on `area`, and the last good check is now a text nobody has.
+        did_change(&path, &format!("{CALLS}func ")),
+        rename_at(29, &path, 5, 11, "size"),
+    ]);
+    let message = answer(&out, 29)
+        .path(&["error", "message"])
+        .and_then(Json::as_str)
+        .expect("a refusal");
+    assert!(message.contains("have not checked"), "{message}");
+}
+
+#[test]
+fn a_name_from_the_standard_library_is_not_renameable() {
+    let path = fixture_path("lsp_rename_std.skuld");
+    let source =
+        "import \"std/strings\"\nfunc main() {\n    print(strings.contains(\"ab\", \"a\"))\n}\n";
+    let (out, _) = converse(&[
+        did_open(&path, source),
+        // Line 2, inside `contains`.
+        position_request(30, "textDocument/prepareRename", &path, 2, 22),
+    ]);
+    let message = answer(&out, 30)
+        .path(&["error", "message"])
+        .and_then(Json::as_str)
+        .expect("a refusal");
+    assert!(message.contains("standard library"), "{message}");
+}
+
+#[test]
+fn an_edit_is_positioned_in_utf16_units_like_every_other_answer() {
+    // The line holds an astral character, which is one scalar and two UTF-16
+    // units: a client counting the compiler's bytes would edit the wrong span.
+    let path = fixture_path("lsp_rename_unicode.skuld");
+    let source = "func main() {\n    let total = 1 // 🌍 comment\n    print(total)\n}\n";
+    let (out, _) = converse(&[did_open(&path, source), rename_at(31, &path, 1, 10, "sum")]);
+    let found = edits(result(&out, 31));
+    assert_eq!(
+        found
+            .iter()
+            .map(|(_, line, character, _)| (*line, *character))
+            .collect::<Vec<_>>(),
+        vec![(1, 8), (2, 10)]
+    );
+}
+
+#[test]
+fn a_document_that_never_checked_is_refused_rather_than_guessed_at() {
+    let path = fixture_path("lsp_rename_broken.skuld");
+    let (out, _) = converse(&[
+        did_open(&path, "func main( {\n    let total = 1\n}\n"),
+        rename_at(32, &path, 1, 10, "sum"),
+    ]);
+    let message = answer(&out, 32)
+        .path(&["error", "message"])
+        .and_then(Json::as_str)
+        .expect("a refusal");
+    assert!(message.contains("no successful check"), "{message}");
 }
