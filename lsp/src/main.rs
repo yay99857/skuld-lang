@@ -6,6 +6,7 @@
 
 mod complete;
 mod folding;
+mod hierarchy;
 mod hints;
 mod json;
 mod query;

@@ -8,6 +8,7 @@
 
 use crate::complete;
 use crate::folding;
+use crate::hierarchy;
 use crate::hints;
 use crate::json::Json;
 use crate::query;
@@ -22,7 +23,7 @@ use skuld_compiler::module::{Errors, FileId, ModuleLoader};
 use skuld_compiler::resolver::SymbolId;
 use skuld_compiler::span::Span;
 use skuld_compiler::type_checker::TypedProgram;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
@@ -121,6 +122,24 @@ impl Server {
             (Some("textDocument/definition"), Some(id)) => {
                 let location = self.definition(message);
                 respond(output, id.clone(), location);
+                None
+            }
+
+            (Some("textDocument/prepareCallHierarchy"), Some(id)) => {
+                let items = self.prepare_call_hierarchy(message);
+                respond(output, id.clone(), items);
+                None
+            }
+
+            (Some("callHierarchy/incomingCalls"), Some(id)) => {
+                let calls = self.call_hierarchy(message, Direction::Incoming);
+                respond(output, id.clone(), calls);
+                None
+            }
+
+            (Some("callHierarchy/outgoingCalls"), Some(id)) => {
+                let calls = self.call_hierarchy(message, Direction::Outgoing);
+                respond(output, id.clone(), calls);
                 None
             }
 
@@ -410,6 +429,163 @@ impl Server {
             Some((file, span)) => self.location(&path, typed, file, span),
             None => Json::Null,
         }
+    }
+
+    /// Answer `textDocument/prepareCallHierarchy` with the function under the
+    /// cursor, which is the handle the two call queries are asked about.
+    fn prepare_call_hierarchy(&self, message: &Json) -> Json {
+        let Some(path) = document_path(message) else {
+            return Json::Null;
+        };
+        let Some((source, offset, typed)) = self.position_context(message) else {
+            return Json::Null;
+        };
+        // A call hierarchy starts at a function, whether the cursor rests on
+        // its declaration or on a call to it.
+        let Some(query::Target::Symbol(symbol, _)) = query::target_at(source, offset, typed) else {
+            return Json::Null;
+        };
+        let Some((file, declared)) = rename::declaration_key(typed, symbol) else {
+            return Json::Null;
+        };
+        let Some((_, item)) = hierarchy::declared_at(typed, file, declared) else {
+            return Json::Null;
+        };
+        match self.hierarchy_item(&path, typed, &item) {
+            Some(json) => Json::Array(vec![json]),
+            None => Json::Null,
+        }
+    }
+
+    /// Answer `callHierarchy/incomingCalls` or `callHierarchy/outgoingCalls`.
+    ///
+    /// Both walk every checked program that holds the declaring file, for the
+    /// reason references does: a caller in another open program is still a
+    /// caller, and a program nothing open reaches cannot be searched at all.
+    fn call_hierarchy(&self, message: &Json, direction: Direction) -> Json {
+        let empty = Json::Array(Vec::new());
+        let Some((path, offset)) = self.call_hierarchy_key(message) else {
+            return empty;
+        };
+        // Grouped by the declaration each call reaches, so the same function
+        // found through two open programs is one entry with one set of ranges.
+        let mut grouped: BTreeMap<(String, usize), CallGroup> = BTreeMap::new();
+        for (document, typed) in &self.checked {
+            let Some(file) = file_in(document, typed, &path) else {
+                continue;
+            };
+            let Some(symbol) = rename::symbol_declared_at(typed, file, offset) else {
+                continue;
+            };
+            let found = match direction {
+                Direction::Incoming => hierarchy::references_to(typed, symbol)
+                    .into_iter()
+                    .filter_map(|(used_in, span)| {
+                        hierarchy::enclosing(typed, used_in, span.start).map(|item| (item, span))
+                    })
+                    .collect::<Vec<_>>(),
+                Direction::Outgoing => {
+                    let Some((_, item)) = hierarchy::declared_at(typed, file, offset) else {
+                        continue;
+                    };
+                    hierarchy::calls_within(typed, file, item.range)
+                        .into_iter()
+                        .filter_map(|(callee, span)| {
+                            hierarchy::item_of(typed, callee).map(|item| (item, span))
+                        })
+                        .collect::<Vec<_>>()
+                }
+            };
+            for (item, span) in found {
+                let Some(json) = self.hierarchy_item(document, typed, &item) else {
+                    continue;
+                };
+                let Some(other) = file_path(document, typed, item.file) else {
+                    continue;
+                };
+                // A call's range is read in the file the call is written in,
+                // which is the other end's file in both directions: incoming,
+                // the caller's body; outgoing, the body being asked about.
+                let calling = match direction {
+                    Direction::Incoming => other.clone(),
+                    Direction::Outgoing => path.clone(),
+                };
+                grouped
+                    .entry((other, item.selection.start))
+                    .or_insert_with(|| CallGroup {
+                        item: json,
+                        calling,
+                        spans: BTreeSet::new(),
+                    })
+                    .spans
+                    .insert((span.start, span.end));
+            }
+        }
+        Json::Array(
+            grouped
+                .into_values()
+                .filter_map(|group| {
+                    let text = self.text_of(&group.calling).ok()?;
+                    let positions = Positions::new(text);
+                    let ranges = group
+                        .spans
+                        .into_iter()
+                        .map(|(start, end)| range_json(&positions, Span::new(start, end)))
+                        .collect();
+                    Some(Json::object([
+                        (direction.end(), group.item),
+                        ("fromRanges", Json::Array(ranges)),
+                    ]))
+                })
+                .collect(),
+        )
+    }
+
+    /// The function a call-hierarchy request is about: the path it was found
+    /// in, and the offset its name was declared at.
+    ///
+    /// It is recovered from the item's own uri and selection range rather than
+    /// from the `data` field, so nothing depends on a client carrying an
+    /// opaque value back unchanged.
+    fn call_hierarchy_key(&self, message: &Json) -> Option<(String, usize)> {
+        let path = message
+            .path(&["params", "item", "uri"])
+            .and_then(Json::as_str)
+            .and_then(uri_to_path)?;
+        let line = message
+            .path(&["params", "item", "selectionRange", "start", "line"])
+            .and_then(Json::as_i64)?
+            .max(0) as usize;
+        let character = message
+            .path(&["params", "item", "selectionRange", "start", "character"])
+            .and_then(Json::as_i64)?
+            .max(0) as usize;
+        let text = self.text_of(&path).ok()?;
+        let offset = Positions::new(text).offset(crate::text::Position { line, character });
+        Some((path, offset))
+    }
+
+    /// One end of a call, as the protocol carries it.
+    fn hierarchy_item(
+        &self,
+        document: &str,
+        typed: &TypedProgram,
+        item: &hierarchy::Item,
+    ) -> Option<Json> {
+        let path = file_path(document, typed, item.file)?;
+        let text = typed.program().files.get(item.file.0)?.source.clone();
+        let positions = Positions::new(text);
+        let mut fields = vec![
+            ("name", Json::string(&item.name)),
+            ("kind", Json::number(item.kind)),
+            ("uri", Json::string(path_to_uri(&path))),
+            ("range", range_json(&positions, item.range)),
+            ("selectionRange", range_json(&positions, item.selection)),
+        ];
+        if let Some(detail) = &item.detail {
+            fields.push(("detail", Json::string(detail)));
+        }
+        Some(Json::object(fields))
     }
 
     /// Answer `textDocument/typeDefinition` with where the type of the thing
@@ -1263,6 +1439,32 @@ fn declares_main(source: &str) -> bool {
         .is_some_and(|program| program.functions.iter().any(|f| f.name.text == "main"))
 }
 
+/// One end of a call hierarchy while it is being collected: the item itself,
+/// the file the calls are written in, and where each of them is.
+struct CallGroup {
+    item: Json,
+    calling: String,
+    spans: BTreeSet<(usize, usize)>,
+}
+
+/// Which way a call hierarchy is being read. The two questions share every
+/// step but the one that finds the other end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Incoming,
+    Outgoing,
+}
+
+impl Direction {
+    /// The field the protocol names the other end with.
+    fn end(self) -> &'static str {
+        match self {
+            Self::Incoming => "from",
+            Self::Outgoing => "to",
+        }
+    }
+}
+
 /// The occurrences of one declaration, and where the declaration itself is.
 struct Found {
     declaring: String,
@@ -1453,6 +1655,7 @@ fn initialize_result() -> Json {
             ("documentFormattingProvider", Json::Bool(true)),
             ("definitionProvider", Json::Bool(true)),
             ("typeDefinitionProvider", Json::Bool(true)),
+            ("callHierarchyProvider", Json::Bool(true)),
             // Conformance is declared in Skuld, never inferred, so this
             // answers from the declarations rather than from a search for
             // classes that happen to have the methods.

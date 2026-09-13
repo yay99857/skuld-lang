@@ -1696,3 +1696,98 @@ fn the_server_advertises_and_answers_selection_ranges() {
         Some(0)
     );
 }
+
+/// A call-hierarchy query about an item the server produced.
+fn call_hierarchy(id: i64, method: &str, item: &Json) -> Json {
+    Json::object([
+        ("jsonrpc", Json::string("2.0")),
+        ("id", Json::number(id as f64)),
+        ("method", Json::string(method)),
+        ("params", Json::object([("item", item.clone())])),
+    ])
+}
+
+#[test]
+fn the_server_advertises_and_walks_the_call_hierarchy() {
+    let path = "/tmp/skuld-lsp-test/hierarchy.skuld";
+    let source = "func one() -> int {\n    return 1\n}\n\nfunc two() -> int {\n    return one() + one()\n}\n\nfunc main() {\n    print(two())\n    print(one())\n}\n";
+    // `two` is declared on line 4, at column 5.
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        position_request(2, "textDocument/prepareCallHierarchy", path, 4, 6),
+    ]);
+    assert_eq!(
+        out[0].path(&["result", "capabilities", "callHierarchyProvider"]),
+        Some(&Json::Bool(true))
+    );
+    let items = result_of(&out, 2).as_array().expect("one item").to_vec();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].get("name").and_then(Json::as_str), Some("two"));
+
+    // The same session, asked both ways about that item.
+    let (out, _) = converse(&[
+        did_open(path, source),
+        call_hierarchy(3, "callHierarchy/incomingCalls", &items[0]),
+        call_hierarchy(4, "callHierarchy/outgoingCalls", &items[0]),
+    ]);
+    let incoming = result_of(&out, 3).as_array().expect("a list");
+    assert_eq!(incoming.len(), 1);
+    assert_eq!(
+        incoming[0].path(&["from", "name"]).and_then(Json::as_str),
+        Some("main")
+    );
+    assert_eq!(
+        incoming[0]
+            .get("fromRanges")
+            .and_then(Json::as_array)
+            .map(<[Json]>::len),
+        Some(1),
+        "main calls two once"
+    );
+    let outgoing = result_of(&out, 4).as_array().expect("a list");
+    assert_eq!(outgoing.len(), 1);
+    assert_eq!(
+        outgoing[0].path(&["to", "name"]).and_then(Json::as_str),
+        Some("one")
+    );
+    assert_eq!(
+        outgoing[0]
+            .get("fromRanges")
+            .and_then(Json::as_array)
+            .map(<[Json]>::len),
+        Some(2),
+        "two calls one twice, and each place is reported"
+    );
+}
+
+#[test]
+fn a_method_can_start_a_call_hierarchy_and_says_which_class() {
+    let path = "/tmp/skuld-lsp-test/hierarchy-method.skuld";
+    let source = "class Greeter {\n    name: string\n    greet() {\n        print(this.name)\n    }\n}\n\nfunc main() {\n    let g = new Greeter(name: \"a\")\n    g.greet()\n}\n";
+    let (out, _) = converse(&[
+        did_open(path, source),
+        // The method's declaration, on line 2.
+        position_request(2, "textDocument/prepareCallHierarchy", path, 2, 5),
+    ]);
+    let items = result_of(&out, 2).as_array().expect("one item");
+    assert_eq!(items[0].get("name").and_then(Json::as_str), Some("greet"));
+    assert_eq!(
+        items[0].get("detail").and_then(Json::as_str),
+        Some("Greeter")
+    );
+    assert_eq!(items[0].get("kind").and_then(Json::as_i64), Some(6));
+}
+
+#[test]
+fn a_call_hierarchy_on_something_that_is_not_a_function_is_null() {
+    let path = "/tmp/skuld-lsp-test/hierarchy-none.skuld";
+    let (out, _) = converse(&[
+        did_open(
+            path,
+            "func main() {\n    let count = 1\n    print(count)\n}\n",
+        ),
+        position_request(2, "textDocument/prepareCallHierarchy", path, 1, 9),
+    ]);
+    assert_eq!(result_of(&out, 2), &Json::Null);
+}
