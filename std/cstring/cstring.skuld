@@ -1,0 +1,33 @@
+// Building the NUL-terminated buffer a C function expects.
+//
+// A Skuld string is length-aware and is *not* NUL-terminated, so passing one
+// to a C function that looks for a terminator is a bug the FFI cannot catch.
+// M5 left this to the caller on purpose; this is where it belongs.
+
+pub enum CStringError {
+    // A C string ends at its first zero byte, so a string containing one
+    // cannot be passed whole. The payload is where the zero is.
+    EmbeddedNul(int)
+}
+
+pub func describe(error: CStringError) -> string {
+    match error {
+        CStringError.EmbeddedNul(at): return "embedded NUL at byte ${at}"
+    }
+}
+
+// `ptr()` the result, and pass its length as `len() - 1` where C wants one.
+pub func to_c(text: string) -> Result<[]u8, CStringError> {
+    var out: []u8 = []
+    var index = 0
+    while index < text.len() {
+        let byte = text[index]
+        if byte == 0 {
+            return Err(CStringError.EmbeddedNul(index))
+        }
+        out.push(byte)
+        index += 1
+    }
+    out.push(0)
+    return Ok(out)
+}

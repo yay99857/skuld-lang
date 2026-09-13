@@ -1,0 +1,108 @@
+// Strict UTF-8, with an error that names what went wrong and where.
+//
+// The builtin `bytes_to_string` validates the same bytes but can only say so
+// with a message, because the language has no error type of its own to return.
+// This module is where that type lives: the library owns it, and the compiler
+// stays out of it.
+
+pub enum Utf8Error {
+    // Each payload is the byte offset where the faulty sequence starts.
+    Truncated(int)
+    Overlong(int)
+    Surrogate(int)
+    TooLarge(int)
+    Invalid(int)
+}
+
+pub func describe(error: Utf8Error) -> string {
+    match error {
+        Utf8Error.Truncated(at): return "truncated sequence at byte ${at}"
+        Utf8Error.Overlong(at): return "overlong encoding at byte ${at}"
+        Utf8Error.Surrogate(at): return "surrogate half at byte ${at}"
+        Utf8Error.TooLarge(at): return "code point above U+10FFFF at byte ${at}"
+        Utf8Error.Invalid(at): return "invalid byte at byte ${at}"
+    }
+}
+
+// The offset of the faulty sequence, for a caller that wants to slice around it.
+pub func offset(error: Utf8Error) -> int {
+    match error {
+        Utf8Error.Truncated(at): return at
+        Utf8Error.Overlong(at): return at
+        Utf8Error.Surrogate(at): return at
+        Utf8Error.TooLarge(at): return at
+        Utf8Error.Invalid(at): return at
+    }
+}
+
+// Rejects what a lax validator waves through: overlong encodings, surrogate
+// halves and anything above U+10FFFF. Returns the number of code points.
+pub func validate(bytes: []u8) -> Result<int, Utf8Error> {
+    var index = 0
+    var points = 0
+    while index < bytes.len() {
+        let first = int(bytes[index])
+        var width = 0
+        var value = 0
+        if first < 128 {
+            width = 1
+            value = first
+        } else if first >= 194 && first < 224 {
+            // 192 and 193 can only begin an overlong two-byte sequence.
+            width = 2
+            value = first - 192
+        } else if first >= 224 && first < 240 {
+            width = 3
+            value = first - 224
+        } else if first >= 240 && first < 245 {
+            width = 4
+            value = first - 240
+        } else {
+            return Err(Utf8Error.Invalid(index))
+        }
+        if index + width > bytes.len() {
+            return Err(Utf8Error.Truncated(index))
+        }
+        var k = 1
+        while k < width {
+            let continuation = int(bytes[index + k])
+            if continuation < 128 || continuation >= 192 {
+                return Err(Utf8Error.Truncated(index))
+            }
+            value = value * 64 + (continuation - 128)
+            k += 1
+        }
+        if width == 3 && value < 2048 {
+            return Err(Utf8Error.Overlong(index))
+        }
+        if width == 4 && value < 65536 {
+            return Err(Utf8Error.Overlong(index))
+        }
+        if value >= 55296 && value < 57344 {
+            return Err(Utf8Error.Surrogate(index))
+        }
+        if value > 1114111 {
+            return Err(Utf8Error.TooLarge(index))
+        }
+        index += width
+        points += 1
+    }
+    return Ok(points)
+}
+
+// What a caller reaches for: bytes in, a string or a named error out.
+pub func decode(bytes: []u8) -> Result<string, Utf8Error> {
+    let points = validate(bytes)?
+    match bytes_to_string(bytes) {
+        Ok(text): return Ok(text)
+        // Unreachable: `validate` accepted these bytes, and the builtin applies
+        // the same rules. Returning rather than trapping keeps it that way if
+        // one of the two ever drifts.
+        Err(reason): return Err(Utf8Error.Invalid(0))
+    }
+}
+
+// The number of code points, without building a string.
+pub func count(bytes: []u8) -> Result<int, Utf8Error> {
+    return validate(bytes)
+}

@@ -6,6 +6,7 @@ pub mod module;
 pub mod parser;
 pub mod resolver;
 pub mod span;
+pub mod std_lib;
 pub mod token;
 
 pub use lexer::{LexOutput, lex};

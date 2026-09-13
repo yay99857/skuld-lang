@@ -236,3 +236,38 @@ fn a_file_that_does_not_parse_keeps_its_own_diagnostics() {
     assert_eq!(errors.diagnostics[0].file, FileId(1));
     assert_eq!(errors.sources[1].name, "broken/b.skuld");
 }
+
+#[test]
+fn a_directory_named_std_cannot_shadow_the_standard_library() {
+    // The loader offers its own `std/utf8`; the reservation means it is never
+    // asked, so the embedded module is what the program sees.
+    let mut loader = Fake::new(&[(
+        "std/utf8",
+        &[(
+            "std/utf8/decoy.skuld",
+            "pub func decoy() -> int { return 1 }",
+        )],
+    )]);
+    let errors = load(
+        "main.skuld",
+        "import \"std/utf8\"\nfunc main() { print(utf8.decoy()) }",
+        &mut loader,
+    )
+    .map(|program| {
+        // Loading succeeds either way; what differs is whose files arrived.
+        program
+            .files
+            .iter()
+            .map(|file| file.name.clone())
+            .collect::<Vec<_>>()
+    })
+    .expect("the embedded module loads");
+    assert!(
+        errors.contains(&"std/utf8/decode.skuld".to_owned()),
+        "{errors:?}"
+    );
+    assert!(
+        !errors.iter().any(|name| name.contains("decoy")),
+        "{errors:?}"
+    );
+}

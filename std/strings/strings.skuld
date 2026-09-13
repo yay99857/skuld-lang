@@ -1,0 +1,97 @@
+// String helpers over byte offsets, which is what the language already speaks:
+// `len()` counts bytes, `text[i]` reads one, and `text[a..b]` slices.
+//
+// Every function here has a caller in a milestone already planned — parsing a
+// response status line, splitting headers, trimming a field — and nothing is
+// here because it looked useful.
+
+pub func starts_with(text: string, prefix: string) -> bool {
+    if prefix.len() > text.len() {
+        return false
+    }
+    return text[0..prefix.len()] == prefix
+}
+
+pub func ends_with(text: string, suffix: string) -> bool {
+    if suffix.len() > text.len() {
+        return false
+    }
+    return text[text.len() - suffix.len()..text.len()] == suffix
+}
+
+// The byte offset of the first occurrence, or `null`. An empty needle is found
+// at 0, as it is everywhere.
+pub func index_of(text: string, needle: string) -> Option<int> {
+    if needle.len() == 0 {
+        return Some(0)
+    }
+    if needle.len() > text.len() {
+        return null
+    }
+    var start = 0
+    while start + needle.len() <= text.len() {
+        if text[start..start + needle.len()] == needle {
+            return Some(start)
+        }
+        start += 1
+    }
+    return null
+}
+
+pub func contains(text: string, needle: string) -> bool {
+    return index_of(text, needle).is_some()
+}
+
+pub func is_space(byte: u8) -> bool {
+    return byte == 32 || byte == 9 || byte == 10 || byte == 13
+}
+
+// Spaces, tabs, carriage returns and newlines: the set an HTTP header field
+// needs trimmed, not a Unicode whitespace table, which needs code points.
+pub func trim(text: string) -> string {
+    var start = 0
+    while start < text.len() && is_space(text[start]) {
+        start += 1
+    }
+    var end = text.len()
+    while end > start && is_space(text[end - 1]) {
+        end -= 1
+    }
+    return text[start..end]
+}
+
+// Every field between separators, empty ones included, so `a,,b` is three
+// fields and the result is never shorter than one.
+pub func split(text: string, separator: string) -> []string {
+    var parts: []string = []
+    if separator.len() == 0 {
+        parts.push(text)
+        return parts
+    }
+    var start = 0
+    var cursor = 0
+    while cursor + separator.len() <= text.len() {
+        if text[cursor..cursor + separator.len()] == separator {
+            parts.push(text[start..cursor])
+            cursor += separator.len()
+            start = cursor
+        } else {
+            cursor += 1
+        }
+    }
+    parts.push(text[start..text.len()])
+    return parts
+}
+
+pub func join(parts: []string, separator: string) -> string {
+    var out = ""
+    var index = 0
+    while index < parts.len() {
+        if index > 0 {
+            out = out + separator
+        }
+        out = out + parts[index]
+        index += 1
+    }
+    return out
+}

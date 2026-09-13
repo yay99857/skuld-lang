@@ -14,6 +14,7 @@ use crate::{
     diagnostic::{Diagnostic, DiagnosticCode},
     parser::parse,
     span::{SourceFile, Span},
+    std_lib,
 };
 use std::collections::BTreeMap;
 
@@ -253,7 +254,20 @@ impl Loader {
         if let Some(id) = self.by_path.get(path) {
             return Some(*id);
         }
-        let sources = match loader.load(path) {
+        // The standard library is reserved: it is served from the compiler
+        // binary and the loader never sees the path, so no directory on disk
+        // can shadow or provide it.
+        let loaded = if std_lib::is_reserved(path) {
+            std_lib::module(path).ok_or_else(|| {
+                format!(
+                    "`{}` is a reserved prefix for the standard library, which has no module `{path}`",
+                    std_lib::PREFIX
+                )
+            })
+        } else {
+            loader.load(path)
+        };
+        let sources = match loaded {
             Ok(sources) if sources.is_empty() => {
                 self.diagnostics.push(FileDiagnostic {
                     file,
@@ -268,15 +282,21 @@ impl Loader {
             }
             Ok(sources) => sources,
             Err(reason) => {
+                let help = if std_lib::is_reserved(path) {
+                    format!(
+                        "the standard library ships with the compiler; its modules are {}",
+                        std_lib::paths().join(", ")
+                    )
+                } else {
+                    "an import path names a directory relative to the program root".to_owned()
+                };
                 self.diagnostics.push(FileDiagnostic {
                     file,
                     diagnostic: Diagnostic {
                         code: DiagnosticCode::UnknownModule,
                         message: format!("cannot import `{path}`: {reason}"),
                         span,
-                        help: Some(
-                            "an import path names a directory relative to the program root".into(),
-                        ),
+                        help: Some(help),
                     },
                 });
                 return None;
