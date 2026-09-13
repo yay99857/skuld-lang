@@ -334,6 +334,15 @@ accurate; documenting a future feature is not a request to implement it.
   would still compile is refused. A buffer that has changed since it last
   checked is refused, since its recorded offsets describe a text that is gone.
   The server writes nothing: a workspace edit is the client's to apply.
+- The server also answers `textDocument/documentSymbol` and
+  `textDocument/formatting`. The outline is drawn from the syntax alone, so it
+  needs no check at all, and it falls back to the last text that parsed rather
+  than emptying itself mid-declaration; its entries are sorted by span, since
+  the AST keeps each kind of declaration in a list of its own and a client does
+  not re-sort what it is given. Formatting is the official formatter, whole
+  document only — the formatter reads a program, not a fragment — and a file
+  that does not parse or is already formatted is answered with no edits rather
+  than an error, because the caller is usually format-on-save.
 - Files, the process and tests arrived with M13. `std/fs` reads and writes a
   whole file **by path**: a handle would need a lifetime rule and Skuld has no
   destructor a user can write, so there is no `open`, no close and no streaming
