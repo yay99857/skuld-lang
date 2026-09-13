@@ -29,6 +29,7 @@ commands:
     run        check, compile and execute; keeps no artifacts
     build      check and compile to an executable in the working directory
     check      static checking only; needs no clang and prints nothing on success
+    fmt        format the file; writes back unless --check is passed
     emit-c     print the generated C to stdout
     lex        print the token stream of the one file named
     parse      print the syntax tree of the one file named
@@ -38,6 +39,7 @@ options:
     -o <path>        where `build` writes the executable
     -l<library>      link a library, e.g. -lm            (build and run)
     -L<directory>    add a library search directory      (build and run)
+    --check          only check if formatting would change the file (fmt)
     --               read every later argument as a path, never a flag
     -h, --help       print this help
     -V, --version    print the version
@@ -60,17 +62,19 @@ enum Action {
     Parse,
     Resolve,
     Check,
+    Fmt,
     EmitC,
     Build,
     Run,
 }
 
 impl Action {
-    const NAMES: [(&'static str, Self); 7] = [
+    const NAMES: [(&'static str, Self); 8] = [
         ("lex", Self::Lex),
         ("parse", Self::Parse),
         ("resolve", Self::Resolve),
         ("check", Self::Check),
+        ("fmt", Self::Fmt),
         ("emit-c", Self::EmitC),
         ("build", Self::Build),
         ("run", Self::Run),
@@ -95,6 +99,7 @@ struct Invocation {
     link_flags: Vec<String>,
     /// Only `build` writes a file, and only `-o` chooses where.
     output: Option<PathBuf>,
+    check_only: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -113,6 +118,7 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
     let mut positional: Vec<&OsStr> = Vec::new();
     let mut link_flags = Vec::new();
     let mut output: Option<PathBuf> = None;
+    let mut check_only = false;
     let mut flags_over = false;
     let mut pending_output = false;
     for argument in arguments {
@@ -134,6 +140,7 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
             "-V" | "--version" => {
                 return Command::Print(format!("skuld {}\n", env!("CARGO_PKG_VERSION")));
             }
+            "--check" => check_only = true,
             "-o" | "--output" => pending_output = true,
             _ if flag.starts_with("-o") => output = Some(PathBuf::from(&flag[2..])),
             _ if (flag.starts_with("-l") || flag.starts_with("-L")) && flag.len() > 2 => {
@@ -141,7 +148,7 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
             }
             _ => {
                 return Command::Misuse(format!(
-                    "unknown option `{flag}`\n{USAGE}\nonly `-o`, `-l<library>` and `-L<directory>` are accepted"
+                    "unknown option `{flag}`\n{USAGE}\nonly `-o`, `-l<library>`, `-L<directory>` and `--check` are accepted"
                 ));
             }
         }
@@ -200,11 +207,17 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
             "`-o` chooses where `build` writes its executable, and applies to nothing else\n{USAGE}"
         ));
     }
+    if check_only && action != Action::Fmt {
+        return Command::Misuse(format!(
+            "`--check` is only meaningful for `fmt`\n{USAGE}"
+        ));
+    }
     Command::Invoke(Box::new(Invocation {
         action,
         file: PathBuf::from(file),
         link_flags,
         output,
+        check_only,
     }))
 }
 
@@ -302,6 +315,11 @@ fn main() -> ExitCode {
         Action::Check => {
             check_program(&source.name, &source.text, &mut loader).map(|_| String::new())
         }
+        Action::Fmt => {
+            skuld_compiler::formatter::format_source(&source.text).map_err(|diagnostics| {
+                one_file(&source, diagnostics)
+            })
+        }
         Action::EmitC | Action::Build | Action::Run => {
             compile_program_to_c(&source.name, &source.text, &mut loader)
         }
@@ -310,6 +328,20 @@ fn main() -> ExitCode {
         Err(errors) => {
             eprint!("{}", errors.render());
             ExitCode::FAILURE
+        }
+        Ok(output) if matches!(action, Action::Fmt) => {
+            if output == source.text {
+                ExitCode::SUCCESS
+            } else if invocation.check_only {
+                ExitCode::FAILURE
+            } else {
+                if let Err(error) = fs::write(&entry, output) {
+                    eprintln!("error: cannot write formatted output: {error}");
+                    ExitCode::FAILURE
+                } else {
+                    ExitCode::SUCCESS
+                }
+            }
         }
         Ok(output) if matches!(action, Action::Run) => match native::run(&output, &link_flags) {
             Ok(code) => ExitCode::from(code),
@@ -514,10 +546,34 @@ mod tests {
             file: PathBuf::from("program.skuld"),
             link_flags: vec!["-lm".to_owned()],
             output: None,
+            check_only: false,
         };
         assert_eq!(invocation(&["run", "program.skuld", "-lm"]), expected);
         assert_eq!(invocation(&["run", "-lm", "program.skuld"]), expected);
         assert_eq!(invocation(&["-lm", "run", "program.skuld"]), expected);
+    }
+
+    #[test]
+    fn fmt_invocation_supports_check_flag() {
+        let expected = Invocation {
+            action: Action::Fmt,
+            file: PathBuf::from("program.skuld"),
+            link_flags: Vec::new(),
+            output: None,
+            check_only: true,
+        };
+        assert_eq!(invocation(&["fmt", "--check", "program.skuld"]), expected);
+        assert_eq!(invocation(&["fmt", "program.skuld", "--check"]), expected);
+
+        let uncheck = Invocation {
+            action: Action::Fmt,
+            file: PathBuf::from("program.skuld"),
+            link_flags: Vec::new(),
+            output: None,
+            check_only: false,
+        };
+        assert_eq!(invocation(&["fmt", "program.skuld"]), uncheck);
+        assert!(misuse(&["run", "program.skuld", "--check"]).contains("`--check`"));
     }
 
     #[test]

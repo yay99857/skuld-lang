@@ -15,6 +15,9 @@ pub use parser::{ParseOutput, parse};
 
 pub use resolver::{ResolveOutput, resolve};
 
+pub mod formatter;
+pub use formatter::format_source;
+
 pub mod type_checker;
 pub mod types;
 

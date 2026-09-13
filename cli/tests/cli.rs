@@ -76,12 +76,14 @@ fn invalid_arguments() {
             "parse",
             "resolve",
             "check",
+            "fmt",
             "emit-c",
             "build",
             "run",
             "-o",
             "-l",
             "-L",
+            "--check",
             "--",
             "exit codes",
         ] {
@@ -238,3 +240,40 @@ fn a_module_linked_out_of_the_program_root_is_not_read() {
     );
     let _ = fs::remove_dir_all(&base);
 }
+
+#[test]
+fn fmt_formats_in_place_and_check_detects_drift() {
+    let path = std::env::temp_dir().join(format!("skuld-fmt-{}.skuld", std::process::id()));
+    let unformatted = "func add(a: int, b: int): int {\nreturn a + b\n}\n";
+    std::fs::write(&path, unformatted).expect("write unformatted");
+
+    // --check fails when file needs formatting
+    let check_fail = cli().args(["fmt", "--check"]).arg(&path).output().expect("start CLI");
+    assert_eq!(check_fail.status.code(), Some(1));
+    assert_eq!(std::fs::read_to_string(&path).expect("read"), unformatted);
+
+    // fmt without --check formats in place
+    let fmt_run = cli().arg("fmt").arg(&path).output().expect("start CLI");
+    assert!(fmt_run.status.success());
+    let formatted = std::fs::read_to_string(&path).expect("read formatted");
+    assert_eq!(
+        formatted,
+        "func add(a: int, b: int) -> int {\n    return a + b\n}\n"
+    );
+
+    // --check now passes
+    let check_ok = cli().args(["fmt", "--check"]).arg(&path).output().expect("start CLI");
+    assert!(check_ok.status.success());
+
+    // formatting invalid code fails and does not overwrite
+    let invalid = "func main() {\n    let =\n}\n";
+    std::fs::write(&path, invalid).expect("write invalid");
+    let fmt_invalid = cli().arg("fmt").arg(&path).output().expect("start CLI");
+    assert_eq!(fmt_invalid.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&fmt_invalid.stderr);
+    assert!(stderr.contains("error[E1001]"), "expected diagnostic: {stderr}");
+    assert_eq!(std::fs::read_to_string(&path).expect("read"), invalid);
+
+    std::fs::remove_file(path).expect("cleanup");
+}
+
