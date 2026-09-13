@@ -17,4 +17,4 @@ malformed response: body shorter than Content-Length
 10.0.0.7 8080 /a/b?c=d
 127.0.0.1 80 /
 `https://127.0.0.1/` needs TLS, which is not implemented
-`skuld.example` is a name, and there is no resolver; use an IPv4 address
+skuld.example 8443 /data

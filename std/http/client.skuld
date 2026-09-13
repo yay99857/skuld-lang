@@ -5,10 +5,11 @@
 // decision rather than a technical one, so `https://` is refused by name
 // instead of pretended at.
 //
-// A URL's host must be an IPv4 address. `std/net` explains why there is no
-// resolver; the error says so at the point where a name would have been used,
-// rather than failing somewhere further in.
+// A host name is resolved through `std/dns`, which speaks DNS over UDP
+// because every resolver in libc answers with a pointer. The `Host` header
+// carries the name the caller wrote, not the address it resolved to.
 
+import "std/dns"
 import "std/net"
 import "std/strings"
 
@@ -19,23 +20,23 @@ pub class Header {
 
 pub enum HttpError {
     // The URL was not `http://host[:port]/path`.
-    Url(string)
+    Url(string),
     // `https://`, which needs TLS.
-    Tls(string)
-    // A host that is not an IPv4 address, which needs a resolver.
-    Name(string)
-    Network(net.NetError)
+    Tls(string),
+    // A host name that did not resolve.
+    Name(dns.DnsError),
+    Network(net.NetError),
     // The response was not an HTTP/1.1 message, or ended mid-message.
-    Malformed(string)
+    Malformed(string),
     // A body that is not valid UTF-8.
-    Encoding(string)
+    Encoding(string),
 }
 
 pub func describe(error: HttpError) -> string {
     match error {
         HttpError.Url(text): return "`${text}` is not an http URL"
         HttpError.Tls(text): return "`${text}` needs TLS, which is not implemented"
-        HttpError.Name(host): return "`${host}` is a name, and there is no resolver; use an IPv4 address"
+        HttpError.Name(inner): return dns.describe(inner)
         HttpError.Network(inner): return net.describe(inner)
         HttpError.Malformed(what): return "malformed response: ${what}"
         HttpError.Encoding(what): return "response body is not UTF-8: ${what}"
@@ -124,9 +125,8 @@ pub func parse_url(url: string) -> Result<Url, HttpError> {
             return Err(HttpError.Url(url))
         }
     }
-    // A name would need a resolver; say so here rather than deeper in.
-    if net.parse_address(host).is_err() {
-        return Err(HttpError.Name(host))
+    if host.len() == 0 {
+        return Err(HttpError.Url(url))
     }
     return Ok(new Url(host: host, port: port, path: path))
 }
@@ -140,7 +140,12 @@ pub func get(url: string) -> Result<Response, HttpError> {
     for byte in request.bytes() {
         bytes.push(byte)
     }
-    let connection = net.open(target.host, target.port) else reason {
+    // The name is resolved here rather than in `std/net`: a socket takes an
+    // address, and `std/dns` needs sockets, so the resolver sits above both.
+    let address = dns.resolve(target.host) else reason {
+        return Err(HttpError.Name(reason))
+    }
+    let connection = net.open(address, target.port) else reason {
         return Err(HttpError.Network(reason))
     }
     let sent = connection.send_all(bytes) else reason {
@@ -231,10 +236,5 @@ pub func parse_response(raw: []u8) -> Result<Response, HttpError> {
     let text = bytes_to_string(body) else invalid {
         return Err(HttpError.Encoding(invalid))
     }
-    return Ok(new Response(
-        status: status,
-        reason: reason,
-        headers: headers,
-        body: text
-    ))
+    return Ok(new Response(status: status, reason: reason, headers: headers, body: text))
 }

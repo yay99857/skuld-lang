@@ -62,8 +62,10 @@ func main() {
         Ok(url): print("unexpected")
         Err(reason): print(http.describe(reason))
     }
-    match http.parse_url("http://skuld.example/") {
-        Ok(url): print("unexpected")
+    // A name is a URL a resolver can work with, so parsing keeps it; what
+    // it resolves to is decided when the request is made, not here.
+    match http.parse_url("http://skuld.example:8443/data") {
+        Ok(url): print("${url.host} ${url.port} ${url.path}")
         Err(reason): print(http.describe(reason))
     }
 }

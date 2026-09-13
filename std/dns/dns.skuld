@@ -1,0 +1,317 @@
+// Turning a host name into an address, by speaking DNS over UDP.
+//
+// Why this and not `getaddrinfo`: every resolver in libc answers with a
+// pointer to a structure, and reading through a pointer is what the foreign
+// boundary does not do. The alternatives were a memory primitive at the
+// boundary — which would weaken the one rule that makes the FFI safe — or
+// this: a resolver written in Skuld, using the sockets the boundary already
+// reaches. A UDP socket is `connect`ed to the server, so `send` and `recv`
+// are enough and `recvfrom`'s address-out parameter is never needed.
+//
+// What this is not: a caching resolver, a full DNS client, or a defence
+// against an off-path attacker. There is no random source in the language, so
+// the query id comes from the clock and the socket's ephemeral port is the
+// only other thing an answer has to match. It is meant for the nameserver the
+// machine is already configured to trust, on a local network.
+
+import "std/fs"
+import "std/net"
+import "std/os"
+import "std/strings"
+
+unsafe extern "C" {
+    func socket(domain: i32, kind: i32, protocol: i32) -> i32
+    func connect(handle: i32, address: *u8, length: u32) -> i32
+    func setsockopt(handle: i32, level: i32, option: i32, value: *u8, length: u32) -> i32
+    func send(handle: i32, buffer: *u8, length: u64, flags: i32) -> i64
+    func recv(handle: i32, buffer: *u8, length: u64, flags: i32) -> i64
+    func close(handle: i32) -> i32
+    // Seconds since the epoch, written into the eight bytes handed to it. The
+    // return value is the same number, which is the one this module uses.
+    func time(out: *u8) -> i64
+}
+
+pub enum DnsError {
+    // `/etc/resolv.conf` named no server this module could use.
+    NoServer(string),
+    // The name is empty, too long, or has a label that is.
+    BadName(string),
+    // The socket, the connect, the send or the receive failed.
+    Transport(os.OsFailure),
+    // The server answered with a non-zero RCODE. 2 is SERVFAIL, 3 is NXDOMAIN.
+    Refused(int),
+    // The answer was not a reply to this query, or could not be read.
+    Malformed(string),
+    // The name resolved, but to nothing this module can use: no A record.
+    NoAddress(string),
+}
+
+pub func describe(error: DnsError) -> string {
+    match error {
+        DnsError.NoServer(detail): return "no nameserver: ${detail}"
+        DnsError.BadName(name): return "`${name}` is not a usable host name"
+        DnsError.Transport(problem): return "dns query failed: ${os.describe_failure(problem)}"
+        DnsError.Refused(code): return "the nameserver answered with code ${code}${rcode_hint(code)}"
+        DnsError.Malformed(detail): return "the answer could not be read: ${detail}"
+        DnsError.NoAddress(name): return "`${name}` has no IPv4 address"
+    }
+}
+
+func rcode_hint(code: int) -> string {
+    if code == 2 {
+        return " (server failure)"
+    }
+    if code == 3 {
+        return " (no such name)"
+    }
+    return ""
+}
+
+// The nameservers `/etc/resolv.conf` lists, in order. An unreadable file is an
+// empty list rather than an error: the caller decides what to do without one.
+pub func servers() -> []string {
+    var found: []string = []
+    let text = fs.read_text("/etc/resolv.conf") else problem {
+        return found
+    }
+    for line in strings.split(text, "\n") {
+        let trimmed = strings.trim(line)
+        if strings.starts_with(trimmed, "nameserver") == false {
+            continue
+        }
+        let rest = strings.trim(trimmed[10..trimmed.len()])
+        if rest.len() == 0 {
+            continue
+        }
+        // An IPv6 server is skipped rather than mis-parsed: this resolver
+        // speaks IPv4 only, and says so by finding nothing.
+        if strings.contains(rest, ":") {
+            continue
+        }
+        found.push(rest)
+    }
+    return found
+}
+
+// The first IPv4 address of a host name, asking the machine's own servers.
+pub func resolve(name: string) -> Result<string, DnsError> {
+    let configured = servers()
+    if configured.len() == 0 {
+        return Err(DnsError.NoServer("`/etc/resolv.conf` lists no IPv4 nameserver"))
+    }
+    var last = DnsError.NoServer("no server was tried")
+    for server in configured {
+        match resolve_with(server, 53, name) {
+            Ok(address): return Ok(address)
+            Err(problem): {
+                // A name that does not exist is that server's final answer;
+                // a transport failure is worth trying the next server for.
+                match problem {
+                    DnsError.Refused(code): return Err(DnsError.Refused(code))
+                    DnsError.BadName(bad): return Err(DnsError.BadName(bad))
+                    DnsError.NoAddress(missing): return Err(DnsError.NoAddress(missing))
+                    _: last = problem
+                }
+            }
+        }
+    }
+    return Err(last)
+}
+
+// The same, against one server, which is what a test points at a server of
+// its own.
+pub func resolve_with(server: string, port: int, name: string) -> Result<string, DnsError> {
+    if name.len() == 0 || name.len() > 253 {
+        return Err(DnsError.BadName(name))
+    }
+    // An address needs no resolving, and a resolver that tried would be a
+    // surprising way to fail offline.
+    if is_address(name) {
+        return Ok(name)
+    }
+    let question = query(name)?
+    let answer = exchange(server, port, question)?
+    return read_answer(answer, name)
+}
+
+// Four decimal octets: `net.parse_address` already knows, and its error is
+// not this module's to report.
+pub func is_address(text: string) -> bool {
+    match net.parse_address(text) {
+        Ok(octets): return true
+        Err(problem): return false
+    }
+}
+
+// One question for one A record, with the id taken from the clock.
+func query(name: string) -> Result<[]u8, DnsError> {
+    var seconds: []u8 = []
+    var index = 0
+    while index < 8 {
+        seconds.push(0)
+        index += 1
+    }
+    let now = time(ptr(seconds))
+    let id = int(now % 65536)
+    var message: []u8 = []
+    message.push(u8(id / 256))
+    message.push(u8(id % 256))
+    // Recursion desired, everything else clear.
+    message.push(1)
+    message.push(0)
+    // One question, no answers, no authority, no additional.
+    message.push(0)
+    message.push(1)
+    var zeros = 0
+    while zeros < 6 {
+        message.push(0)
+        zeros += 1
+    }
+    for label in strings.split(name, ".") {
+        if label.len() == 0 || label.len() > 63 {
+            return Err(DnsError.BadName(name))
+        }
+        message.push(u8(label.len()))
+        for byte in label.bytes() {
+            message.push(byte)
+        }
+    }
+    message.push(0)
+    // QTYPE A, QCLASS IN.
+    message.push(0)
+    message.push(1)
+    message.push(0)
+    message.push(1)
+    return Ok(message)
+}
+
+// Send one datagram and wait for one, with a timeout so an unreachable server
+// is a failure rather than a hang.
+func exchange(server: string, port: int, question: []u8) -> Result<[]u8, DnsError> {
+    let octets = address_bytes(server)?
+    // AF_INET, SOCK_DGRAM.
+    let handle = socket(2, 2, 0)
+    if handle < 0 {
+        return Err(DnsError.Transport(os.failure("a datagram socket")))
+    }
+    // SO_RCVTIMEO on SOL_SOCKET: a `struct timeval` of two 64-bit fields.
+    var timeout: []u8 = []
+    timeout.push(3)
+    var pad = 0
+    while pad < 15 {
+        timeout.push(0)
+        pad += 1
+    }
+    let ignored_option = setsockopt(i32(handle), 1, 20, ptr(timeout), u32(16))
+    var sockaddr: []u8 = []
+    sockaddr.push(2)
+    sockaddr.push(0)
+    sockaddr.push(u8(port / 256))
+    sockaddr.push(u8(port % 256))
+    for octet in octets {
+        sockaddr.push(octet)
+    }
+    var zeros = 0
+    while zeros < 8 {
+        sockaddr.push(0)
+        zeros += 1
+    }
+    if connect(i32(handle), ptr(sockaddr), u32(16)) < 0 {
+        let problem = os.failure("${server}:${port}")
+        let ignored = close(i32(handle))
+        return Err(DnsError.Transport(problem))
+    }
+    let sent = send(i32(handle), ptr(question), u64(question.len()), 0)
+    if sent < 0 {
+        let problem = os.failure("${server}:${port}")
+        let ignored = close(i32(handle))
+        return Err(DnsError.Transport(problem))
+    }
+    var buffer: []u8 = []
+    var index = 0
+    while index < 512 {
+        buffer.push(0)
+        index += 1
+    }
+    let got = recv(i32(handle), ptr(buffer), u64(512), 0)
+    let problem = os.failure("${server}:${port}")
+    let ignored = close(i32(handle))
+    if got < 0 {
+        return Err(DnsError.Transport(problem))
+    }
+    return Ok(buffer[0..int(got)])
+}
+
+func address_bytes(server: string) -> Result<[]u8, DnsError> {
+    match net.parse_address(server) {
+        Ok(octets): return Ok(octets)
+        Err(problem): return Err(DnsError.NoServer("`${server}` is not an IPv4 address"))
+    }
+}
+
+// The first A record in the answer section, as four decimal octets.
+func read_answer(message: []u8, name: string) -> Result<string, DnsError> {
+    if message.len() < 12 {
+        return Err(DnsError.Malformed("the answer is shorter than a header"))
+    }
+    // The low four bits of the last flag byte are the response code.
+    let rcode = int(message[3]) % 16
+    if rcode != 0 {
+        return Err(DnsError.Refused(rcode))
+    }
+    let questions = int(message[4]) * 256 + int(message[5])
+    let answers = int(message[6]) * 256 + int(message[7])
+    if answers == 0 {
+        return Err(DnsError.NoAddress(name))
+    }
+    var at = 12
+    var asked = 0
+    while asked < questions {
+        at = skip_name(message, at)?
+        // QTYPE and QCLASS.
+        at += 4
+        asked += 1
+    }
+    var seen = 0
+    while seen < answers {
+        at = skip_name(message, at)?
+        if at + 10 > message.len() {
+            return Err(DnsError.Malformed("a record is cut short"))
+        }
+        let kind = int(message[at]) * 256 + int(message[at + 1])
+        let length = int(message[at + 8]) * 256 + int(message[at + 9])
+        at += 10
+        if at + length > message.len() {
+            return Err(DnsError.Malformed("a record claims more data than the answer holds"))
+        }
+        // Type A, and exactly the four bytes an IPv4 address is.
+        if kind == 1 && length == 4 {
+            return Ok("${int(message[at])}.${int(message[at + 1])}.${int(message[at + 2])}.${int(message[at + 3])}")
+        }
+        at += length
+        seen += 1
+    }
+    return Err(DnsError.NoAddress(name))
+}
+
+// Step over a name without expanding it. A label whose length byte is 192 or
+// more is a pointer to earlier in the message, and ends the name in two bytes.
+func skip_name(message: []u8, start: int) -> Result<int, DnsError> {
+    var at = start
+    var steps = 0
+    while at < message.len() {
+        if steps > 128 {
+            return Err(DnsError.Malformed("a name loops"))
+        }
+        let length = int(message[at])
+        if length >= 192 {
+            return Ok(at + 2)
+        }
+        if length == 0 {
+            return Ok(at + 1)
+        }
+        at += length + 1
+        steps += 1
+    }
+    return Err(DnsError.Malformed("a name runs past the end of the answer"))
+}
