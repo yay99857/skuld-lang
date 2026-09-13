@@ -1,4 +1,5 @@
 mod native;
+mod test_runner;
 use skuld_compiler::{
     check_program, compile_program_to_c,
     diagnostic::Diagnostic,
@@ -28,6 +29,7 @@ usage:
 commands:
     run        check, compile and execute; keeps no artifacts
     build      check and compile to an executable in the working directory
+    test       run the `test_...` functions in the file and report them
     check      static checking only; needs no clang and prints nothing on success
     fmt        format the file; writes back unless --check is passed
     emit-c     print the generated C to stdout
@@ -52,6 +54,7 @@ exit codes:
 examples:
     skuld run examples/hello.skuld
     skuld check src/main.skuld
+    skuld test src/main_tests.skuld
     skuld build program.skuld -o bin/program -lm
     skuld emit-c program.skuld > generated.c
 ";
@@ -62,6 +65,7 @@ enum Action {
     Parse,
     Resolve,
     Check,
+    Test,
     Fmt,
     EmitC,
     Build,
@@ -69,11 +73,12 @@ enum Action {
 }
 
 impl Action {
-    const NAMES: [(&'static str, Self); 8] = [
+    const NAMES: [(&'static str, Self); 9] = [
         ("lex", Self::Lex),
         ("parse", Self::Parse),
         ("resolve", Self::Resolve),
         ("check", Self::Check),
+        ("test", Self::Test),
         ("fmt", Self::Fmt),
         ("emit-c", Self::EmitC),
         ("build", Self::Build),
@@ -88,7 +93,7 @@ impl Action {
     /// Whether this stage ever reaches clang, which is what makes a linker
     /// argument meaningful.
     fn links(self) -> bool {
-        matches!(self, Self::Build | Self::Run)
+        matches!(self, Self::Build | Self::Run | Self::Test)
     }
 }
 
@@ -208,9 +213,7 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
         ));
     }
     if check_only && action != Action::Fmt {
-        return Command::Misuse(format!(
-            "`--check` is only meaningful for `fmt`\n{USAGE}"
-        ));
+        return Command::Misuse(format!("`--check` is only meaningful for `fmt`\n{USAGE}"));
     }
     Command::Invoke(Box::new(Invocation {
         action,
@@ -315,13 +318,32 @@ fn main() -> ExitCode {
         Action::Check => {
             check_program(&source.name, &source.text, &mut loader).map(|_| String::new())
         }
-        Action::Fmt => {
-            skuld_compiler::formatter::format_source(&source.text).map_err(|diagnostics| {
-                one_file(&source, diagnostics)
-            })
-        }
+        Action::Fmt => skuld_compiler::formatter::format_source(&source.text)
+            .map_err(|diagnostics| one_file(&source, diagnostics)),
         Action::EmitC | Action::Build | Action::Run => {
             compile_program_to_c(&source.name, &source.text, &mut loader)
+        }
+        // A test file is not a program until the runner writes its entry
+        // point, so this arm compiles a source the user never wrote.
+        Action::Test => {
+            let parsed = parse(&source.text);
+            match parsed.program {
+                None => Err(one_file(&source, parsed.diagnostics)),
+                Some(program) => match test_runner::discover(&program, &source.text) {
+                    Err(reason) => {
+                        eprintln!("error: {}: {reason}", entry.display());
+                        return ExitCode::FAILURE;
+                    }
+                    Ok(suite) => {
+                        match compile_program_to_c(&source.name, &suite.source, &mut loader) {
+                            Err(errors) => Err(errors),
+                            Ok(c_source) => {
+                                return run_suite(&suite, &c_source, &link_flags);
+                            }
+                        }
+                    }
+                },
+            }
         }
     };
     match result {
@@ -369,6 +391,29 @@ fn main() -> ExitCode {
         Ok(output) => write_output(&output),
     }
 }
+/// Build the suite, run it, and print the report. The status is the report's:
+/// a failing test is a failing command, which is what a build script reads.
+fn run_suite(suite: &test_runner::Suite, c_source: &str, link_flags: &[String]) -> ExitCode {
+    match native::capture(c_source, link_flags) {
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+        Ok((code, out, err)) => {
+            let outcome = test_runner::report(&suite.names, &out, code);
+            print!("{}", outcome.report);
+            if !err.is_empty() {
+                eprint!("{err}");
+            }
+            if outcome.passed {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+    }
+}
+
 /// Without `-o` the executable lands in the working directory under the source
 /// file's stem, so building never writes next to the source or into a directory
 /// the user did not choose. With `-o` the user chose it, and the only rule kept

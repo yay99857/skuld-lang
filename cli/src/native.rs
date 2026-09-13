@@ -90,6 +90,29 @@ pub fn run(c_source: &str, link_flags: &[String]) -> Result<u8, String> {
         .map_err(|error| format!("cannot execute compiled program: {error}"))?;
     Ok(exit_code(status))
 }
+/// Compile and run, capturing what the program printed instead of letting it
+/// through. `skuld test` needs the output as data: the markers in it are how
+/// the runner knows which tests ran.
+pub fn capture(c_source: &str, link_flags: &[String]) -> Result<(u8, String, String), String> {
+    let temp = TempDir::create()
+        .map_err(|error| format!("cannot create temporary build directory: {error}"))?;
+    let executable = temp.path.join(if cfg!(windows) {
+        "program.exe"
+    } else {
+        "program"
+    });
+    emit_and_compile(c_source, &temp.path, &executable, link_flags)?;
+    let output = Command::new(&executable)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("cannot execute compiled program: {error}"))?;
+    Ok((
+        exit_code(output.status),
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
+}
+
 /// `link_flags` carries `-l`/`-L` arguments for libraries an `extern "C"`
 /// declaration needs; libc is linked by clang without asking.
 fn compile(source: &Path, executable: &Path, link_flags: &[String]) -> Result<(), String> {
