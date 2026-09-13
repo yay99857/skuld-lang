@@ -347,12 +347,41 @@ Skuld, and the JSON parser that closes M4.
 - **Validation:** an integration test against a local socket that this
   repository starts, never the network. `tests/pass` stays hermetic.
 
-## A parallel track — tooling — Planned
+## A parallel track — tooling — Partly implemented
 
 Not sequenced with the milestones above and not blocking any of them.
-`LANGUAGE.md` names `fmt`, `test`, `doc` and `new` as future commands; the
-official formatter in particular has been deferred since the beginning and can
-land whenever the syntax stops moving.
+
+- **Editor highlighting — implemented.** `editors/nvim` is a Vim syntax file
+  and filetype detection for `.skuld`. It mirrors the lexer rather than the
+  roadmap: the keyword list comes from `Lexer::identifier`, the prelude from
+  the resolver, and the escape set is the exact one the lexer accepts, so an
+  invalid escape is shown as the error `E0004` would report. It carries no
+  semantic knowledge; a capitalised name reads as a type by convention only.
+- **Language server, stage 0 — implemented.** `lsp/` is the `skuld-lsp`
+  binary: LSP over stdio, reporting the diagnostics the checker produces and
+  nothing else. The protocol is written in the crate rather than taken from a
+  dependency, so the workspace still has none — the same choice rust-analyzer,
+  clangd and gopls each made, and `tower-lsp` was declined for bringing an
+  async runtime a synchronous server has no use for.
+  - **Decision taken:** full document sync, not incremental. Applying ranges to
+    a mirrored buffer is a known source of drift for no gain at this file size.
+  - **Decision taken:** positions are converted to UTF-16 in the server rather
+    than reusing `SourceFile::location`, which counts Unicode scalars. The two
+    agree until a line holds an astral character, and then every column after
+    it is wrong by one unit per character.
+  - **Open buffers beat disk.** An imported module that is open and unsaved is
+    compiled as the editor shows it, through the `ModuleLoader` the compiler
+    already takes.
+  - **A known limit, not a bug to file:** the pipeline stops at the first stage
+    that fails, so a file with both a resolver error and a type error reports
+    only the resolver's until that one is fixed. That is the compiler's shape,
+    and changing it is a compiler decision, not a server one.
+- **Still planned.** Hover, go-to-definition and find-references, which want
+  the resolver's declaration and use tables exposed rather than rebuilt;
+  completion, which wants the syntax to stop moving first. `LANGUAGE.md` names
+  `fmt`, `test`, `doc` and `new` as future commands; the official formatter in
+  particular has been deferred since the beginning and can land whenever the
+  syntax stops moving.
 
 ## Beyond M9
 
