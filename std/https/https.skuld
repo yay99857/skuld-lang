@@ -1,0 +1,107 @@
+// HTTPS: the HTTP/1.1 client of `std/http` over the verified connection of
+// `std/tls`.
+//
+// It is a module of its own rather than a branch inside `std/http`, and that
+// is the dependency policy in one line: importing this is how a program says
+// it accepts a link-time dependency on OpenSSL. A program that only speaks
+// plain HTTP imports `std/http` and links nothing.
+//
+//     skuld build fetch.skuld -lssl -lcrypto
+//
+// Everything about the message — the request line, the headers, the response
+// parsing — is `std/http`'s, unchanged. What is different is the connection
+// underneath it and the fact that the certificate was checked before a single
+// byte of the request was written.
+
+import "std/dns"
+import "std/http"
+import "std/strings"
+import "std/tls"
+
+pub enum HttpsError {
+    // The URL was not `https://host[:port]/path`.
+    Url(string),
+    // `http://`, which belongs to `std/http` and needs no TLS.
+    NotTls(string),
+    // The host name did not resolve.
+    Name(dns.DnsError),
+    // The connection, the handshake or the certificate.
+    Transport(tls.TlsError),
+    // The response could not be read as HTTP.
+    Response(http.HttpError),
+}
+
+pub func describe(error: HttpsError) -> string {
+    match error {
+        HttpsError.Url(text): return "`${text}` is not an https URL"
+        HttpsError.NotTls(text): return "`${text}` is plain http; use `std/http` for it"
+        HttpsError.Name(inner): return dns.describe(inner)
+        HttpsError.Transport(inner): return tls.describe(inner)
+        HttpsError.Response(inner): return http.describe(inner)
+    }
+}
+
+// One GET over a verified connection. The default port is 443, the name is
+// resolved through `std/dns`, and the certificate is checked against the name
+// the caller wrote — not against the address it resolved to.
+pub func get(url: string) -> Result<http.Response, HttpsError> {
+    if strings.starts_with(url, "http://") {
+        return Err(HttpsError.NotTls(url))
+    }
+    if strings.starts_with(url, "https://") == false {
+        return Err(HttpsError.Url(url))
+    }
+    // `parse_url` speaks `http://`, and everything after the scheme is the
+    // same, so the URL is handed over in the shape it understands and the
+    // port that is missing from it is supplied here.
+    let plain = "http://${url[8..url.len()]}"
+    let target = http.parse_url(plain) else problem {
+        return Err(HttpsError.Response(problem))
+    }
+    var port = target.port
+    if port == 80 && contains_port(url) == false {
+        port = 443
+    }
+    let address = dns.resolve(target.host) else problem {
+        return Err(HttpsError.Name(problem))
+    }
+    let connection = tls.connect(address, port, target.host) else problem {
+        return Err(HttpsError.Transport(problem))
+    }
+    let request = "GET ${target.path} HTTP/1.1\r\nHost: ${target.host}\r\nConnection: close\r\n\r\n"
+    var bytes: []u8 = []
+    for byte in request.bytes() {
+        bytes.push(byte)
+    }
+    let sent = connection.send_all(bytes) else problem {
+        connection.close()
+        return Err(HttpsError.Transport(problem))
+    }
+    let raw = connection.receive_all() else problem {
+        connection.close()
+        return Err(HttpsError.Transport(problem))
+    }
+    connection.close()
+    let response = http.parse_response(raw) else problem {
+        return Err(HttpsError.Response(problem))
+    }
+    return Ok(response)
+}
+
+// Whether the authority carries an explicit `:port`, which decides whether
+// the default is 443 or the one that was written.
+func contains_port(url: string) -> bool {
+    let rest = url[8..url.len()]
+    var index = 0
+    while index < rest.len() {
+        let byte = rest[index]
+        if byte == 47 {
+            return false
+        }
+        if byte == 58 {
+            return true
+        }
+        index += 1
+    }
+    return false
+}

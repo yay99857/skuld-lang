@@ -1,0 +1,247 @@
+// A blocking TLS client over OpenSSL, with the certificate actually checked.
+//
+// The dependency is deliberate and it is opt-in. Writing the cryptography
+// would be reckless, and no milestone here authorizes it; binding a system
+// library is the honest alternative. What it costs is a link-time dependency,
+// so it is quarantined in its own module: `std/http` still refuses `https://`
+// and links nothing, and a program that wants TLS imports `std/https` and
+// says so on the command line:
+//
+//     skuld build fetch.skuld -lssl -lcrypto
+//
+// Verification is on and cannot be turned off from here. There is no
+// `insecure` flag, because the first thing anybody would do with one is reach
+// for it, and a verified connection is the only kind this module knows how to
+// make. The chain is checked against the system trust store, and the name is
+// checked against the certificate — `SSL_set1_host` before the handshake, and
+// the verification result read after it.
+
+import "std/cstring"
+import "std/ffi"
+import "std/net"
+import "std/os"
+
+unsafe extern "C" {
+    func TLS_client_method() -> *void
+    func SSL_CTX_new(method: *void) -> *void
+    func SSL_CTX_free(context: *void) -> void
+    func SSL_CTX_set_default_verify_paths(context: *void) -> i32
+    func SSL_new(context: *void) -> *void
+    func SSL_free(connection: *void) -> void
+    func SSL_set_fd(connection: *void, handle: i32) -> i32
+    func SSL_set1_host(connection: *void, name: *u8) -> i32
+    func SSL_set_verify(connection: *void, mode: i32, callback: *void) -> void
+    // `SSL_set_tlsext_host_name` is a macro over this: command 55 is
+    // SSL_CTRL_SET_TLSEXT_HOSTNAME and 0 is TLSEXT_NAMETYPE_host_name.
+    func SSL_ctrl(connection: *void, command: i32, argument: i64, value: *u8) -> i64
+    func SSL_connect(connection: *void) -> i32
+    func SSL_get_error(connection: *void, result: i32) -> i32
+    func SSL_get_verify_result(connection: *void) -> i64
+    func SSL_read(connection: *void, buffer: *u8, length: i32) -> i32
+    func SSL_write(connection: *void, buffer: *u8, length: i32) -> i32
+    func SSL_shutdown(connection: *void) -> i32
+}
+
+pub enum TlsError {
+    // The plain TCP connection underneath never happened.
+    Network(net.NetError),
+    // OpenSSL would not give us a context or a connection.
+    Setup(string),
+    // The host name could not be used: empty, or holding a NUL.
+    Name(string),
+    // The handshake failed. The payload is `SSL_get_error`'s code.
+    Handshake(int),
+    // The handshake completed and the certificate was not acceptable. The
+    // payload is OpenSSL's verification result.
+    Certificate(int),
+    // Reading or writing failed after the connection was up.
+    Transport(os.OsFailure),
+}
+
+pub func describe(error: TlsError) -> string {
+    match error {
+        TlsError.Network(inner): return net.describe(inner)
+        TlsError.Setup(what): return "tls setup failed: ${what}"
+        TlsError.Name(name): return "`${name}` is not a usable host name"
+        TlsError.Handshake(code): return "the tls handshake failed (${handshake_reason(code)})"
+        TlsError.Certificate(code): return "the certificate was rejected: ${certificate_reason(code)}"
+        TlsError.Transport(problem): return "tls transport failed: ${os.describe_failure(problem)}"
+    }
+}
+
+// `SSL_get_error`'s codes, by the names OpenSSL gives them.
+func handshake_reason(code: int) -> string {
+    if code == 1 {
+        return "SSL_ERROR_SSL, which is usually a protocol or certificate failure"
+    }
+    if code == 5 {
+        return "SSL_ERROR_SYSCALL, so the connection broke underneath"
+    }
+    if code == 6 {
+        return "the peer closed the connection"
+    }
+    return "SSL_get_error code ${code}"
+}
+
+// The verification results worth naming. `X509_verify_cert_error_string`
+// would have the rest, but it answers with a pointer into the library, and
+// reading through one is what this boundary does not do.
+func certificate_reason(code: int) -> string {
+    if code == 10 {
+        return "it has expired"
+    }
+    if code == 9 {
+        return "it is not valid yet"
+    }
+    if code == 18 {
+        return "it is self-signed"
+    }
+    if code == 19 {
+        return "its chain ends in a certificate nothing trusts"
+    }
+    if code == 20 {
+        return "its issuer could not be found in the trust store"
+    }
+    if code == 62 {
+        return "it is for a different host name"
+    }
+    return "verification code ${code}"
+}
+
+pub class TlsConnection {
+    // The socket underneath, which OpenSSL reads and writes through.
+    socket: net.Connection
+    context: *void
+    connection: *void
+    host: string
+
+    send_all(bytes: []u8) -> Result<int, TlsError> {
+        var sent = 0
+        while sent < bytes.len() {
+            let rest = bytes[sent..bytes.len()]
+            let wrote = SSL_write(this.connection, ptr(rest), i32(rest.len()))
+            if wrote <= 0 {
+                return Err(TlsError.Transport(os.failure(this.host)))
+            }
+            sent += int(wrote)
+        }
+        return Ok(sent)
+    }
+
+    // One read. An empty result means the peer is done, which is how a body
+    // without a length ends.
+    receive(limit: int) -> Result<[]u8, TlsError> {
+        var buffer: []u8 = []
+        var index = 0
+        while index < limit {
+            buffer.push(0)
+            index += 1
+        }
+        let got = SSL_read(this.connection, ptr(buffer), i32(limit))
+        if got < 0 {
+            return Err(TlsError.Transport(os.failure(this.host)))
+        }
+        return Ok(buffer[0..int(got)])
+    }
+
+    receive_all() -> Result<[]u8, TlsError> {
+        var all: []u8 = []
+        loop {
+            let chunk = this.receive(4096)?
+            if chunk.len() == 0 {
+                break
+            }
+            for byte in chunk {
+                all.push(byte)
+            }
+        }
+        return Ok(all)
+    }
+
+    // Every resource this connection owns, in the order OpenSSL wants them
+    // released. Calling it twice would be a double free, so a caller closes
+    // once, the way it does with a socket.
+    close() {
+        let ignored = SSL_shutdown(this.connection)
+        SSL_free(this.connection)
+        SSL_CTX_free(this.context)
+        this.socket.close()
+    }
+}
+
+// Connect to an address, and prove that the certificate it presents belongs
+// to `host`. The address and the name are separate because the name is what
+// gets verified and the address is where the packets go; a caller that
+// resolved a name passes both.
+pub func connect(address: string, port: int, host: string) -> Result<TlsConnection, TlsError> {
+    if host.len() == 0 {
+        return Err(TlsError.Name(host))
+    }
+    let name = cstring.to_c(host) else problem {
+        return Err(TlsError.Name(host))
+    }
+    let socket = net.open(address, port) else problem {
+        return Err(TlsError.Network(problem))
+    }
+    let method = TLS_client_method()
+    if ffi.is_null(method) {
+        socket.close()
+        return Err(TlsError.Setup("no client method"))
+    }
+    let context = SSL_CTX_new(method)
+    if ffi.is_null(context) {
+        socket.close()
+        return Err(TlsError.Setup("no context"))
+    }
+    if SSL_CTX_set_default_verify_paths(context) != 1 {
+        SSL_CTX_free(context)
+        socket.close()
+        return Err(TlsError.Setup("the trust store could not be loaded"))
+    }
+    let connection = SSL_new(context)
+    if ffi.is_null(connection) {
+        SSL_CTX_free(context)
+        socket.close()
+        return Err(TlsError.Setup("no connection"))
+    }
+    if SSL_set_fd(connection, i32(socket.handle)) != 1 {
+        SSL_free(connection)
+        SSL_CTX_free(context)
+        socket.close()
+        return Err(TlsError.Setup("the socket could not be attached"))
+    }
+    // The name is checked twice over: `SSL_set1_host` makes the certificate's
+    // names part of verification, and the SNI extension tells the server which
+    // certificate to send in the first place.
+    if SSL_set1_host(connection, ptr(name)) != 1 {
+        SSL_free(connection)
+        SSL_CTX_free(context)
+        socket.close()
+        return Err(TlsError.Name(host))
+    }
+    let sni = SSL_ctrl(connection, 55, 0, ptr(name))
+    SSL_set_verify(connection, 1, ffi.null())
+    let result = SSL_connect(connection)
+    if result != 1 {
+        let code = int(SSL_get_error(connection, result))
+        let verification = int(SSL_get_verify_result(connection))
+        SSL_free(connection)
+        SSL_CTX_free(context)
+        socket.close()
+        // A handshake that failed on the certificate has more to say than
+        // "SSL_ERROR_SSL", so the verification result wins when there is one.
+        if verification != 0 {
+            return Err(TlsError.Certificate(verification))
+        }
+        return Err(TlsError.Handshake(code))
+    }
+    let verification = int(SSL_get_verify_result(connection))
+    if verification != 0 {
+        let ignored = SSL_shutdown(connection)
+        SSL_free(connection)
+        SSL_CTX_free(context)
+        socket.close()
+        return Err(TlsError.Certificate(verification))
+    }
+    return Ok(new TlsConnection(socket: socket, context: context, connection: connection, host: host))
+}

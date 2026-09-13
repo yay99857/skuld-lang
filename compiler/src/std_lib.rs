@@ -31,6 +31,10 @@ const MODULES: &[(&str, &[(&str, &str)])] = &[
         &[("std/dns/dns.skuld", include_str!("../../std/dns/dns.skuld"))],
     ),
     (
+        "std/ffi",
+        &[("std/ffi/ffi.skuld", include_str!("../../std/ffi/ffi.skuld"))],
+    ),
+    (
         "std/fs",
         &[("std/fs/fs.skuld", include_str!("../../std/fs/fs.skuld"))],
     ),
@@ -39,6 +43,13 @@ const MODULES: &[(&str, &[(&str, &str)])] = &[
         &[(
             "std/http/client.skuld",
             include_str!("../../std/http/client.skuld"),
+        )],
+    ),
+    (
+        "std/https",
+        &[(
+            "std/https/https.skuld",
+            include_str!("../../std/https/https.skuld"),
         )],
     ),
     (
@@ -76,6 +87,10 @@ const MODULES: &[(&str, &[(&str, &str)])] = &[
             "std/testing/testing.skuld",
             include_str!("../../std/testing/testing.skuld"),
         )],
+    ),
+    (
+        "std/tls",
+        &[("std/tls/tls.skuld", include_str!("../../std/tls/tls.skuld"))],
     ),
     (
         "std/utf8",
