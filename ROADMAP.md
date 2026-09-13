@@ -326,26 +326,45 @@ already had rather than a preference.
   runs on a snapshot and aborts if the array changed by the end, instead of
   merging out of a buffer that was reallocated underneath it.
 
-## M9 — Sockets, HTTP and the long-range target — Planned
+## M9 — Sockets, HTTP and the long-range target — Implemented
 
 ```skuld
-let res = http.get("http://example.com/data.json")
-let value = json.parse(res.body)?
+let response = http.get("http://127.0.0.1:8080/data.json") else reason {
+    print(http.describe(reason))
+    return
+}
+let document = json.parse(response.body) else reason {
+    print(json.describe(reason))
+    return
+}
 ```
 
 The target that motivated the whole ordering, spent at last, and by then not a
 language milestone: an FFI binding over libc sockets, a response parser in
 Skuld, and the JSON parser that closes M4.
 
-- **In scope:** a socket binding over M5, a blocking HTTP/1.1 client, and the
-  JSON value and parser from M4's closing marker promoted into `std`.
-- **Out of scope, and pointedly:** TLS, so plain HTTP only; a server; async,
+- **Implemented:** `std/net` is a blocking TCP connection over libc, `std/http`
+  an HTTP/1.1 client on top of it, and `std/json` is M4's parser promoted out
+  of its fixture. A Skuld program fetches a document and decodes it.
+- **The example changed, and the change is the finding.** It was written with a
+  host name. `AGENTS.md` puts reading through a pointer out of scope at the
+  foreign boundary, and `getaddrinfo` and `gethostbyname` both answer with a
+  pointer to a structure, so no resolver in libc is reachable: a connection is
+  made to an address. `http.get` refuses a name by name rather than failing
+  somewhere deeper. Reaching names needs a read primitive at the boundary or a
+  resolver written in Skuld over UDP, and each is its own decision.
+- **`errno` is unreachable for the same reason**, so a network failure says
+  which step failed and not why.
+- **Out of scope, and still out:** TLS, so plain HTTP only; a server; async,
   non-blocking I/O and any event loop; connection pooling; HTTP/2.
-- **Open risk:** TLS is where this stops. Binding a system TLS library is a
-  milestone of its own and arguably a dependency policy decision, not a
-  technical one.
-- **Validation:** an integration test against a local socket that this
-  repository starts, never the network. `tests/pass` stays hermetic.
+- **Open risk, unchanged:** TLS is where this stops. Binding a system TLS
+  library is a milestone of its own and arguably a dependency policy decision,
+  not a technical one. `https://` is refused by name rather than attempted.
+- **Validated:** `cli/tests/network.rs` binds an ephemeral loopback port,
+  answers one request and stops, asserting both the program's output and the
+  request the client produced. `tests/pass/std_http_json` covers the library
+  halves without a socket, so they run under the sanitizers with everything
+  else. Nothing in the suite touches the network.
 
 ## A parallel track — tooling — Partly implemented
 
