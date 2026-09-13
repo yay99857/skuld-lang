@@ -38,12 +38,12 @@ func user_readable() -> u32 {
 
 pub enum FsError {
     // The path contained a NUL, so it could not become a C string.
-    Path(string)
-    OpenFailed(string)
-    ReadFailed(string)
-    WriteFailed(string)
+    Path(string),
+    OpenFailed(string),
+    ReadFailed(string),
+    WriteFailed(string),
     // The bytes read are not the UTF-8 `read_text` promised.
-    NotText(string)
+    NotText(string),
 }
 
 pub func describe(error: FsError) -> string {
