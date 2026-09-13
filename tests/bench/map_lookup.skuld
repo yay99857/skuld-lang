@@ -1,0 +1,104 @@
+// What a map buys over the array search it replaces, with the same inputs.
+//
+// Not part of the golden suite: it is a measurement, not an expectation, and
+// the numbers it produces belong to the machine that ran it. Build it and
+// time the two modes against each other:
+//
+//     skuld build tests/bench/map_lookup.skuld -o /tmp/map_lookup
+//     time /tmp/map_lookup linear 4000
+//     time /tmp/map_lookup map 4000
+//
+// Both modes do the same work: build an index of `n` distinct keys, then look
+// every key up once and add the values found. The only difference is how the
+// index is searched.
+
+import "std/map"
+import "std/os"
+
+func keys_of(count: int) -> []string {
+    var keys: []string = []
+    var index = 0
+    while index < count {
+        keys.push("key-${index}-name")
+        index += 1
+    }
+    return keys
+}
+
+// The array approach: a parallel pair of arrays, searched from the front.
+func linear_total(keys: []string) -> int {
+    var names: []string = []
+    var values: []int = []
+    var index = 0
+    while index < keys.len() {
+        names.push(keys[index])
+        values.push(index)
+        index += 1
+    }
+    var total = 0
+    index = 0
+    while index < keys.len() {
+        var position = 0
+        while position < names.len() {
+            if names[position] == keys[index] {
+                total += values[position]
+                position = names.len()
+            } else {
+                position += 1
+            }
+        }
+        index += 1
+    }
+    return total
+}
+
+func map_total(keys: []string) -> int {
+    let index_of = map.new_map()
+    var index = 0
+    while index < keys.len() {
+        index_of.set(keys[index], index)
+        index += 1
+    }
+    var total = 0
+    index = 0
+    while index < keys.len() {
+        if let value = index_of.get(keys[index]) {
+            total += value
+        }
+        index += 1
+    }
+    return total
+}
+
+func number(text: string) -> int {
+    var value = 0
+    var index = 0
+    while index < text.len() {
+        let byte = text[index]
+        if byte < 48 || byte > 57 {
+            return 0
+        }
+        value = value * 10 + (int(byte) - 48)
+        index += 1
+    }
+    return value
+}
+
+func main() {
+    let given = os.parameters() else problem {
+        print(os.describe(problem))
+        os.exit(2)
+        return
+    }
+    if given.len() != 2 {
+        print("usage: map_lookup <linear|map> <count>")
+        os.exit(2)
+        return
+    }
+    let keys = keys_of(number(given[1]))
+    if given[0] == "map" {
+        print(map_total(keys))
+        return
+    }
+    print(linear_total(keys))
+}

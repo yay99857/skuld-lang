@@ -1,0 +1,24 @@
+replaced 1
+alpha=2
+nothing missing
+len 3
+alpha
+beta
+gamma
+true false
+beta missing
+len 2
+alpha
+beta
+gamma
+many 500
+key0=0
+key499=998
+key500 missing
+ab=1
+ba=2
+=3
+pairs 3
+removed 500 left 0
+after=7
+values 1

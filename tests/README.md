@@ -10,6 +10,11 @@ compiler unit tests stay beside their modules and CLI behavior tests in
 | `fail/` | `skuld check` | Exits with failure, emits no stdout, and reports every diagnostic code in `<name>.err` |
 | `trap/` | `skuld check` then `skuld run` | Passes static checking, then aborts at runtime with the message in `<name>.err` |
 
+`bench/` is not part of the suite. It holds programs that measure something —
+`map_lookup.skuld` compares a map against the array search it replaces — and a
+measurement is not an expectation, so nothing runs them automatically. Each one
+says at the top how to build and time it.
+
 Add a fixture by dropping the `.skuld` source and its `.out`/`.err` expectation
 into the matching directory; the runner discovers them automatically.
 

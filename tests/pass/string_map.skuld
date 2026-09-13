@@ -1,0 +1,88 @@
+// `std/map`: insertion, replacement, removal, iteration order, collisions and
+// growth, with the keys managed by the reference counter throughout.
+
+import "std/map"
+
+func report(index: map.StringMap, key: string) {
+    if let value = index.get(key) {
+        print("${key}=${value}")
+    } else {
+        print("${key} missing")
+    }
+}
+
+func main() {
+    let index = map.new_map()
+
+    // A new key answers nothing; the same key again answers what it replaced.
+    if let previous = index.set("alpha", 1) {
+        print("alpha should have been new")
+    }
+    if let previous = index.set("alpha", 2) {
+        print("replaced ${previous}")
+    }
+    report(index, "alpha")
+    report(index, "nothing")
+
+    index.set("beta", 20)
+    index.set("gamma", 30)
+    print("len ${index.len()}")
+
+    // Iteration follows insertion, not the buckets.
+    for key in index.keys() {
+        print(key)
+    }
+
+    // Removal answers whether the key was there, and only once.
+    print("${index.remove("beta")} ${index.remove("beta")}")
+    report(index, "beta")
+    print("len ${index.len()}")
+
+    // A removed key coming back keeps its place in the order.
+    index.set("beta", 21)
+    for key in index.keys() {
+        print(key)
+    }
+
+    // Growth: enough keys to rehash several times, each still findable, and
+    // every value the one that was set last.
+    let many = map.new_map()
+    var i = 0
+    while i < 500 {
+        many.set("key${i}", i)
+        i += 1
+    }
+    i = 0
+    while i < 500 {
+        many.set("key${i}", i * 2)
+        i += 1
+    }
+    print("many ${many.len()}")
+    report(many, "key0")
+    report(many, "key499")
+    report(many, "key500")
+
+    // Keys that collide by construction: the hash is a polynomial over the
+    // bytes, so these two are not the same string but share a bucket often
+    // enough to exercise probing. Either way both must be found.
+    let pairs = map.new_map()
+    pairs.set("ab", 1)
+    pairs.set("ba", 2)
+    pairs.set("", 3)
+    report(pairs, "ab")
+    report(pairs, "ba")
+    report(pairs, "")
+    print("pairs ${pairs.len()}")
+
+    // Removing everything empties the map without losing the table.
+    var removed = 0
+    for key in many.keys() {
+        if many.remove(key) {
+            removed += 1
+        }
+    }
+    print("removed ${removed} left ${many.len()}")
+    many.set("after", 7)
+    report(many, "after")
+    print("values ${many.values().len()}")
+}
