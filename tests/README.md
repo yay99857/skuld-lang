@@ -62,3 +62,15 @@ sequences and code points above U+10FFFF. `string_bytes_and_slices` slices both
 literal and owned strings, and arrays of strings and classes, so the leak
 checker sees the copying path with managed elements. Out-of-range conversions,
 out-of-bounds indexes and reversed slices live in `trap/`.
+
+`json_parser` is M4's closing marker: a complete JSON parser written in pure
+Skuld over `[]u8`, with no help from the compiler. It exercises the whole
+milestone at once — byte indexing, slicing, sized integers, `bytes_to_string`,
+arrays, enums, `match`, `Option`, `Result` and `?` — and it carries its own
+failure cases, so both the accepted and the rejected documents are pinned by
+the same `.out`. Its numbers are printed through `%.17g`, so a value with no
+exact binary form shows the digits the double actually holds; that is the
+language's float rendering, not the parser's. Being a `pass/` fixture, it also
+runs under the address, leak and UB sanitizers, which is what makes it a
+memory-management test of recursive managed values rather than only a parsing
+test.

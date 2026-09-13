@@ -1,0 +1,657 @@
+// A complete JSON parser written in pure Skuld, over `[]u8`.
+//
+// This is M4's closing marker: it consumes bytes, not characters, and uses
+// only what the language provides — sized integers, byte indexing, arrays,
+// enums, `match`, `Option`, `Result` and `?`. The compiler knows nothing
+// about JSON; everything below is ordinary user code.
+//
+// `print` renders a float with `%.17g`, so a number whose decimal form has
+// no exact binary equivalent shows the digits the double actually holds.
+//
+// An object keeps its members as a list of key/value pairs in source order.
+// Skuld has no map type, and a hash map is a milestone of its own, so lookup
+// is linear and duplicate keys are preserved rather than merged.
+
+enum JsonValue {
+    Null
+    Bool(bool)
+    Number(float)
+    Text(string)
+    Items([]JsonValue)
+    Object([]Member)
+}
+
+// A class, so that `JsonValue` reaches itself only through a reference and an
+// array. A direct value cycle would be rejected by `E0103`.
+class Member {
+    key: string
+    value: JsonValue
+}
+
+enum JsonError {
+    UnexpectedEnd
+    UnexpectedByte(int)
+    InvalidLiteral(int)
+    InvalidNumber(int)
+    InvalidEscape(int)
+    InvalidUtf8(int)
+    DepthExceeded(int)
+    TrailingData(int)
+}
+
+func describe(error: JsonError) -> string {
+    match error {
+        JsonError.UnexpectedEnd: return "unexpected end of input"
+        JsonError.UnexpectedByte(at): return "unexpected byte at ${at}"
+        JsonError.InvalidLiteral(at): return "invalid literal at ${at}"
+        JsonError.InvalidNumber(at): return "invalid number at ${at}"
+        JsonError.InvalidEscape(at): return "invalid escape at ${at}"
+        JsonError.InvalidUtf8(at): return "invalid utf-8 at ${at}"
+        JsonError.DepthExceeded(at): return "nesting too deep at ${at}"
+        JsonError.TrailingData(at): return "trailing data at ${at}"
+    }
+}
+
+// Digits as floats. Integer-to-float conversion does not exist in the
+// language, so the ten values are written out and indexed.
+func digit_float(d: int) -> float {
+    let table = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
+    return table[d]
+}
+
+func hex_value(b: u8) -> int {
+    if b >= 48 && b <= 57 {
+        return int(b) - 48
+    }
+    if b >= 97 && b <= 102 {
+        return int(b) - 87
+    }
+    if b >= 65 && b <= 70 {
+        return int(b) - 55
+    }
+    return -1
+}
+
+// UTF-8 encoding of one code point, written with division and remainder
+// because Skuld has no bit operators.
+func encode_utf8(code: int) -> []u8 {
+    var out: []u8 = []
+    if code < 128 {
+        out.push(u8(code))
+        return out
+    }
+    // The expected width of a conversion reaches into its argument, so each
+    // byte is computed as an `int` first and converted on its own.
+    if code < 2048 {
+        let first = 192 + code / 64
+        let second = 128 + code % 64
+        out.push(u8(first))
+        out.push(u8(second))
+        return out
+    }
+    if code < 65536 {
+        let first = 224 + code / 4096
+        let second = 128 + (code / 64) % 64
+        let third = 128 + code % 64
+        out.push(u8(first))
+        out.push(u8(second))
+        out.push(u8(third))
+        return out
+    }
+    let first = 240 + code / 262144
+    let second = 128 + (code / 4096) % 64
+    let third = 128 + (code / 64) % 64
+    let fourth = 128 + code % 64
+    out.push(u8(first))
+    out.push(u8(second))
+    out.push(u8(third))
+    out.push(u8(fourth))
+    return out
+}
+
+class Parser {
+    bytes: []u8
+    pos: int
+    depth: int
+
+    at_end() -> bool {
+        return this.pos >= this.bytes.len()
+    }
+
+    // The current byte as an int, or -1 past the end, so that callers can
+    // compare without unwrapping an Option on every step.
+    peek_byte() -> int {
+        if this.at_end() {
+            return -1
+        }
+        return int(this.bytes[this.pos])
+    }
+
+    peek_digit() -> int {
+        let b = this.peek_byte()
+        if b >= 48 && b <= 57 {
+            return b - 48
+        }
+        return -1
+    }
+
+    advance() {
+        this.pos = this.pos + 1
+    }
+
+    skip_whitespace() {
+        loop {
+            let b = this.peek_byte()
+            if b == 32 || b == 9 || b == 10 || b == 13 {
+                this.advance()
+            } else {
+                break
+            }
+        }
+    }
+
+    // `true`, `false` and `null` are matched byte for byte.
+    keyword(word: string, value: JsonValue) -> Result<JsonValue, JsonError> {
+        let start = this.pos
+        let w = word.bytes()
+        var i = 0
+        while i < w.len() {
+            if this.pos + i >= this.bytes.len() {
+                return Err(JsonError.UnexpectedEnd)
+            }
+            if this.bytes[this.pos + i] != w[i] {
+                return Err(JsonError.InvalidLiteral(start))
+            }
+            i = i + 1
+        }
+        this.pos = this.pos + w.len()
+        return Ok(value)
+    }
+
+    // Four hex digits, plus the low half of a surrogate pair when the first
+    // escape is a high surrogate.
+    hex4() -> Result<int, JsonError> {
+        let start = this.pos
+        var value = 0
+        var i = 0
+        while i < 4 {
+            if this.at_end() {
+                return Err(JsonError.UnexpectedEnd)
+            }
+            let digit = hex_value(this.bytes[this.pos])
+            if digit < 0 {
+                return Err(JsonError.InvalidEscape(start))
+            }
+            value = value * 16 + digit
+            this.advance()
+            i = i + 1
+        }
+        return Ok(value)
+    }
+
+    unicode_escape() -> Result<int, JsonError> {
+        let start = this.pos
+        let first = this.hex4()?
+        if first < 55296 || first > 57343 {
+            return Ok(first)
+        }
+        if first > 56319 {
+            // A low surrogate with no high half before it.
+            return Err(JsonError.InvalidEscape(start))
+        }
+        if this.pos + 1 >= this.bytes.len() {
+            return Err(JsonError.UnexpectedEnd)
+        }
+        if this.bytes[this.pos] != 92 || this.bytes[this.pos + 1] != 117 {
+            return Err(JsonError.InvalidEscape(start))
+        }
+        this.advance()
+        this.advance()
+        let second = this.hex4()?
+        if second < 56320 || second > 57343 {
+            return Err(JsonError.InvalidEscape(start))
+        }
+        return Ok(65536 + (first - 55296) * 1024 + (second - 56320))
+    }
+
+    string_body() -> Result<string, JsonError> {
+        // The opening quote has already been seen.
+        this.advance()
+        var out: []u8 = []
+        loop {
+            if this.at_end() {
+                return Err(JsonError.UnexpectedEnd)
+            }
+            let b = this.bytes[this.pos]
+            if b == 34 {
+                this.advance()
+                break
+            }
+            if b < 32 {
+                return Err(JsonError.UnexpectedByte(this.pos))
+            }
+            if b == 92 {
+                let escape_at = this.pos
+                this.advance()
+                if this.at_end() {
+                    return Err(JsonError.UnexpectedEnd)
+                }
+                let e = this.bytes[this.pos]
+                this.advance()
+                if e == 34 {
+                    out.push(34)
+                } else if e == 92 {
+                    out.push(92)
+                } else if e == 47 {
+                    out.push(47)
+                } else if e == 98 {
+                    out.push(8)
+                } else if e == 102 {
+                    out.push(12)
+                } else if e == 110 {
+                    out.push(10)
+                } else if e == 114 {
+                    out.push(13)
+                } else if e == 116 {
+                    out.push(9)
+                } else if e == 117 {
+                    let code = this.unicode_escape()?
+                    for byte in encode_utf8(code) {
+                        out.push(byte)
+                    }
+                } else {
+                    return Err(JsonError.InvalidEscape(escape_at))
+                }
+            } else {
+                out.push(b)
+                this.advance()
+            }
+        }
+        // The bytes still have to be valid UTF-8: a raw 0xFF inside quotes is
+        // a well-formed JSON string and an invalid Skuld one.
+        match bytes_to_string(out) {
+            Ok(text): return Ok(text)
+            Err(reason): return Err(JsonError.InvalidUtf8(this.pos))
+        }
+    }
+
+    number() -> Result<JsonValue, JsonError> {
+        let start = this.pos
+        var negative = false
+        if this.peek_byte() == 45 {
+            negative = true
+            this.advance()
+        }
+        // Every digit feeds one mantissa; the fraction only records how far
+        // to divide at the end, which keeps the rounding to a single step.
+        var mantissa: float = 0.0
+        var scale: float = 1.0
+        let leading = this.peek_digit()
+        var count = 0
+        loop {
+            let d = this.peek_digit()
+            if d < 0 {
+                break
+            }
+            mantissa = mantissa * 10.0 + digit_float(d)
+            this.advance()
+            count = count + 1
+        }
+        if count == 0 {
+            return Err(JsonError.InvalidNumber(start))
+        }
+        // JSON forbids a leading zero on a multi-digit integer part.
+        if leading == 0 && count > 1 {
+            return Err(JsonError.InvalidNumber(start))
+        }
+        if this.peek_byte() == 46 {
+            this.advance()
+            var fraction = 0
+            loop {
+                let d = this.peek_digit()
+                if d < 0 {
+                    break
+                }
+                mantissa = mantissa * 10.0 + digit_float(d)
+                scale = scale * 10.0
+                this.advance()
+                fraction = fraction + 1
+            }
+            if fraction == 0 {
+                return Err(JsonError.InvalidNumber(start))
+            }
+        }
+        var value = mantissa / scale
+        let marker = this.peek_byte()
+        if marker == 101 || marker == 69 {
+            this.advance()
+            var exponent_negative = false
+            let sign = this.peek_byte()
+            if sign == 43 {
+                this.advance()
+            } else if sign == 45 {
+                exponent_negative = true
+                this.advance()
+            }
+            var exponent = 0
+            var digits = 0
+            loop {
+                let d = this.peek_digit()
+                if d < 0 {
+                    break
+                }
+                exponent = exponent * 10 + d
+                this.advance()
+                digits = digits + 1
+            }
+            if digits == 0 {
+                return Err(JsonError.InvalidNumber(start))
+            }
+            if exponent > 308 {
+                return Err(JsonError.InvalidNumber(start))
+            }
+            var i = 0
+            while i < exponent {
+                if exponent_negative {
+                    value = value / 10.0
+                } else {
+                    value = value * 10.0
+                }
+                i = i + 1
+            }
+        }
+        if negative {
+            value = -value
+        }
+        return Ok(JsonValue.Number(value))
+    }
+
+    array_body() -> Result<JsonValue, JsonError> {
+        this.depth = this.depth + 1
+        if this.depth > 32 {
+            return Err(JsonError.DepthExceeded(this.pos))
+        }
+        this.advance()
+        var items: []JsonValue = []
+        this.skip_whitespace()
+        if this.peek_byte() == 93 {
+            this.advance()
+            this.depth = this.depth - 1
+            return Ok(JsonValue.Items(items))
+        }
+        loop {
+            let item = this.value()?
+            items.push(item)
+            this.skip_whitespace()
+            let b = this.peek_byte()
+            if b == 44 {
+                this.advance()
+            } else if b == 93 {
+                this.advance()
+                break
+            } else if b < 0 {
+                return Err(JsonError.UnexpectedEnd)
+            } else {
+                return Err(JsonError.UnexpectedByte(this.pos))
+            }
+        }
+        this.depth = this.depth - 1
+        return Ok(JsonValue.Items(items))
+    }
+
+    object_body() -> Result<JsonValue, JsonError> {
+        this.depth = this.depth + 1
+        if this.depth > 32 {
+            return Err(JsonError.DepthExceeded(this.pos))
+        }
+        this.advance()
+        var members: []Member = []
+        this.skip_whitespace()
+        if this.peek_byte() == 125 {
+            this.advance()
+            this.depth = this.depth - 1
+            return Ok(JsonValue.Object(members))
+        }
+        loop {
+            this.skip_whitespace()
+            if this.peek_byte() != 34 {
+                if this.at_end() {
+                    return Err(JsonError.UnexpectedEnd)
+                }
+                return Err(JsonError.UnexpectedByte(this.pos))
+            }
+            let key = this.string_body()?
+            this.skip_whitespace()
+            if this.peek_byte() != 58 {
+                if this.at_end() {
+                    return Err(JsonError.UnexpectedEnd)
+                }
+                return Err(JsonError.UnexpectedByte(this.pos))
+            }
+            this.advance()
+            let value = this.value()?
+            members.push(new Member(key: key, value: value))
+            this.skip_whitespace()
+            let b = this.peek_byte()
+            if b == 44 {
+                this.advance()
+            } else if b == 125 {
+                this.advance()
+                break
+            } else if b < 0 {
+                return Err(JsonError.UnexpectedEnd)
+            } else {
+                return Err(JsonError.UnexpectedByte(this.pos))
+            }
+        }
+        this.depth = this.depth - 1
+        return Ok(JsonValue.Object(members))
+    }
+
+    value() -> Result<JsonValue, JsonError> {
+        this.skip_whitespace()
+        let b = this.peek_byte()
+        if b < 0 {
+            return Err(JsonError.UnexpectedEnd)
+        }
+        if b == 123 {
+            return this.object_body()
+        }
+        if b == 91 {
+            return this.array_body()
+        }
+        if b == 34 {
+            let text = this.string_body()?
+            return Ok(JsonValue.Text(text))
+        }
+        if b == 116 {
+            return this.keyword("true", JsonValue.Bool(true))
+        }
+        if b == 102 {
+            return this.keyword("false", JsonValue.Bool(false))
+        }
+        if b == 110 {
+            return this.keyword("null", JsonValue.Null)
+        }
+        if b == 45 || (b >= 48 && b <= 57) {
+            return this.number()
+        }
+        return Err(JsonError.UnexpectedByte(this.pos))
+    }
+}
+
+func parse(text: string) -> Result<JsonValue, JsonError> {
+    let parser = new Parser(bytes: text.bytes(), pos: 0, depth: 0)
+    let value = parser.value()?
+    parser.skip_whitespace()
+    if !parser.at_end() {
+        return Err(JsonError.TrailingData(parser.pos))
+    }
+    return Ok(value)
+}
+
+// A canonical rendering, so that the golden output shows the parsed shape
+// rather than the input text. Strings are emitted with the two escapes the
+// renderer itself could otherwise not round-trip.
+func render(value: JsonValue) -> string {
+    match value {
+        JsonValue.Null: return "null"
+        JsonValue.Bool(b): {
+            if b {
+                return "true"
+            }
+            return "false"
+        }
+        JsonValue.Number(n): return "${n}"
+        JsonValue.Text(s): return "\"${escape(s)}\""
+        JsonValue.Items(items): {
+            var out = "["
+            var first = true
+            for item in items {
+                if !first {
+                    out = out + ","
+                }
+                out = out + render(item)
+                first = false
+            }
+            return out + "]"
+        }
+        JsonValue.Object(members): {
+            var out = "{"
+            var first = true
+            for member in members {
+                if !first {
+                    out = out + ","
+                }
+                out = out + "\"" + escape(member.key) + "\":" + render(member.value)
+                first = false
+            }
+            return out + "}"
+        }
+    }
+}
+
+func escape(text: string) -> string {
+    var out: []u8 = []
+    for b in text.bytes() {
+        if b == 34 {
+            out.push(92)
+            out.push(34)
+        } else if b == 92 {
+            out.push(92)
+            out.push(92)
+        } else if b == 10 {
+            out.push(92)
+            out.push(110)
+        } else if b == 9 {
+            out.push(92)
+            out.push(116)
+        } else {
+            out.push(b)
+        }
+    }
+    match bytes_to_string(out) {
+        Ok(result): return result
+        Err(reason): return reason
+    }
+}
+
+// Linear member lookup, which is what a list of key/value pairs costs.
+func lookup(value: JsonValue, key: string) -> Option<JsonValue> {
+    match value {
+        JsonValue.Object(members): {
+            for member in members {
+                if member.key == key {
+                    return member.value
+                }
+            }
+            return null
+        }
+        _: return null
+    }
+}
+
+func show(source: string) {
+    match parse(source) {
+        Ok(value): print(render(value))
+        Err(error): print("error: ${describe(error)}")
+    }
+}
+
+func main() {
+    show("null")
+    show("true")
+    show("false")
+    show("0")
+    show("42")
+    show("-17")
+    show("3.14")
+    show("-0.5")
+    show("2e3")
+    show("1.5E+2")
+    show("6250.0e-2")
+    show("\"\"")
+    show("\"hello\"")
+    show("\"tab\\tquote\\\"slash\\\\end\"")
+    show("\"caf\\u00e9\"")
+    show("\"\\ud83d\\ude00\"")
+    show("\"olá, mundo\"")
+    show("[]")
+    show("{}")
+    show("[1, 2, [3, [4]], {\"k\": [true, null]}]")
+    show("  {\n  \"name\" : \"skuld\" ,\n  \"tags\" : [ \"native\" , \"typed\" ] ,\n  \"version\" : 0.5 ,\n  \"stable\" : false\n}  ")
+
+    // Errors.
+    show("")
+    show("   ")
+    show("tru")
+    show("nul")
+    show("[1, 2")
+    show("[1 2]")
+    show("{\"a\" 1}")
+    show("{\"a\": 1,}")
+    show("{a: 1}")
+    show("\"unterminated")
+    show("\"bad \\q escape\"")
+    show("\"\\u00\"")
+    show("\"\\ud83d\"")
+    show("01")
+    show("1.")
+    show("-")
+    show("1e")
+    show("1e999")
+    show("[1] extra")
+    show("@")
+
+    // Nesting deeper than the parser accepts.
+    var deep = ""
+    var i = 0
+    while i < 40 {
+        deep = deep + "["
+        i = i + 1
+    }
+    i = 0
+    while i < 40 {
+        deep = deep + "]"
+        i = i + 1
+    }
+    show(deep)
+
+    // Reading a value back out of a parsed document.
+    match parse("{\"host\": \"localhost\", \"port\": 8080, \"tls\": false}") {
+        Ok(document): {
+            if let port = lookup(document, "port") {
+                print("port ${render(port)}")
+            }
+            if let host = lookup(document, "host") {
+                print("host ${render(host)}")
+            }
+            if let missing = lookup(document, "absent") {
+                print("unreachable ${render(missing)}")
+            } else {
+                print("absent key is absent")
+            }
+        }
+        Err(error): print("error: ${describe(error)}")
+    }
+}
