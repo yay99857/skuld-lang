@@ -179,21 +179,27 @@ static inline void *skuld_allocate(size_t base, size_t count, size_t element, si
     if (value == NULL) skuld_fail("out of memory", byte);
     return value;
 }
+/* One comparison covers both ends: a negative index becomes an enormous
+ * unsigned value, which is already past any length. Clang was folding the two
+ * into one anyway — measuring showed no difference — so this is for the reader
+ * and for compilers that do not. */
 static inline size_t skuld_index(int64_t index, size_t length, size_t byte) {
-    if (index < 0 || (uint64_t)index >= length) skuld_fail("array index out of bounds", byte);
+    if ((uint64_t)index >= length) skuld_fail("array index out of bounds", byte);
     return (size_t)index;
 }
 
 /* A half-open range, like every other range in the language: `start == end`
  * is the empty slice and `end == length` is the whole of it. */
 static inline void skuld_slice_range(int64_t start, int64_t end, size_t length, size_t byte) {
+    /* All three tests are load-bearing: `-3..2` passes the other two and would
+     * slice five bytes out of a three-byte string. */
     if (start < 0 || end < start || (uint64_t)end > length)
         skuld_fail("slice out of bounds", byte);
 }
 
 static inline unsigned char skuld_string_byte(skuld_string value, int64_t index, size_t byte) {
-    if (index < 0 || (uint64_t)index >= value.len)
-        skuld_fail("string index out of bounds", byte);
+    /* Negative wraps past the length, as in `skuld_index`. */
+    if ((uint64_t)index >= value.len) skuld_fail("string index out of bounds", byte);
     return value.data[(size_t)index];
 }
 
@@ -285,8 +291,9 @@ static inline void *skuld_array_reserve(void *data, size_t *capacity,
     return grown;
 }
 static inline size_t skuld_insert_index(int64_t index, size_t length, size_t byte) {
-    if (index < 0 || (uint64_t)index > length)
-        skuld_fail("array insertion index out of bounds", byte);
+    /* One past the end is where an insertion is allowed to land; negative
+     * still wraps past it. */
+    if ((uint64_t)index > length) skuld_fail("array insertion index out of bounds", byte);
     return (size_t)index;
 }
 

@@ -1,0 +1,8 @@
+func main() {
+    let text = "abc"
+    // A negative start passes both of the other two checks: `end < start` is
+    // false and `end <= length` is true, so this is the case that keeps the
+    // third one in the runtime.
+    let part = text[-3..2]
+    print(part.len())
+}
