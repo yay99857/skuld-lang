@@ -45,6 +45,10 @@ const MODULES: &[(&str, &[(&str, &str)])] = &[
         )],
     ),
     (
+        "std/map",
+        &[("std/map/map.skuld", include_str!("../../std/map/map.skuld"))],
+    ),
+    (
         "std/net",
         &[(
             "std/net/socket.skuld",

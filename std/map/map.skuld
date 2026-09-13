@@ -1,0 +1,236 @@
+// A hash map from `string` to `int`, written in Skuld.
+//
+// Why this shape, and not a general `Map<K, V>`: Skuld has no generics, and
+// adding them is a milestone of its own that nothing has authorized. A map
+// from a string to an integer is the one that a program here actually needs —
+// an index. The value is a position, a count or an identifier, and the thing
+// being indexed stays in the array that already holds it, which is how a JSON
+// object keeps its order and its duplicates while still being searchable.
+//
+// Iteration is in insertion order. A hash map has no natural order, so the
+// choice is between "whatever the buckets happen to hold", which changes when
+// the table resizes, and the order the caller built. Predictable output is
+// worth more here than the memory the key list costs.
+
+// One key and its value. A class, so the table can hold references to entries
+// and hand them back without copying.
+class Entry {
+    key: string
+    value: int
+    // A removed entry keeps its slot so the insertion order of the rest is
+    // untouched; `len()` counts the living ones.
+    alive: bool = true
+}
+
+// An empty bucket. The table stores an index into `entries`, so -1 is the one
+// value that cannot be an index.
+func empty() -> int {
+    return -1
+}
+
+pub class StringMap {
+    // Every entry ever inserted, in insertion order.
+    entries: []Entry = []
+    // Open addressing: each bucket holds an index into `entries`, or -1.
+    buckets: []int = []
+    // Living entries, which is what `len()` reports.
+    count: int = 0
+    // Entries that are still taking a slot, living or not. The table grows on
+    // this, since a removed entry's bucket is still probed through.
+    used: int = 0
+
+    len() -> int {
+        return this.count
+    }
+
+    // The value a key was last set to, or nothing.
+    get(key: string) -> Option<int> {
+        let slot = this.find(key)
+        if slot < 0 {
+            return null
+        }
+        let index = this.buckets[slot]
+        if index < 0 {
+            return null
+        }
+        let entry = this.entries[index]
+        if entry.alive == false {
+            return null
+        }
+        return entry.value
+    }
+
+    has(key: string) -> bool {
+        if let found = this.get(key) {
+            return true
+        }
+        return false
+    }
+
+    // Insert or replace. Answers what was there before, if anything, so a
+    // caller counting occurrences needs one call rather than two.
+    set(key: string, value: int) -> Option<int> {
+        this.grow_if_needed()
+        let slot = this.find(key)
+        if slot >= 0 {
+            let index = this.buckets[slot]
+            if index >= 0 {
+                let entry = this.entries[index]
+                if entry.alive {
+                    let previous = entry.value
+                    entry.value = value
+                    return previous
+                }
+                // A removed key coming back takes its old entry, and so its
+                // old place in the iteration order. Giving it a fresh one
+                // would leave two entries with the same key in the list.
+                entry.alive = true
+                entry.value = value
+                this.count += 1
+                return null
+            }
+        }
+        let entry = new Entry(key: key, value: value)
+        this.entries.push(entry)
+        let index = this.entries.len() - 1
+        let free = this.probe(key)
+        this.buckets[free] = index
+        this.count += 1
+        this.used += 1
+        return null
+    }
+
+    // Remove a key, answering whether it was there.
+    remove(key: string) -> bool {
+        let slot = this.find(key)
+        if slot < 0 {
+            return false
+        }
+        let index = this.buckets[slot]
+        if index < 0 {
+            return false
+        }
+        let entry = this.entries[index]
+        if entry.alive == false {
+            return false
+        }
+        entry.alive = false
+        this.count -= 1
+        return true
+    }
+
+    // The living keys, in the order they were first inserted.
+    keys() -> []string {
+        var found: []string = []
+        for entry in this.entries {
+            if entry.alive {
+                found.push(entry.key)
+            }
+        }
+        return found
+    }
+
+    // The value beside each key of `keys()`, at the same position.
+    values() -> []int {
+        var found: []int = []
+        for entry in this.entries {
+            if entry.alive {
+                found.push(entry.value)
+            }
+        }
+        return found
+    }
+
+    // The bucket holding this key, or -1. A bucket holding -1 ends the probe:
+    // nothing beyond it was ever displaced past this point.
+    find(key: string) -> int {
+        if this.buckets.len() == 0 {
+            return -1
+        }
+        var slot = hash(key) % this.buckets.len()
+        var steps = 0
+        while steps < this.buckets.len() {
+            let index = this.buckets[slot]
+            if index == empty() {
+                return -1
+            }
+            if this.entries[index].key == key {
+                return slot
+            }
+            slot = (slot + 1) % this.buckets.len()
+            steps += 1
+        }
+        return -1
+    }
+
+    // The slot a new key belongs in: the first empty one on its probe path.
+    probe(key: string) -> int {
+        let size = this.buckets.len()
+        var slot = hash(key) % size
+        var steps = 0
+        while steps < size {
+            if this.buckets[slot] == empty() {
+                return slot
+            }
+            slot = (slot + 1) % size
+            steps += 1
+        }
+        // The table is grown before every insertion, so a full probe cannot
+        // happen; answering 0 keeps the function total rather than trapping.
+        return 0
+    }
+
+    // Keep the table under 70% occupied, counting removed entries, which are
+    // still probed through.
+    grow_if_needed() {
+        let size = this.buckets.len()
+        if size > 0 && (this.used + 1) * 10 < size * 7 {
+            return
+        }
+        var next = 16
+        if size > 0 {
+            next = size * 2
+        }
+        // A rehash is also the only time removed entries are really dropped.
+        var living: []Entry = []
+        for entry in this.entries {
+            if entry.alive {
+                living.push(entry)
+            }
+        }
+        var fresh: []int = []
+        var index = 0
+        while index < next {
+            fresh.push(empty())
+            index += 1
+        }
+        this.buckets = fresh
+        this.entries = living
+        this.used = living.len()
+        var position = 0
+        while position < this.entries.len() {
+            let slot = this.probe(this.entries[position].key)
+            this.buckets[slot] = position
+            position += 1
+        }
+    }
+}
+
+pub func new_map() -> StringMap {
+    return new StringMap()
+}
+
+// A polynomial hash over the key's bytes, kept under 2^30 so the multiply
+// cannot overflow an `int` and the result is always positive. Skuld has no
+// bitwise operators, so the usual FNV-1a — which needs a xor — is not
+// available; this is the arithmetic one, and it is not meant to resist a
+// hostile key set.
+pub func hash(key: string) -> int {
+    var value = 5381
+    var index = 0
+    while index < key.len() {
+        value = (value * 33 + int(key[index])) % 1073741824
+        index += 1
+    }
+    return value
+}
