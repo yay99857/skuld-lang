@@ -48,10 +48,9 @@ impl Json {
         }
     }
 
-    /// An integer, which is the only numeric shape LSP uses for ids. The
-    /// server passes an id through untouched, so nothing outside the tests
-    /// reads one back; it is gated rather than kept as an unused accessor.
-    #[cfg(test)]
+    /// An integer, which is the only numeric shape LSP uses: request ids, and
+    /// the line and character of a position. A request id passes through
+    /// untouched, so this reads the positions completion is asked about.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Json::Number(value) if value.fract() == 0.0 => Some(*value as i64),

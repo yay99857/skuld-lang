@@ -6,6 +6,7 @@
 //! completion — those want the resolver's declaration and use tables, which is
 //! a later stage, not a bigger version of this one.
 
+use crate::complete;
 use crate::json::Json;
 use crate::rpc::{self, ReadError};
 use crate::text::{Positions, path_to_uri, uri_to_path};
@@ -30,6 +31,10 @@ const SYNC_FULL: f64 = 1.0;
 pub struct Server {
     /// Open buffers by path, which may differ from what is on disk.
     open: BTreeMap<String, String>,
+    /// The last check of each document that succeeded. Completion answers
+    /// from it, because the moment a user wants a suggestion is the moment
+    /// the file does not parse.
+    checked: BTreeMap<String, skuld_compiler::type_checker::TypedProgram>,
     /// Set once `shutdown` arrives, so `exit` can report the right code.
     shutting_down: bool,
 }
@@ -44,6 +49,7 @@ impl Server {
     pub fn new() -> Self {
         Self {
             open: BTreeMap::new(),
+            checked: BTreeMap::new(),
             shutting_down: false,
         }
     }
@@ -85,6 +91,12 @@ impl Server {
             (Some("shutdown"), Some(id)) => {
                 self.shutting_down = true;
                 respond(output, id.clone(), Json::Null);
+                None
+            }
+
+            (Some("textDocument/completion"), Some(id)) => {
+                let items = self.completions(message);
+                respond(output, id.clone(), items);
                 None
             }
 
@@ -191,6 +203,16 @@ impl Server {
             open: &self.open,
         };
         let result = skuld_compiler::check_program(&name, &source, &mut loader);
+        // A failed check leaves the previous good one in place: that is what
+        // completion answers from while the file is mid-edit.
+        let result = match result {
+            Ok(typed) => {
+                self.checked.insert(path.to_string(), typed);
+                Ok(())
+            }
+            Err(errors) => Err(errors),
+        };
+
         // Whether a program has an entrypoint is a property of the program,
         // and an editor showing one file cannot know which program that file
         // belongs to. A module file, or anything under `std/`, would otherwise
@@ -242,6 +264,47 @@ impl Server {
         for (file, diagnostics) in by_file {
             publish(output, &file, Json::Array(diagnostics));
         }
+    }
+
+    /// Answer `textDocument/completion` from the last good check of the
+    /// document, which may be a moment behind the text on screen.
+    fn completions(&self, message: &Json) -> Json {
+        let Some(path) = document_path(message) else {
+            return Json::Array(Vec::new());
+        };
+        let Some(source) = self.open.get(&path) else {
+            return Json::Array(Vec::new());
+        };
+        // A negative line or character would be a client bug; clamping to zero
+        // answers at the start of the file instead of refusing.
+        let line = message
+            .path(&["params", "position", "line"])
+            .and_then(Json::as_i64)
+            .unwrap_or(0)
+            .max(0) as usize;
+        let character = message
+            .path(&["params", "position", "character"])
+            .and_then(Json::as_i64)
+            .unwrap_or(0)
+            .max(0) as usize;
+        let offset =
+            Positions::new(source.clone()).offset(crate::text::Position { line, character });
+        let items = complete::at(source, offset, self.checked.get(&path));
+        Json::Array(
+            items
+                .into_iter()
+                .map(|item| {
+                    let mut fields = vec![
+                        ("label", Json::string(&item.label)),
+                        ("kind", Json::number(item.kind)),
+                    ];
+                    if let Some(detail) = &item.detail {
+                        fields.push(("detail", Json::string(detail)));
+                    }
+                    Json::object(fields)
+                })
+                .collect(),
+        )
     }
 }
 
@@ -310,6 +373,17 @@ fn initialize_result() -> Json {
             // `Positions` produces, so saying so keeps the two in step even
             // if a client would have preferred something else.
             ("positionEncoding", Json::string("utf-16")),
+            (
+                "completionProvider",
+                Json::object([
+                    // Without this the client never asks after a `.`, which is
+                    // where a member list is the whole point.
+                    ("triggerCharacters", Json::Array(vec![Json::string(".")])),
+                    // Every item is complete when it is sent; there is nothing
+                    // expensive to fill in on a second request.
+                    ("resolveProvider", Json::Bool(false)),
+                ]),
+            ),
         ]),
     )])
 }

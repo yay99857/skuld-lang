@@ -48,6 +48,31 @@ impl Positions {
     }
 }
 
+impl Positions {
+    /// The byte offset of a position. A line or a character past the end
+    /// clamps, so a client that counted differently cannot make this panic or
+    /// slice a string in the middle of a character.
+    pub fn offset(&self, position: Position) -> usize {
+        let Some(&start) = self.line_starts.get(position.line) else {
+            return self.text.len();
+        };
+        let end = self
+            .line_starts
+            .get(position.line + 1)
+            .map_or(self.text.len(), |&next| next);
+        let mut offset = start;
+        let mut units = 0;
+        for character in self.text[start..end].chars() {
+            if units >= position.character {
+                break;
+            }
+            units += character.len_utf16();
+            offset += character.len_utf8();
+        }
+        offset.min(end)
+    }
+}
+
 /// Decode a `file:` URI into a filesystem path.
 ///
 /// Only `file:` is accepted: a language server that followed any other scheme

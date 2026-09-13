@@ -351,3 +351,102 @@ fn editing_a_module_refreshes_the_files_that_import_it() {
         "the importing file was never re-checked: {out:?}"
     );
 }
+
+fn did_change(path: &str, text: &str) -> Json {
+    Json::object([
+        ("jsonrpc", Json::string("2.0")),
+        ("method", Json::string("textDocument/didChange")),
+        (
+            "params",
+            Json::object([
+                (
+                    "textDocument",
+                    Json::object([("uri", Json::string(path_to_uri(path)))]),
+                ),
+                (
+                    "contentChanges",
+                    Json::Array(vec![Json::object([("text", Json::string(text))])]),
+                ),
+            ]),
+        ),
+    ])
+}
+
+fn completion_at(path: &str, line: i64, character: i64) -> Json {
+    Json::object([
+        ("jsonrpc", Json::string("2.0")),
+        ("id", Json::number(7.0)),
+        ("method", Json::string("textDocument/completion")),
+        (
+            "params",
+            Json::object([
+                (
+                    "textDocument",
+                    Json::object([("uri", Json::string(path_to_uri(path)))]),
+                ),
+                (
+                    "position",
+                    Json::object([
+                        ("line", Json::number(line as f64)),
+                        ("character", Json::number(character as f64)),
+                    ]),
+                ),
+            ]),
+        ),
+    ])
+}
+
+/// The labels of the completion response, in the order they were sent.
+fn completion_labels(messages: &[Json]) -> Vec<String> {
+    messages
+        .iter()
+        .rfind(|message| message.get("id").and_then(Json::as_i64) == Some(7))
+        .and_then(|message| message.get("result"))
+        .and_then(Json::as_array)
+        .expect("a completion response")
+        .iter()
+        .filter_map(|item| item.get("label").and_then(Json::as_str))
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn the_server_advertises_and_answers_completion() {
+    let path = "/tmp/skuld-lsp-test/enum.skuld";
+    // The file as it last checked, then the same file with `Command.` being
+    // typed into it — which does not parse, as a half-written line rarely does.
+    let checked = "enum Command {\n    Quit\n    Echo(string)\n}\nfunc main() {\n}\n";
+    let typing = "enum Command {\n    Quit\n    Echo(string)\n}\nfunc main() {\n    Command.\n}\n";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, checked),
+        did_change(path, typing),
+        // Line 5 is `    Command.`; the cursor sits after the dot.
+        completion_at(path, 5, 12),
+    ]);
+    let capabilities = out[0].path(&["result", "capabilities"]).expect("result");
+    assert!(
+        capabilities
+            .path(&["completionProvider", "triggerCharacters"])
+            .and_then(Json::as_array)
+            .is_some_and(|characters| characters.iter().any(|c| c.as_str() == Some("."))),
+        "a client only asks after a `.` if the server says to: {capabilities:?}"
+    );
+    assert_eq!(completion_labels(&out), ["Quit", "Echo"]);
+}
+
+#[test]
+fn completion_answers_from_the_last_good_check_while_the_file_is_broken() {
+    // The moment a user wants a suggestion is the moment the file does not
+    // parse, so an unparseable buffer must not empty the list.
+    let path = "/tmp/skuld-lsp-test/broken.skuld";
+    let good = "class User {\n    name: string\n}\nfunc main() {\n    let user = new User(name: \"Ada\")\n    print(user.name)\n}\n";
+    let broken = format!("{good}func (");
+    let (out, _) = converse(&[
+        did_open(path, good),
+        did_change(path, &broken),
+        // Still on line 5, `    print(user.name)`, after the dot.
+        completion_at(path, 5, 15),
+    ]);
+    assert_eq!(completion_labels(&out), ["name"]);
+}

@@ -4,6 +4,7 @@
 //! here rather than taken from a crate, which keeps the project's rule of no
 //! external dependencies: rust-analyzer, clangd and gopls each do the same.
 
+mod complete;
 mod json;
 mod rpc;
 mod server;
