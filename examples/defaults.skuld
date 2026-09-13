@@ -1,0 +1,38 @@
+// Field defaults — a field written with `= expression` may be left out when
+// the object is made, and the expression runs at every construction.
+//
+// There is no `undefined` and no zero value behind this: a field either has a
+// default written by its author or has to be supplied, so an object is always
+// completely initialized. The default is an ordinary expression evaluated
+// where the object is built, which is why it cannot mention `this` or another
+// field — there is no object yet to ask.
+
+class Account {
+    owner: string = "unnamed"
+    tags: []string = []
+    balance: int = 0
+
+    describe() -> string {
+        return "${this.owner}: ${this.balance} (${this.tags.len()} tags)"
+    }
+}
+
+struct Point {
+    x: int = 0
+    y: int = 0
+}
+
+func main() {
+    print(new Account().describe())
+    print(new Account(owner: "Ada", balance: 120).describe())
+
+    // Each object gets its own default, so the two arrays are not shared.
+    let first = new Account()
+    let second = new Account()
+    first.tags.push("savings")
+    print("${first.tags.len()} and ${second.tags.len()}")
+
+    let origin = Point {}
+    let up = Point { y: 3 }
+    print("(${origin.x}, ${origin.y}) (${up.x}, ${up.y})")
+}
