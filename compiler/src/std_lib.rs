@@ -63,6 +63,13 @@ const MODULES: &[(&str, &[(&str, &str)])] = &[
         )],
     ),
     (
+        "std/testing",
+        &[(
+            "std/testing/testing.skuld",
+            include_str!("../../std/testing/testing.skuld"),
+        )],
+    ),
+    (
         "std/utf8",
         &[(
             "std/utf8/decode.skuld",

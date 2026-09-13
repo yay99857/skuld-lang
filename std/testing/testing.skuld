@@ -1,0 +1,47 @@
+// Assertions for `skuld test`.
+//
+// A failing assertion prints what went wrong and stops the process with a
+// non-zero status. That is the whole mechanism, and it is the honest one:
+// Skuld has no exceptions and no recoverable panic, so a test cannot fail
+// and let the next one run inside the same process. The runner therefore
+// reads the output to see how far the suite got.
+
+import "std/os"
+
+// One test passed. The runner looks for exactly this line, and the flush is
+// what makes it survive a later abort.
+pub func passed(name: string) {
+    print("skuld-test: ok ${name}")
+    os.flush()
+}
+
+// Stop the suite, saying why.
+pub func fail(message: string) {
+    print("skuld-test: fail ${message}")
+    os.flush()
+    os.exit(1)
+}
+
+pub func check(condition: bool, message: string) {
+    if condition == false {
+        fail(message)
+    }
+}
+
+pub func equal_int(actual: int, expected: int, label: string) {
+    if actual != expected {
+        fail("${label}: expected ${expected}, got ${actual}")
+    }
+}
+
+pub func equal_text(actual: string, expected: string, label: string) {
+    if actual != expected {
+        fail("${label}: expected `${expected}`, got `${actual}`")
+    }
+}
+
+pub func equal_bool(actual: bool, expected: bool, label: string) {
+    if actual != expected {
+        fail("${label}: expected ${expected}, got ${actual}")
+    }
+}

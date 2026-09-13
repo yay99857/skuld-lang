@@ -328,6 +328,11 @@ int64_t sk_arg_copy(int64_t index, unsigned char *out, uint64_t capacity) {
     return len;
 }
 
+/* Flush what has been printed so far. A test runner needs this: a program
+ * that aborts loses whatever is still sitting in the buffer, and the line
+ * that says which test was running is exactly what must survive. */
+void sk_flush(void) { fflush(stdout); }
+
 /* Exit with a status. The generated `main` flushes stdout before returning;
  * a program that leaves early has to flush here, or its output would be lost
  * in a pipe. Nothing is released: the process is ending. */

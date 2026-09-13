@@ -11,6 +11,7 @@ unsafe extern "C" {
     func sk_arg_count() -> i64
     func sk_arg_len(index: i64) -> i64
     func sk_arg_copy(index: i64, out: *u8, capacity: u64) -> i64
+    func sk_flush() -> void
     func sk_exit(code: i64) -> void
 }
 
@@ -66,6 +67,13 @@ pub func parameters() -> Result<[]string, OsError> {
         return Ok(all)
     }
     return Ok(all[1..all.len()])
+}
+
+// Write out what has been printed so far. Output is buffered, so a program
+// that is about to abort — or about to hand over to something else — flushes
+// first or loses it.
+pub func flush() {
+    sk_flush()
 }
 
 // Stop now with this status. Output is flushed first; nothing is released,
