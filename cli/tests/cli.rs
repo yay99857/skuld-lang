@@ -132,3 +132,43 @@ fn resolve_errors_suppress_partial_output() {
     }
     std::fs::remove_file(path).expect("cleanup");
 }
+
+/// A build reads only what is under its own root. Path syntax is checked by
+/// the compiler, but a symlink is resolved by the filesystem and can point
+/// anywhere, so the loader is what has to hold the line.
+#[cfg(unix)]
+#[test]
+fn a_module_linked_out_of_the_program_root_is_not_read() {
+    use std::{env, fs, os::unix::fs::symlink};
+
+    let base = env::temp_dir().join(format!("skuld-root-{}", std::process::id()));
+    let root = base.join("root");
+    let outside = base.join("outside").join("secret");
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&root).expect("root");
+    fs::create_dir_all(&outside).expect("outside");
+    fs::write(
+        outside.join("s.skuld"),
+        "pub func leaked() -> int {\n    return 42\n}\n",
+    )
+    .expect("module source");
+    symlink(&outside, root.join("lib")).expect("symlink");
+    let entry = root.join("main.skuld");
+    fs::write(
+        &entry,
+        "import \"lib\"\nfunc main() { print(lib.leaked()) }\n",
+    )
+    .expect("entry source");
+
+    let output = cli().arg("check").arg(&entry).output().expect("start CLI");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "a linked-out module must not compile, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("outside the program root"),
+        "expected a containment diagnostic, got:\n{stderr}"
+    );
+    let _ = fs::remove_dir_all(&base);
+}

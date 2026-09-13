@@ -219,7 +219,17 @@ struct Directories {
 
 impl ModuleLoader for Directories {
     fn load(&mut self, path: &str) -> Result<Vec<(String, String)>, String> {
-        let directory = self.root.join(path);
+        // The compiler already rejected `..` and absolute paths, but that is a
+        // rule about how a path is written. A symlink is resolved by the
+        // filesystem and can still point anywhere, so containment in the
+        // program root is verified after resolution, where it can be enforced.
+        let root = fs::canonicalize(&self.root)
+            .map_err(|error| format!("cannot resolve the program root: {error}"))?;
+        let directory =
+            fs::canonicalize(self.root.join(path)).map_err(|error| error.to_string())?;
+        if !directory.starts_with(&root) {
+            return Err(outside(path, &root));
+        }
         let entries = fs::read_dir(&directory).map_err(|error| error.to_string())?;
         let mut files = Vec::new();
         for entry in entries {
@@ -231,8 +241,17 @@ impl ModuleLoader for Directories {
             {
                 continue;
             }
+            let file = match fs::canonicalize(&file) {
+                Ok(file) => file,
+                // A broken link is not a source file; skip it rather than
+                // failing a module that is otherwise well formed.
+                Err(_) => continue,
+            };
             if !file.is_file() {
                 continue;
+            }
+            if !file.starts_with(&root) {
+                return Err(outside(path, &root));
             }
             let text = fs::read_to_string(&file)
                 .map_err(|error| format!("cannot read `{}`: {error}", file.display()))?;
@@ -244,4 +263,12 @@ impl ModuleLoader for Directories {
         files.sort_by(|left, right| left.0.cmp(&right.0));
         Ok(files)
     }
+}
+
+fn outside(path: &str, root: &Path) -> String {
+    format!(
+        "`{path}` resolves outside the program root at `{}`; a build reads only \
+         what is under its own root, and a link out of it is not followed",
+        root.display()
+    )
 }
