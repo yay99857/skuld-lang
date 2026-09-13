@@ -392,25 +392,10 @@ impl Server {
         let Some((source, offset, typed)) = self.position_context(message) else {
             return Json::Null;
         };
-        let Some((file, span)) = query::definition(source, offset, typed) else {
-            return Json::Null;
-        };
-        let Some(declaring) = typed.program().files.get(file.0) else {
-            return Json::Null;
-        };
-        let Some(target) = file_path(&path, typed, file) else {
-            return Json::Null;
-        };
-        let positions = Positions::new(declaring.source.clone());
-        let start = positions.position(span.start);
-        let end = positions.position(span.end);
-        Json::object([
-            ("uri", Json::string(path_to_uri(&target))),
-            (
-                "range",
-                Json::object([("start", position_json(start)), ("end", position_json(end))]),
-            ),
-        ])
+        match query::definition(source, offset, typed) {
+            Some((file, span)) => self.location(&path, typed, file, span),
+            None => Json::Null,
+        }
     }
 
     /// Answer `textDocument/typeDefinition` with where the type of the thing
