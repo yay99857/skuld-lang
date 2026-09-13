@@ -98,6 +98,37 @@ Everything after `emit-c` is clang at `-O2`: the compiler's own share of a
 build is under 1%. A faster edit-compile loop is a matter of what is asked of
 clang, not of the compiler.
 
+## What was measured and left alone
+
+Four things looked like optimisations and were not. They are here so nobody
+spends the afternoon on them twice.
+
+**Backend flags.** `-O3`, `-flto` and `-march=native` are all within 3% of
+`-O2` on every benchmark. A generated program is one translation unit, so
+clang already sees everything; there is nothing for link-time optimisation to
+join up.
+
+**String interpolation.** `"${name}-${index}: value=${index * 2}"` compiles to
+a chain of concatenations, each allocating. Building 300000 such lines takes
+**30 ms** in Skuld, **65 ms** through Rust's `format!` and **72 ms** through
+Go's `Sprintf`. Replacing the chain with a single sized allocation would add a
+runtime primitive to beat a number that is already the best of the three.
+
+**Initial array capacity.** An array's buffer starts at four elements and
+doubles. Starting at eight is worth 10% on JSON and 5% on strings — and takes
+the JSON benchmark's peak memory from 14 MB to 26 MB. Doubling the memory a
+program holds to save a tenth of its time is not a trade this language should
+make quietly, so the policy stays as it is and the numbers are recorded here
+for whoever revisits it.
+
+**Where the time actually goes.** A 61 KB document costs 21219 mallocs and
+11529 reallocs to parse — one allocation per 1.8 bytes of input — because
+every value, every member and every string is its own counted object. At
+roughly 32 ns each that is most of the 211 ms. Making it cheaper means pooling
+allocations, which is a memory-management change, and M18 put that out of
+scope deliberately. It is the next real question, and it needs its own
+decision rather than an afternoon.
+
 ## Portability
 
 The second native target is **i686-linux-gnu** — the same machine and libc with
