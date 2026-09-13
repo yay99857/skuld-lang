@@ -1,0 +1,6 @@
+// Importing binds a qualifier, never the names themselves.
+import "import_private/lib"
+
+func main() {
+    print(exported())
+}

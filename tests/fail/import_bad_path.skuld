@@ -1,0 +1,5 @@
+// A path is made of plain name segments, so it cannot climb out of the
+// program root or name an absolute directory.
+import "../escape"
+
+func main() { }

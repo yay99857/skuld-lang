@@ -1,0 +1,5 @@
+import "import_private/lib"
+
+func main() {
+    print(lib.absent())
+}

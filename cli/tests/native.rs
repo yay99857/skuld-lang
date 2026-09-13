@@ -204,9 +204,17 @@ fn sanitized(source: &str, expected: &[u8]) {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    sanitized_c(&output.stdout, expected);
+}
+
+/// The same, starting from C that has already been emitted. A fixture made of
+/// modules has to be compiled where its sources live, so it cannot be copied
+/// into a scratch directory first.
+fn sanitized_c(emitted: &[u8], expected: &[u8]) {
+    let fixture = Fixture::new("func main() {}");
     let c = fixture.dir.join("generated.c");
     let binary = fixture.dir.join("standalone");
-    fs::write(&c, &output.stdout).expect("C source");
+    fs::write(&c, emitted).expect("C source");
     let status = Command::new("clang")
         .args([
             "-std=c11",
@@ -267,10 +275,20 @@ fn every_language_fixture_is_sanitizer_clean() {
     assert!(!sources.is_empty(), "no fixtures found");
     for source in sources {
         let expected = fs::read(source.with_extension("out")).expect("expected output");
-        sanitized(
-            &fs::read_to_string(&source).expect("fixture source"),
-            &expected,
+        // Emitted from the fixture's own directory, so that a program made of
+        // modules resolves its imports against the real tree.
+        let emitted = Command::new(env!("CARGO_BIN_EXE_skuld"))
+            .arg("emit-c")
+            .arg(&source)
+            .output()
+            .expect("emit C");
+        assert!(
+            emitted.status.success(),
+            "{} should emit C:\n{}",
+            source.display(),
+            String::from_utf8_lossy(&emitted.stderr)
         );
+        sanitized_c(&emitted.stdout, &expected);
     }
 }
 #[cfg(unix)]

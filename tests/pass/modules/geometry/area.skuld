@@ -1,0 +1,10 @@
+pub func area(p: Point) -> int {
+    return scale(p.x * p.y)
+}
+
+pub func describe(s: Shape) -> string {
+    match s {
+        Shape.Dot: return "dot"
+        Shape.Box(p): return "box ${area(p)}"
+    }
+}

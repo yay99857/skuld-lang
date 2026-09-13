@@ -1,0 +1,7 @@
+// Types are exported the same way values are, through `pub`.
+import "import_private/lib"
+
+func main() {
+    let s = lib.Secret { value: 1 }
+    print(s.value)
+}

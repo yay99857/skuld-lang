@@ -1,0 +1,6 @@
+// A name without `pub` does not leave the module that declares it.
+import "import_private/lib"
+
+func main() {
+    print(lib.hidden())
+}

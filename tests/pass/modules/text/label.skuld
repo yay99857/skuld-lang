@@ -1,0 +1,20 @@
+import "modules/geometry"
+
+// A class whose field type comes from another module, and a method that calls
+// across the boundary.
+pub class Label {
+    name: string
+    at: geometry.Point
+
+    show() -> string {
+        return "${this.name}@${this.at.sum()} area ${geometry.area(this.at)}"
+    }
+}
+
+pub func tag(s: geometry.Shape) -> string {
+    // A qualified pattern, resolved by identity rather than by spelling.
+    match s {
+        geometry.Shape.Dot: return "tag dot"
+        geometry.Shape.Box(p): return "tag ${geometry.area(p)}"
+    }
+}

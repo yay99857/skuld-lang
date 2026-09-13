@@ -1,0 +1,7 @@
+// Two modules that import each other. There is no order in which they could
+// be checked, and nothing in the language needs one.
+import "import_cycle/a"
+
+func main() {
+    print(a.one())
+}

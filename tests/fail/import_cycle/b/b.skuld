@@ -1,0 +1,5 @@
+import "import_cycle/a"
+
+pub func two() -> int {
+    return a.one()
+}

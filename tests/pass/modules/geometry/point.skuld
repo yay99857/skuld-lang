@@ -1,0 +1,25 @@
+// One module, two files, one namespace: `area.skuld` calls `scale` without
+// importing anything, and nothing here says which file a name lives in.
+
+pub struct Point {
+    x: int
+    y: int
+
+    sum() -> int {
+        return this.x + this.y
+    }
+}
+
+pub enum Shape {
+    Dot
+    Box(Point)
+}
+
+pub func origin() -> Point {
+    return Point { x: 0, y: 0 }
+}
+
+// No `pub`: reachable from `area.skuld`, invisible to any importer.
+func scale(value: int) -> int {
+    return value * 2
+}

@@ -1,0 +1,15 @@
+pub func exported() -> int {
+    return 1
+}
+
+func hidden() -> int {
+    return 2
+}
+
+struct Secret {
+    value: int
+}
+
+pub struct Open {
+    value: int
+}

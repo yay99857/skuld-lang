@@ -1,0 +1,21 @@
+// A program made of three modules. Every imported name is qualified by the
+// last segment of its path, so `modules/geometry` is spelled `geometry`.
+import "modules/geometry"
+import "modules/text"
+
+func main() {
+    let p = geometry.Point { x: 3, y: 4 }
+    print(p.sum())
+    print(geometry.area(p))
+    print(geometry.origin().sum())
+    print(geometry.describe(geometry.Shape.Box(p)))
+    print(text.tag(geometry.Shape.Dot))
+    print(text.tag(geometry.Shape.Box(p)))
+
+    let label = new text.Label(name: "corner", at: p)
+    print(label.show())
+
+    // A local may shadow an import, like any other binding.
+    let geometry = "not the module"
+    print(geometry)
+}
