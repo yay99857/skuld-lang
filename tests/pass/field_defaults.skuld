@@ -1,0 +1,66 @@
+// Field defaults: a field written with `= expression` may be left out of a
+// construction, and the expression runs there, once per object.
+//
+// The order is the point of the middle section. Arguments are evaluated first,
+// in the order they were written — the rule everywhere else in the language —
+// and then the defaults of the fields nobody wrote, in declaration order.
+
+func note(text: string) -> int {
+    print(text)
+    return text.len()
+}
+
+func label() -> string {
+    return "unnamed"
+}
+
+class Account {
+    name: string = label()
+    tags: []string = []
+    balance: int = 0
+
+    describe() -> string {
+        return "${this.name}/${this.balance}/${this.tags.len()}"
+    }
+}
+
+struct Point {
+    x: int = 0
+    y: int = 0
+}
+
+class Ordered {
+    a: int = note("default a")
+    b: int = note("default b")
+    c: int = note("default c")
+}
+
+func main() {
+    // Everything defaulted, including a managed string and a managed array.
+    let blank = new Account()
+    print(blank.describe())
+
+    // Some supplied, in an order of their own.
+    let ada = new Account(balance: 120, name: "Ada")
+    print(ada.describe())
+
+    // A default is evaluated per object, so two objects do not share the array.
+    let first = new Account()
+    let second = new Account()
+    first.tags.push("one")
+    print("${first.tags.len()}${second.tags.len()}")
+
+    // Arguments first, in written order; then the missing fields in
+    // declaration order.
+    let ordered = new Ordered(c: note("argument c"), a: note("argument a"))
+    print("${ordered.a}${ordered.b}${ordered.c}")
+
+    // A struct is a value, and takes defaults the same way.
+    let origin = Point {}
+    let shifted = Point { y: 5 }
+    print("${origin.x},${origin.y} ${shifted.x},${shifted.y}")
+
+    // A default is an ordinary expression, so it can be overridden by one.
+    let named = new Account(name: "Grace", tags: ["admin", "ops"])
+    print(named.describe())
+}

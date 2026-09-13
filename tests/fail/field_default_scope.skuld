@@ -1,0 +1,9 @@
+class Account {
+    name: string = this.label
+    label: string = name
+}
+
+func main() {
+    let one = new Account()
+    print(one.name)
+}

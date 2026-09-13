@@ -1,0 +1,8 @@
+class Account {
+    balance: int = "text"
+}
+
+func main() {
+    let one = new Account()
+    print(one.balance)
+}

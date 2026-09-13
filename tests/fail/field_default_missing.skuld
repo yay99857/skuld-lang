@@ -1,0 +1,9 @@
+class Account {
+    name: string
+    balance: int = 0
+}
+
+func main() {
+    let one = new Account()
+    print(one.name)
+}
