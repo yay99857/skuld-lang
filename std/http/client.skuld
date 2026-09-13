@@ -1,0 +1,256 @@
+// A blocking HTTP/1.1 client, written over `std/net`.
+//
+// Plain HTTP only. TLS is not here and is not an oversight: binding a system
+// TLS library is a milestone of its own and arguably a dependency-policy
+// decision rather than a technical one, so `https://` is refused by name
+// instead of pretended at.
+//
+// A URL's host must be an IPv4 address. `std/net` explains why there is no
+// resolver; the error says so at the point where a name would have been used,
+// rather than failing somewhere further in.
+
+import "std/net"
+import "std/strings"
+
+pub class Header {
+    name: string
+    value: string
+}
+
+pub enum HttpError {
+    // The URL was not `http://host[:port]/path`.
+    Url(string)
+    // `https://`, which needs TLS.
+    Tls(string)
+    // A host that is not an IPv4 address, which needs a resolver.
+    Name(string)
+    Network(net.NetError)
+    // The response was not an HTTP/1.1 message, or ended mid-message.
+    Malformed(string)
+    // A body that is not valid UTF-8.
+    Encoding(string)
+}
+
+pub func describe(error: HttpError) -> string {
+    match error {
+        HttpError.Url(text): return "`${text}` is not an http URL"
+        HttpError.Tls(text): return "`${text}` needs TLS, which is not implemented"
+        HttpError.Name(host): return "`${host}` is a name, and there is no resolver; use an IPv4 address"
+        HttpError.Network(inner): return net.describe(inner)
+        HttpError.Malformed(what): return "malformed response: ${what}"
+        HttpError.Encoding(what): return "response body is not UTF-8: ${what}"
+    }
+}
+
+pub class Response {
+    status: int
+    reason: string
+    headers: []Header
+    body: string
+
+    // Header names are case-insensitive, so the comparison is too.
+    header(name: string) -> Option<string> {
+        for entry in this.headers {
+            if lower(entry.name) == lower(name) {
+                return entry.value
+            }
+        }
+        return null
+    }
+}
+
+func lower(text: string) -> string {
+    var out: []u8 = []
+    for byte in text.bytes() {
+        if byte >= 65 && byte <= 90 {
+            out.push(byte + 32)
+        } else {
+            out.push(byte)
+        }
+    }
+    match bytes_to_string(out) {
+        Ok(result): return result
+        Err(reason): return text
+    }
+}
+
+func digits(text: string) -> Option<int> {
+    if text.len() == 0 {
+        return null
+    }
+    var value = 0
+    for byte in text.bytes() {
+        if byte < 48 || byte > 57 {
+            return null
+        }
+        value = value * 10 + (int(byte) - 48)
+    }
+    return value
+}
+
+pub class Url {
+    host: string
+    port: int
+    path: string
+}
+
+pub func parse_url(url: string) -> Result<Url, HttpError> {
+    if strings.starts_with(url, "https://") {
+        return Err(HttpError.Tls(url))
+    }
+    if !strings.starts_with(url, "http://") {
+        return Err(HttpError.Url(url))
+    }
+    let rest = url[7..url.len()]
+    // The path begins at the first `/`; without one the whole remainder is
+    // the authority and the path is `/`.
+    var authority = rest
+    var path = "/"
+    if let slash = strings.index_of(rest, "/") {
+        authority = rest[0..slash]
+        path = rest[slash..rest.len()]
+    }
+    if authority.len() == 0 {
+        return Err(HttpError.Url(url))
+    }
+    var host = authority
+    var port = 80
+    if let colon = strings.index_of(authority, ":") {
+        host = authority[0..colon]
+        let text = authority[colon + 1..authority.len()]
+        if let value = digits(text) {
+            port = value
+        } else {
+            return Err(HttpError.Url(url))
+        }
+    }
+    // A name would need a resolver; say so here rather than deeper in.
+    if net.parse_address(host).is_err() {
+        return Err(HttpError.Name(host))
+    }
+    return Ok(new Url(host: host, port: port, path: path))
+}
+
+pub func get(url: string) -> Result<Response, HttpError> {
+    let target = parse_url(url)?
+    // `Connection: close` is what makes a body without a length end, and this
+    // client opens one connection per request anyway.
+    let request = "GET ${target.path} HTTP/1.1\r\nHost: ${target.host}:${target.port}\r\nConnection: close\r\n\r\n"
+    var bytes: []u8 = []
+    for byte in request.bytes() {
+        bytes.push(byte)
+    }
+    match net.open(target.host, target.port) {
+        Ok(connection): {
+            match connection.send_all(bytes) {
+                Ok(sent): { }
+                Err(reason): {
+                    connection.close()
+                    return Err(HttpError.Network(reason))
+                }
+            }
+            match connection.receive_all() {
+                Ok(raw): {
+                    connection.close()
+                    return parse_response(raw)
+                }
+                Err(reason): {
+                    connection.close()
+                    return Err(HttpError.Network(reason))
+                }
+            }
+        }
+        Err(reason): return Err(HttpError.Network(reason))
+    }
+}
+
+// The head is ASCII by definition, so it is decoded before being split; the
+// body is decoded separately and is the only part that can fail on UTF-8.
+pub func parse_response(raw: []u8) -> Result<Response, HttpError> {
+    var boundary = -1
+    var index = 0
+    while index + 3 < raw.len() {
+        if raw[index] == 13 && raw[index + 1] == 10 && raw[index + 2] == 13 && raw[index + 3] == 10 {
+            boundary = index
+            break
+        }
+        index = index + 1
+    }
+    if boundary < 0 {
+        return Err(HttpError.Malformed("no blank line after the headers"))
+    }
+    var head = ""
+    match bytes_to_string(raw[0..boundary]) {
+        Ok(text): head = text
+        Err(reason): return Err(HttpError.Malformed("headers are not text"))
+    }
+    let body_bytes = raw[boundary + 4..raw.len()]
+    let lines = strings.split(head, "\r\n")
+    if lines.len() == 0 {
+        return Err(HttpError.Malformed("empty response"))
+    }
+    let status_line = strings.split(lines[0], " ")
+    if status_line.len() < 2 {
+        return Err(HttpError.Malformed("status line"))
+    }
+    if !strings.starts_with(status_line[0], "HTTP/1.") {
+        return Err(HttpError.Malformed("not an HTTP/1.x response"))
+    }
+    var status = 0
+    if let value = digits(status_line[1]) {
+        status = value
+    } else {
+        return Err(HttpError.Malformed("status code"))
+    }
+    var reason = ""
+    if status_line.len() > 2 {
+        var parts: []string = []
+        var part = 2
+        while part < status_line.len() {
+            parts.push(status_line[part])
+            part = part + 1
+        }
+        reason = strings.join(parts, " ")
+    }
+    var headers: []Header = []
+    var line = 1
+    while line < lines.len() {
+        let current = lines[line]
+        if current.len() != 0 {
+            if let colon = strings.index_of(current, ":") {
+                let name = strings.trim(current[0..colon])
+                let value = strings.trim(current[colon + 1..current.len()])
+                headers.push(new Header(name: name, value: value))
+            } else {
+                return Err(HttpError.Malformed("header without a colon"))
+            }
+        }
+        line = line + 1
+    }
+    // A declared length wins over what arrived, so a longer read is truncated
+    // and a shorter one is reported rather than quietly accepted.
+    var body = body_bytes
+    for entry in headers {
+        if lower(entry.name) == "content-length" {
+            if let length = digits(entry.value) {
+                if length > body_bytes.len() {
+                    return Err(HttpError.Malformed("body shorter than Content-Length"))
+                }
+                body = body_bytes[0..length]
+            } else {
+                return Err(HttpError.Malformed("Content-Length is not a number"))
+            }
+        }
+    }
+    match bytes_to_string(body) {
+        Ok(text): {
+            return Ok(new Response(
+                status: status,
+                reason: reason,
+                headers: headers,
+                body: text
+            ))
+        }
+        Err(reason): return Err(HttpError.Encoding(reason))
+    }
+}

@@ -1,0 +1,172 @@
+// A blocking TCP connection, over the libc sockets the FFI can reach.
+//
+// Two limits are structural rather than temporary, and both come from
+// `AGENTS.md` putting pointer reads out of scope for the foreign boundary.
+//
+// There is no name resolution. `getaddrinfo` and `gethostbyname` both answer
+// with a pointer to a structure, and Skuld cannot dereference one, so a
+// connection is made to an address and never to a name. Resolving names needs
+// either a read primitive at the boundary or a resolver written in Skuld over
+// UDP; both are decisions of their own.
+//
+// There is no `errno` either, for the same reason, so a failure says which
+// step failed rather than why. That is less than C offers and more than a
+// silent -1.
+//
+// The address layout below is `struct sockaddr_in` on a little-endian Linux:
+// the family is host order, the port and address are network order.
+
+unsafe extern "C" {
+    func socket(domain: i32, kind: i32, protocol: i32) -> i32
+    func connect(handle: i32, address: *u8, length: u32) -> i32
+    func send(handle: i32, buffer: *u8, length: u64, flags: i32) -> i64
+    func recv(handle: i32, buffer: *u8, length: u64, flags: i32) -> i64
+    func close(handle: i32) -> i32
+}
+
+pub enum NetError {
+    // The text was not four decimal octets separated by dots.
+    Address(string)
+    // The port was outside 1..65535.
+    Port(int)
+    OpenFailed
+    ConnectFailed
+    SendFailed
+    ReceiveFailed
+}
+
+pub func describe(error: NetError) -> string {
+    match error {
+        NetError.Address(text): return "`${text}` is not an IPv4 address"
+        NetError.Port(value): return "port ${value} is out of range"
+        NetError.OpenFailed: return "could not open a socket"
+        NetError.ConnectFailed: return "could not connect"
+        NetError.SendFailed: return "could not send"
+        NetError.ReceiveFailed: return "could not receive"
+    }
+}
+
+// Four decimal octets, parsed here rather than through `inet_pton`, which
+// would be one more foreign call for arithmetic Skuld can do itself.
+pub func parse_address(text: string) -> Result<[]u8, NetError> {
+    var octets: []u8 = []
+    var value = 0
+    var digits = 0
+    var index = 0
+    while index < text.len() {
+        let byte = text[index]
+        if byte >= 48 && byte <= 57 {
+            value = value * 10 + (int(byte) - 48)
+            digits = digits + 1
+            if value > 255 || digits > 3 {
+                return Err(NetError.Address(text))
+            }
+        } else if byte == 46 {
+            if digits == 0 {
+                return Err(NetError.Address(text))
+            }
+            octets.push(u8(value))
+            value = 0
+            digits = 0
+        } else {
+            return Err(NetError.Address(text))
+        }
+        index = index + 1
+    }
+    if digits == 0 {
+        return Err(NetError.Address(text))
+    }
+    octets.push(u8(value))
+    if octets.len() != 4 {
+        return Err(NetError.Address(text))
+    }
+    return Ok(octets)
+}
+
+pub class Connection {
+    handle: int
+
+    // `MSG_NOSIGNAL`, so that writing to a connection the peer has closed
+    // fails as a return value instead of killing the process with SIGPIPE.
+    send_all(bytes: []u8) -> Result<int, NetError> {
+        var sent = 0
+        while sent < bytes.len() {
+            let rest = bytes[sent..bytes.len()]
+            let wrote = send(i32(this.handle), ptr(rest), u64(rest.len()), 16384)
+            if wrote <= 0 {
+                return Err(NetError.SendFailed)
+            }
+            sent = sent + int(wrote)
+        }
+        return Ok(sent)
+    }
+
+    // One read. An empty result means the peer closed the connection, which
+    // is how a caller knows a body without a length has ended.
+    receive(limit: int) -> Result<[]u8, NetError> {
+        var buffer: []u8 = []
+        var index = 0
+        while index < limit {
+            buffer.push(0)
+            index = index + 1
+        }
+        let got = recv(i32(this.handle), ptr(buffer), u64(limit), 0)
+        if got < 0 {
+            return Err(NetError.ReceiveFailed)
+        }
+        return Ok(buffer[0..int(got)])
+    }
+
+    // Reads until the peer closes, which is what an HTTP/1.0-style response
+    // without a length requires.
+    receive_all() -> Result<[]u8, NetError> {
+        var all: []u8 = []
+        loop {
+            let chunk = this.receive(4096)?
+            if chunk.len() == 0 {
+                break
+            }
+            for byte in chunk {
+                all.push(byte)
+            }
+        }
+        return Ok(all)
+    }
+
+    close() {
+        let ignored = close(i32(this.handle))
+    }
+}
+
+pub func open(address: string, port: int) -> Result<Connection, NetError> {
+    if port < 1 || port > 65535 {
+        return Err(NetError.Port(port))
+    }
+    let octets = parse_address(address)?
+    // AF_INET, SOCK_STREAM.
+    let handle = socket(2, 1, 0)
+    if handle < 0 {
+        return Err(NetError.OpenFailed)
+    }
+    var sockaddr: []u8 = []
+    // sin_family: AF_INET in host order on a little-endian target.
+    sockaddr.push(2)
+    sockaddr.push(0)
+    // sin_port, network order.
+    sockaddr.push(u8(port / 256))
+    sockaddr.push(u8(port % 256))
+    for octet in octets {
+        sockaddr.push(octet)
+    }
+    // sin_zero.
+    var pad = 0
+    while pad < 8 {
+        sockaddr.push(0)
+        pad = pad + 1
+    }
+    if connect(i32(handle), ptr(sockaddr), u32(16)) < 0 {
+        let ignored = close(i32(handle))
+        return Err(NetError.ConnectFailed)
+    }
+    return Ok(new Connection(handle: int(handle)))
+}

@@ -27,6 +27,27 @@ const MODULES: &[(&str, &[(&str, &str)])] = &[
         )],
     ),
     (
+        "std/http",
+        &[(
+            "std/http/client.skuld",
+            include_str!("../../std/http/client.skuld"),
+        )],
+    ),
+    (
+        "std/json",
+        &[(
+            "std/json/json.skuld",
+            include_str!("../../std/json/json.skuld"),
+        )],
+    ),
+    (
+        "std/net",
+        &[(
+            "std/net/socket.skuld",
+            include_str!("../../std/net/socket.skuld"),
+        )],
+    ),
+    (
         "std/strings",
         &[(
             "std/strings/strings.skuld",
