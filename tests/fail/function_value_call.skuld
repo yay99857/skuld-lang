@@ -1,0 +1,8 @@
+func apply(f: (int) -> int) -> int {
+    return f(1, 2)
+}
+
+func main() {
+    let n = 1
+    n()
+}

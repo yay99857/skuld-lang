@@ -1,0 +1,10 @@
+// A function value captures values, not variables: a copy of a `var` could
+// disagree with the variable by the time the value is called.
+func run(f: () -> void) {
+    f()
+}
+
+func main() {
+    var total = 0
+    run((): void { print(total) })
+}

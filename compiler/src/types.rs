@@ -21,6 +21,18 @@ pub struct ResultId(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EnumId(pub usize);
 
+/// Index into the checked program's function-type table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FunctionTypeId(pub usize);
+
+/// The signature a function value carries. It is a type, not a declaration:
+/// two lambdas with the same parameters and result have the same type.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FunctionTypeInfo {
+    pub parameters: Vec<Type>,
+    pub return_type: Type,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OptionInfo {
     pub element: Type,
@@ -214,6 +226,9 @@ pub enum Type {
     /// A raw, unmanaged pointer. It exists for the `extern "C"` boundary and
     /// keeps nothing alive; Skuld cannot read or write through it.
     Pointer(Pointee),
+    /// A function value: a parameter or a local, never stored anywhere a
+    /// managed value could reach it, so it never allocates and never retains.
+    Function(FunctionTypeId),
     /// Recovery only; never present in a successfully checked program.
     Error,
 }
@@ -245,6 +260,9 @@ impl fmt::Display for Type {
             Self::Struct(_) => "<struct>",
             Self::Enum(_) => "<enum>",
             Self::Array(_) => "<array>",
+            // A signature lives in the checker's table too, which `Display`
+            // cannot reach; `type_name` renders it in full.
+            Self::Function(_) => "<function>",
             Self::Option(_) => "<option>",
             Self::Result(_) => "<result>",
             Self::Weak(_) => "<weak>",

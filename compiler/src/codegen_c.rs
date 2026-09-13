@@ -17,6 +17,12 @@ pub fn emit_c(program: &Program) -> String {
             .iter()
             .map(|function| (function.id, function.name.clone()))
             .collect(),
+        captures: std::collections::BTreeSet::new(),
+        lambda_captures: program
+            .lambdas
+            .iter()
+            .map(|lambda| lambda.captures.iter().map(|c| c.id).collect())
+            .collect(),
     };
     // Foreign declarations first: they name symbols from another object file
     // and depend on nothing this backend generates.
@@ -196,6 +202,68 @@ pub fn emit_c(program: &Program) -> String {
         .chain((0..program.enums.len()).map(|i| Type::Enum(crate::types::EnumId(i))))
         .filter(|ty| emitter.managed(*ty))
         .collect();
+    // A function value is a pair: the code to run, and the environment the
+    // code reads its captures from. Both halves are needed at once, so the
+    // pair is a value rather than a bare pointer.
+    for (index, info) in program.function_types.iter().enumerate() {
+        let parameters: Vec<String> = std::iter::once("void *".to_owned())
+            .chain(
+                info.parameters
+                    .iter()
+                    .map(|ty| type_name(&program.structs, *ty)),
+            )
+            .collect();
+        emitter.line(&format!(
+            "typedef struct {{ {} (*code)({}); void *env; }} skuld_ft{index};",
+            type_name(&program.structs, info.return_type),
+            parameters.join(", ")
+        ));
+    }
+    // One environment per lambda. C has no empty struct, so a lambda that
+    // captures nothing still carries a byte.
+    for lambda in &program.lambdas {
+        emitter.line(&format!("struct skuld_env{} {{", lambda.index));
+        emitter.indent += 1;
+        if lambda.captures.is_empty() {
+            emitter.line("char skuld_nothing;");
+        }
+        for capture in &lambda.captures {
+            emitter.line(&format!(
+                "{} skuld_v{};",
+                type_name(&program.structs, capture.ty),
+                capture.id.0
+            ));
+        }
+        emitter.indent -= 1;
+        emitter.line("};");
+    }
+    // Calling through a value must evaluate the pair once, so it goes through
+    // a helper rather than being written twice at every call site.
+    for (index, info) in program.function_types.iter().enumerate() {
+        let mut parameters = vec![format!("skuld_ft{index} skuld_fn")];
+        let mut arguments = vec!["skuld_fn.env".to_owned()];
+        for (position, ty) in info.parameters.iter().enumerate() {
+            parameters.push(format!(
+                "{} skuld_p{position}",
+                type_name(&program.structs, *ty)
+            ));
+            arguments.push(format!("skuld_p{position}"));
+        }
+        emitter.line(&format!(
+            "static inline {} skuld_ftcall{index}({}) {{",
+            type_name(&program.structs, info.return_type),
+            parameters.join(", ")
+        ));
+        emitter.indent += 1;
+        let call = format!("skuld_fn.code({})", arguments.join(", "));
+        if info.return_type == Type::Void {
+            emitter.line(&format!("{call};"));
+        } else {
+            emitter.line(&format!("return {call};"));
+        }
+        emitter.indent -= 1;
+        emitter.line("}");
+    }
     // Prototypes permit forward references and mutually referring classes.
     for ty in &managed {
         let name = emitter.c_type(*ty);
@@ -218,6 +286,68 @@ pub fn emit_c(program: &Program) -> String {
     }
     for function in &program.functions {
         emitter.line(&format!("{};", emitter.signature(function)));
+    }
+    // A lambda becomes an ordinary function whose first parameter is the
+    // environment its captures were copied into.
+    for lambda in &program.lambdas {
+        emitter.line(&format!("{};", lambda_signature(&program.structs, lambda)));
+    }
+    // A declared function used as a value is reached through a thunk, so that
+    // every function value has the same shape whatever it came from.
+    for (id, ty) in &program.function_values {
+        let info = &program.function_types[ty.0];
+        let mut parameters = vec!["void *skuld_env".to_owned()];
+        let mut arguments = Vec::new();
+        for (position, parameter) in info.parameters.iter().enumerate() {
+            parameters.push(format!(
+                "{} skuld_p{position}",
+                type_name(&program.structs, *parameter)
+            ));
+            arguments.push(format!("skuld_p{position}"));
+        }
+        emitter.line(&format!(
+            "static {} skuld_thunk{}_{}({}) {{",
+            type_name(&program.structs, info.return_type),
+            id.0,
+            ty.0,
+            parameters.join(", ")
+        ));
+        emitter.indent += 1;
+        emitter.line("(void)skuld_env;");
+        let call = format!("skuld_f{}({})", id.0, arguments.join(", "));
+        if info.return_type == Type::Void {
+            emitter.line(&format!("{call};"));
+        } else {
+            emitter.line(&format!("return {call};"));
+        }
+        emitter.indent -= 1;
+        emitter.line("}");
+    }
+    for lambda in &program.lambdas {
+        emitter.line("");
+        emitter.line(&format!(
+            "/* function value: source bytes {}..{} */",
+            lambda.span.start, lambda.span.end
+        ));
+        emitter.line(&format!(
+            "{} {{",
+            lambda_signature(&program.structs, lambda)
+        ));
+        emitter.current_return = lambda.return_type;
+        emitter.captures = lambda.captures.iter().map(|c| c.id).collect();
+        emitter.indent += 1;
+        emitter.line(&format!(
+            "struct skuld_env{} *skuld_env = skuld_envp;",
+            lambda.index
+        ));
+        emitter.line("(void)skuld_env;");
+        for parameter in &lambda.parameters {
+            emitter.line(&format!("(void)skuld_v{};", parameter.id.0));
+        }
+        emitter.block_contents(&lambda.body);
+        emitter.indent -= 1;
+        emitter.line("}");
+        emitter.captures.clear();
     }
     for function in &program.functions {
         emitter.line("");
@@ -260,6 +390,21 @@ fn string_literal(value: &str) -> String {
         value.len()
     )
 }
+fn lambda_signature(structs: &[StructInfo], lambda: &Lambda) -> String {
+    let mut params = vec!["void *skuld_envp".to_owned()];
+    params.extend(
+        lambda
+            .parameters
+            .iter()
+            .map(|p| format!("{} skuld_v{}", type_name(structs, p.ty), p.id.0)),
+    );
+    format!(
+        "static {} skuld_lam{}({})",
+        type_name(structs, lambda.return_type),
+        lambda.index,
+        params.join(", ")
+    )
+}
 fn signature_of(structs: &[StructInfo], function: &Function) -> String {
     let params = if function.parameters.is_empty() {
         "void".into()
@@ -292,6 +437,12 @@ struct Emitter {
     current_return: Type,
     /// Linker names for foreign functions, which are emitted verbatim.
     extern_names: std::collections::BTreeMap<crate::resolver::SymbolId, String>,
+    /// While a lambda body is being emitted, the symbols that live in its
+    /// environment rather than in a local of their own.
+    captures: std::collections::BTreeSet<crate::resolver::SymbolId>,
+    /// What each lambda captures, by index, so that building one can fill its
+    /// environment without reaching back into the HIR.
+    lambda_captures: Vec<Vec<crate::resolver::SymbolId>>,
 }
 fn type_name(structs: &[StructInfo], ty: Type) -> String {
     match ty {
@@ -308,6 +459,7 @@ fn type_name(structs: &[StructInfo], ty: Type) -> String {
         Type::Array(id) => format!("skuld_a{} *", id.0),
         // A class value is a pointer to a shared object; a struct is the
         // object itself, and C assignment copies it, which is value semantics.
+        Type::Function(id) => format!("skuld_ft{}", id.0),
         Type::Struct(id) if structs[id.0].reference => format!("skuld_s{} *", id.0),
         Type::Struct(id) => format!("skuld_s{}", id.0),
         Type::Error => unreachable!("internal compiler bug: error type in HIR"),
@@ -649,7 +801,7 @@ impl Emitter {
     }
     fn place(&mut self, place: &Place) -> String {
         match place {
-            Place::Local(id) => format!("skuld_v{}", id.0),
+            Place::Local(id) => self.local_name(*id),
             Place::Field { base, index } => {
                 let base = self.place(base);
                 format!("{base}.f{index}")
@@ -662,6 +814,15 @@ impl Emitter {
         }
     }
 
+    /// Where a name lives: a local of its own, or a field of the environment
+    /// the enclosing lambda was handed.
+    fn local_name(&self, id: crate::resolver::SymbolId) -> String {
+        if self.captures.contains(&id) {
+            format!("skuld_env->skuld_v{}", id.0)
+        } else {
+            format!("skuld_v{}", id.0)
+        }
+    }
     fn c_type(&self, ty: Type) -> String {
         type_name(&self.structs, ty)
     }
@@ -1073,7 +1234,44 @@ impl Emitter {
                     value.len()
                 )
             }
-            ExprKind::Local(id) => self.temporary(expr.ty, &format!("skuld_v{}", id.0)),
+            ExprKind::Local(id) => {
+                let name = self.local_name(*id);
+                self.temporary(expr.ty, &name)
+            }
+            ExprKind::Lambda { index } => {
+                let Type::Function(ty) = expr.ty else {
+                    unreachable!("internal compiler bug: lambda without a function type")
+                };
+                // The environment is a local of the enclosing block, which the
+                // value cannot outlive: a function value is never stored where
+                // something could keep it alive for longer.
+                let environment = self.next_temp;
+                self.next_temp += 1;
+                let captures = self.lambda_captures[*index].clone();
+                let initialisers: Vec<String> = captures
+                    .iter()
+                    .map(|id| format!(".skuld_v{} = {}", id.0, self.local_name(*id)))
+                    .collect();
+                let body = if initialisers.is_empty() {
+                    "{ 0 }".to_owned()
+                } else {
+                    format!("{{ {} }}", initialisers.join(", "))
+                };
+                self.line(&format!(
+                    "struct skuld_env{index} skuld_e{environment} = {body};"
+                ));
+                self.temporary(
+                    expr.ty,
+                    &format!(
+                        "(skuld_ft{}){{ skuld_lam{index}, &skuld_e{environment} }}",
+                        ty.0
+                    ),
+                )
+            }
+            ExprKind::FunctionValue { id, ty } => self.temporary(
+                expr.ty,
+                &format!("(skuld_ft{}){{ skuld_thunk{}_{}, NULL }}", ty.0, id.0, ty.0),
+            ),
             ExprKind::StructLiteral { id, fields } => {
                 let values: Vec<_> = fields
                     .iter()
@@ -1538,6 +1736,16 @@ impl Emitter {
                 let values: Vec<_> = arguments.iter().map(|arg| self.expression(arg)).collect();
                 let call = match target {
                     CallTarget::Function(id) => format!("skuld_f{}({})", id.0, values.join(", ")),
+                    // The pair is evaluated once, into the helper, so a callee
+                    // with side effects runs exactly as often as it is written.
+                    CallTarget::Value(callee) => {
+                        let Type::Function(ty) = callee.ty else {
+                            unreachable!("internal compiler bug: call through a non-function")
+                        };
+                        let mut arguments = vec![self.expression(callee)];
+                        arguments.extend(values.iter().cloned());
+                        format!("skuld_ftcall{}({})", ty.0, arguments.join(", "))
+                    }
                     // The foreign name is the linker's, not the generator's.
                     CallTarget::Extern(id) => {
                         format!("{}({})", self.extern_names[id], values.join(", "))

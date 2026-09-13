@@ -151,6 +151,14 @@ pub enum TypeRef {
         element: Box<TypeRef>,
         span: Span,
     },
+    /// `func(int, int) -> int`. A function value: an argument or a local, never
+    /// something a managed value can hold.
+    Function {
+        parameters: Vec<TypeRef>,
+        /// None means an implicit void return type.
+        return_type: Option<Box<TypeRef>>,
+        span: Span,
+    },
     /// `*u8`, `*void`. Raw, unmanaged, and only valid at the foreign boundary.
     Pointer {
         pointee: Box<TypeRef>,
@@ -163,6 +171,7 @@ impl TypeRef {
         match self {
             Self::Named(path) => path.span,
             Self::Array { span, .. }
+            | Self::Function { span, .. }
             | Self::Pointer { span, .. }
             | Self::Weak { span, .. }
             | Self::Option { span, .. }
@@ -186,6 +195,24 @@ pub struct FunctionDecl {
 pub struct Parameter {
     pub name: Name,
     pub type_ref: TypeRef,
+    pub span: Span,
+}
+
+/// `func(a: int, b: int) -> int { ... }`: a function declaration without a
+/// name. It is an expression, so it has no visibility and no symbol of its own.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lambda {
+    pub parameters: Vec<LambdaParameter>,
+    pub return_type: Option<TypeRef>,
+    pub body: Block,
+    pub span: Span,
+}
+
+/// A lambda parameter, whose type the expected function type may supply.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LambdaParameter {
+    pub name: Name,
+    pub type_ref: Option<TypeRef>,
     pub span: Span,
 }
 
@@ -341,6 +368,8 @@ pub enum ExprKind {
     Array(Vec<Expr>),
     /// `weak(value)` or a contextually typed empty `weak()`.
     Weak(Option<Box<Expr>>),
+    /// `func(a: int) -> int { ... }`. Evaluates to a function value.
+    Lambda(Box<Lambda>),
     /// `value?`. Unwraps a `Result`, returning its `Err` from the function.
     Try(Box<Expr>),
     /// `arr[index]`. Reads an element from an array, or a byte from a string.

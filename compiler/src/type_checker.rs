@@ -6,8 +6,8 @@ use crate::{
     resolver::{Builtin, Resolution, SymbolId, SymbolKind},
     span::Span,
     types::{
-        ArrayId, ArrayInfo, EnumId, EnumInfo, IntType, OptionId, OptionInfo, Pointee, ResultId,
-        ResultInfo, StructId, Type, VariantInfo,
+        ArrayId, ArrayInfo, EnumId, EnumInfo, FunctionTypeId, FunctionTypeInfo, IntType, OptionId,
+        OptionInfo, Pointee, ResultId, ResultInfo, StructId, Type, VariantInfo,
     },
 };
 use std::collections::BTreeMap;
@@ -48,6 +48,7 @@ pub struct TypedProgram {
     pub(crate) options: Vec<OptionInfo>,
     pub(crate) results: Vec<ResultInfo>,
     pub(crate) implicit_wraps: BTreeMap<(FileId, usize, usize), Type>,
+    pub(crate) function_signatures: Vec<FunctionTypeInfo>,
 }
 impl TypedProgram {
     pub fn enums(&self) -> &[EnumInfo] {
@@ -104,6 +105,8 @@ pub(crate) fn type_check(
         results: Vec::new(),
         result_types: BTreeMap::new(),
         array_types: BTreeMap::new(),
+        function_signatures: Vec::new(),
+        function_types: BTreeMap::new(),
         expected_context: None,
         implicit_wraps: BTreeMap::new(),
     };
@@ -153,6 +156,7 @@ pub(crate) fn type_check(
         let mut fields: Vec<FieldInfo> = Vec::new();
         for field in &declaration.fields {
             let ty = checker.type_ref(&field.type_ref, false);
+            checker.reject_stored_function(ty, field.type_ref.span(), "a field");
             if fields
                 .iter()
                 .any(|existing| existing.name == field.name.text)
@@ -205,10 +209,11 @@ pub(crate) fn type_check(
         let declaration = &program.files[file.0].program.enums[position];
         let mut variants: Vec<VariantInfo> = Vec::new();
         for variant in &declaration.variants {
-            let payload = variant
-                .payload
-                .as_ref()
-                .map(|ty| checker.type_ref(ty, false));
+            let payload = variant.payload.as_ref().map(|ty| {
+                let payload = checker.type_ref(ty, false);
+                checker.reject_stored_function(payload, ty.span(), "an enum payload");
+                payload
+            });
             if variants.iter().any(|v| v.name == variant.name.text) {
                 checker.error(
                     DiagnosticCode::DuplicateDeclaration,
@@ -292,7 +297,11 @@ pub(crate) fn type_check(
             let return_type = method
                 .return_type
                 .as_ref()
-                .map(|r| checker.type_ref(r, true))
+                .map(|r| {
+                    let ty = checker.type_ref(r, true);
+                    checker.reject_stored_function(ty, r.span(), "a return type");
+                    ty
+                })
                 .unwrap_or(Type::Void);
             checker.signatures.insert(
                 id,
@@ -381,7 +390,11 @@ pub(crate) fn type_check(
             let return_type = function
                 .return_type
                 .as_ref()
-                .map(|r| checker.type_ref(r, true))
+                .map(|r| {
+                    let ty = checker.type_ref(r, true);
+                    checker.reject_stored_function(ty, r.span(), "a return type");
+                    ty
+                })
                 .unwrap_or(Type::Void);
             checker.signatures.insert(
                 id,
@@ -460,6 +473,7 @@ pub(crate) fn type_check(
     let Checker {
         structs,
         enums,
+        function_signatures,
         module_types,
         arrays,
         options,
@@ -488,6 +502,7 @@ pub(crate) fn type_check(
         symbol_types,
         signatures,
         externs,
+        function_signatures,
         entry,
     })
 }
@@ -522,6 +537,9 @@ struct Checker<'a> {
     results: Vec<ResultInfo>,
     result_types: BTreeMap<(Type, Type), ResultId>,
     array_types: BTreeMap<Type, ArrayId>,
+    /// Interned function types; `Type::Function` indexes this.
+    function_signatures: Vec<FunctionTypeInfo>,
+    function_types: BTreeMap<FunctionTypeInfo, FunctionTypeId>,
     expected_context: Option<Type>,
     implicit_wraps: BTreeMap<(FileId, usize, usize), Type>,
 }
@@ -735,6 +753,18 @@ impl Checker<'_> {
                 self.type_name(self.results[id.0].err)
             ),
             Type::Weak(id) => format!("weak {}", self.structs[id.0].name),
+            Type::Function(id) => {
+                let info = &self.function_signatures[id.0];
+                let parameters: Vec<_> = info
+                    .parameters
+                    .iter()
+                    .map(|ty| self.type_name(*ty))
+                    .collect();
+                match info.return_type {
+                    Type::Void => format!("({})", parameters.join(", ")),
+                    other => format!("({}) -> {}", parameters.join(", "), self.type_name(other)),
+                }
+            }
             other => other.to_string(),
         }
     }
@@ -775,6 +805,34 @@ impl Checker<'_> {
         self.result_types.insert((ok, err), id);
         Type::Result(id)
     }
+    fn function_type(&mut self, parameters: Vec<Type>, return_type: Type) -> Type {
+        let info = FunctionTypeInfo {
+            parameters,
+            return_type,
+        };
+        if let Some(&id) = self.function_types.get(&info) {
+            Type::Function(id)
+        } else {
+            let id = FunctionTypeId(self.function_signatures.len());
+            self.function_signatures.push(info.clone());
+            self.function_types.insert(info, id);
+            Type::Function(id)
+        }
+    }
+    /// A function value may be a parameter or a local and nothing else. If a
+    /// managed value could hold one, a closure that captured that value would
+    /// close a cycle the reference counter has no way to collect.
+    fn reject_stored_function(&mut self, ty: Type, span: Span, position: &str) {
+        if matches!(ty, Type::Function(_)) {
+            self.error(
+                DiagnosticCode::InvalidValueType,
+                span,
+                format!(
+                    "a function value cannot be {position}; it may only be a parameter or a local"
+                ),
+            );
+        }
+    }
     fn array_type(&mut self, element: Type) -> Type {
         if let Some(&id) = self.array_types.get(&element) {
             Type::Array(id)
@@ -788,7 +846,9 @@ impl Checker<'_> {
     fn type_ref(&mut self, reference: &TypeRef, allow_void: bool) -> Type {
         match reference {
             TypeRef::Option { element, .. } => {
+                let span = element.span();
                 let element = self.type_ref(element, false);
+                self.reject_stored_function(element, span, "an Option payload");
                 if element == Type::Error {
                     Type::Error
                 } else {
@@ -797,7 +857,9 @@ impl Checker<'_> {
             }
             TypeRef::Result { ok, err, .. } => {
                 let ok_type = self.type_ref(ok, false);
+                self.reject_stored_function(ok_type, ok.span(), "a Result payload");
                 let err_type = self.type_ref(err, false);
+                self.reject_stored_function(err_type, err.span(), "a Result payload");
                 // `type_ref` already rejects `void` in a payload position.
                 if ok_type == Type::Error || err_type == Type::Error {
                     Type::Error
@@ -819,6 +881,38 @@ impl Checker<'_> {
                         Type::Error
                     }
                 }
+            }
+            TypeRef::Function {
+                parameters,
+                return_type,
+                span,
+            } => {
+                let parameters: Vec<_> = parameters
+                    .iter()
+                    .map(|parameter| {
+                        let ty = self.type_ref(parameter, false);
+                        self.reject_stored_function(
+                            ty,
+                            parameter.span(),
+                            "a parameter of a function type",
+                        );
+                        ty
+                    })
+                    .collect();
+                let result = match return_type {
+                    Some(reference) => {
+                        let ty = self.type_ref(reference, true);
+                        self.reject_stored_function(
+                            ty,
+                            reference.span(),
+                            "the result of a function type",
+                        );
+                        ty
+                    }
+                    None => Type::Void,
+                };
+                let _ = span;
+                self.function_type(parameters, result)
             }
             TypeRef::Named(path) => {
                 let name = path.name.clone();
@@ -882,7 +976,10 @@ impl Checker<'_> {
                 }
             }
             TypeRef::Array { element, span } => {
+                // Checked before the array type is built, so the diagnostic
+                // names the element rather than the array.
                 let element_type = self.type_ref(element, false);
+                self.reject_stored_function(element_type, element.span(), "an array element");
                 if element_type == Type::Error {
                     Type::Error
                 } else if element_type == Type::Void {
@@ -1256,6 +1353,78 @@ impl Checker<'_> {
             }
         }
     }
+    /// `(a: int, b: int): int { ... }`. A parameter type may be omitted when
+    /// the expected type supplies it, which is the same local inference a
+    /// `let` already performs.
+    fn lambda(&mut self, lambda: &Lambda, expected: Option<Type>) -> Type {
+        let signature = match expected {
+            Some(Type::Function(id)) => Some(self.function_signatures[id.0].clone()),
+            _ => None,
+        };
+        if let Some(signature) = &signature
+            && signature.parameters.len() != lambda.parameters.len()
+        {
+            self.error(
+                DiagnosticCode::ArgumentCount,
+                lambda.span,
+                format!(
+                    "expected a function of {} parameter(s), found one of {}",
+                    signature.parameters.len(),
+                    lambda.parameters.len()
+                ),
+            );
+        }
+        let mut parameters = Vec::new();
+        for (index, parameter) in lambda.parameters.iter().enumerate() {
+            let ty = match (&parameter.type_ref, signature.as_ref()) {
+                (Some(reference), _) => self.type_ref(reference, false),
+                (None, Some(signature)) if index < signature.parameters.len() => {
+                    signature.parameters[index]
+                }
+                (None, _) => {
+                    self.error(
+                        DiagnosticCode::UnknownType,
+                        parameter.span,
+                        format!(
+                            "`{}` needs a type here: nothing in this position says what the function's type is",
+                            parameter.name.text
+                        ),
+                    );
+                    Type::Error
+                }
+            };
+            self.reject_stored_function(ty, parameter.span, "a parameter of a function value");
+            let id = self.declaration(&parameter.name);
+            self.symbol_types[id.0] = ty;
+            parameters.push(ty);
+        }
+        let return_type = match (&lambda.return_type, signature.as_ref()) {
+            (Some(reference), _) => self.type_ref(reference, true),
+            (None, Some(signature)) => signature.return_type,
+            (None, None) => Type::Void,
+        };
+        self.reject_stored_function(return_type, lambda.span, "the result of a function value");
+        // The body returns from the lambda, not from the enclosing function,
+        // and a `break` inside it has no enclosing loop to bind to.
+        let outer_return = std::mem::replace(&mut self.return_type, return_type);
+        let outer_loops = std::mem::take(&mut self.loops);
+        let outer_expected = self.expected_context.take();
+        let returns = self.block(&lambda.body);
+        self.expected_context = outer_expected;
+        self.loops = outer_loops;
+        self.return_type = outer_return;
+        if return_type != Type::Void && return_type != Type::Error && !returns {
+            self.error(
+                DiagnosticCode::MissingReturn,
+                lambda.span,
+                format!(
+                    "this function value must return `{}` on every path",
+                    self.type_name(return_type)
+                ),
+            );
+        }
+        self.function_type(parameters, return_type)
+    }
     fn construction(&mut self, path: &Path, fields: &[FieldInit], new: bool) -> Type {
         let name = &path.name;
         let noun = if new { "class" } else { "struct" };
@@ -1459,8 +1628,22 @@ impl Checker<'_> {
                         );
                         Type::Error
                     }
+                    SymbolKind::Function => match self.signatures.get(&id) {
+                        // A declared function is a function value like any
+                        // lambda; it simply captures nothing.
+                        Some(signature) => {
+                            let (parameters, return_type) =
+                                (signature.parameters.clone(), signature.return_type);
+                            self.function_type(parameters, return_type)
+                        }
+                        None => Type::Error,
+                    },
                     _ => {
-                        self.error(DiagnosticCode::UnsupportedFeature, expr.span, "functions can only be used as direct call targets; function values are not supported");
+                        self.error(
+                            DiagnosticCode::UnsupportedFeature,
+                            expr.span,
+                            format!("`{}` is a module, not a value", name.text),
+                        );
                         Type::Error
                     }
                 }
@@ -1868,6 +2051,7 @@ impl Checker<'_> {
                     }
                 }
             }
+            ExprKind::Lambda(lambda) => self.lambda(lambda, expected),
             ExprKind::StructLiteral { name, fields } => self.construction(name, fields, false),
             ExprKind::New { name, fields } => self.construction(name, fields, true),
             ExprKind::Interpolation(parts) => {
@@ -2423,15 +2607,42 @@ impl Checker<'_> {
                 signature.return_type
             }
             _ => {
+                // The callee is evaluated first, as it is at run time, so a
+                // function value held in a local or a parameter can be called.
+                let ty = self.expression(callee);
+                if let Type::Function(function) = ty {
+                    let signature = self.function_signatures[function.0].clone();
+                    if signature.parameters.len() != arguments.len() {
+                        self.error(
+                            DiagnosticCode::ArgumentCount,
+                            span,
+                            format!(
+                                "this function value expects {} argument(s), found {}",
+                                signature.parameters.len(),
+                                arguments.len()
+                            ),
+                        );
+                    }
+                    let previous = self.expected_context;
+                    for (arg, expected) in arguments.iter().zip(&signature.parameters) {
+                        self.expected_context = Some(*expected);
+                        let found = self.expression(arg);
+                        self.expect_type(*expected, found, arg.span);
+                    }
+                    self.expected_context = previous;
+                    for arg in arguments.iter().skip(signature.parameters.len()) {
+                        self.expression(arg);
+                    }
+                    return signature.return_type;
+                }
                 for arg in arguments {
                     self.expression(arg);
                 }
-                let ty = self.expression(callee);
                 if ty != Type::Error {
                     self.error(
                         DiagnosticCode::NotCallable,
                         callee.span,
-                        format!("value of type `{ty}` is not callable"),
+                        format!("value of type `{}` is not callable", self.type_name(ty)),
                     );
                 }
                 Type::Error

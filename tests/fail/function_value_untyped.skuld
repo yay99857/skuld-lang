@@ -1,0 +1,5 @@
+func main() {
+    // Nothing in this position says what the function's type is, so the
+    // parameter cannot borrow one.
+    let f = (n): int { return n }
+}

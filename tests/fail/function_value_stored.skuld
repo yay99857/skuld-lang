@@ -1,0 +1,10 @@
+// An array, an Option and an enum payload are all places a function value
+// could outlive the frame that built it.
+enum Wrap {
+    V((int) -> int)
+}
+
+func main() {
+    let actions: [](int) -> int = []
+    let maybe: Option<(int) -> int> = null
+}

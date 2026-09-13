@@ -16,6 +16,13 @@ pub struct Program {
     pub(crate) options: Vec<crate::types::OptionInfo>,
     pub(crate) results: Vec<crate::types::ResultInfo>,
     pub(crate) functions: Vec<Function>,
+    /// One entry per lambda in the program, in lowering order.
+    pub(crate) lambdas: Vec<Lambda>,
+    /// Interned function-value signatures; `Type::Function` indexes this.
+    pub(crate) function_types: Vec<crate::types::FunctionTypeInfo>,
+    /// Declared functions the program turns into values, each needing a thunk
+    /// that gives it the shape every function value has.
+    pub(crate) function_values: Vec<(SymbolId, crate::types::FunctionTypeId)>,
     /// Foreign functions: a signature and a linker name, with no body.
     pub(crate) externs: Vec<ExternFunction>,
     pub(crate) entry: SymbolId,
@@ -45,7 +52,7 @@ pub(crate) struct ExternFunction {
     pub return_type: Type,
     pub span: Span,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Parameter {
     pub id: SymbolId,
     pub ty: Type,
@@ -162,6 +169,18 @@ pub(crate) enum ExprKind {
         target: CallTarget,
         arguments: Vec<Expr>,
     },
+    /// A function value built from one lambda: its code, plus a copy of what
+    /// it captured. The copy lives in the enclosing block, which it cannot
+    /// outlive, so it needs no allocation and no reference counting.
+    Lambda {
+        index: usize,
+    },
+    /// A declared function used as a value. It captures nothing, so its
+    /// environment is empty.
+    FunctionValue {
+        id: SymbolId,
+        ty: crate::types::FunctionTypeId,
+    },
     /// Field values in source order, each paired with its layout index.
     StructLiteral {
         id: StructId,
@@ -243,13 +262,29 @@ pub(crate) enum ArrayMethod {
     Remove,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub(crate) enum CallTarget {
     Function(SymbolId),
+    /// A call through a function value, whose code and environment are only
+    /// known at run time.
+    Value(Box<Expr>),
     /// A call that leaves the program: no retain, no release, no trapping.
     Extern(SymbolId),
     Print,
 }
+/// One lambda: the function its code becomes, and the values it copied in.
+#[derive(Debug)]
+pub(crate) struct Lambda {
+    pub(crate) index: usize,
+    pub(crate) parameters: Vec<Parameter>,
+    /// Captured bindings, in resolution order. Each is immutable, so the copy
+    /// can never go stale, and none is retained.
+    pub(crate) captures: Vec<Parameter>,
+    pub(crate) return_type: Type,
+    pub(crate) body: Block,
+    pub(crate) span: Span,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnaryOp {
     Positive,

@@ -1,0 +1,7 @@
+// A managed value must never be able to reach a function value: a closure it
+// could hold, having captured it, would be a cycle nothing collects.
+class Holder {
+    action: (int) -> int
+}
+
+func main() { }

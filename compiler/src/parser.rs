@@ -218,6 +218,36 @@ impl Parser<'_> {
                 span: Span::new(start, end),
             });
         }
+        if self.at(&TokenKind::LeftParen) {
+            let start = self.bump().span.start;
+            let mut parameters = Vec::new();
+            if !self.at(&TokenKind::RightParen) {
+                loop {
+                    parameters.push(self.type_ref()?);
+                    if self.take(&TokenKind::Comma).is_none() || self.at(&TokenKind::RightParen) {
+                        break;
+                    }
+                }
+            }
+            let mut end = self
+                .expect(&TokenKind::RightParen, "`)` after the parameter types")?
+                .span
+                .end;
+            // `->` rather than `:`, so that `compare: (int, int) -> int` does
+            // not spell `:` as both "has type" and "returns".
+            let return_type = if self.take(&TokenKind::Arrow).is_some() {
+                let ty = self.type_ref()?;
+                end = ty.span().end;
+                Some(Box::new(ty))
+            } else {
+                None
+            };
+            return Ok(TypeRef::Function {
+                parameters,
+                return_type,
+                span: Span::new(start, end),
+            });
+        }
         if self.at(&TokenKind::Weak) {
             let start = self.bump().span.start;
             let class = self.path("a class name after `weak`")?;
@@ -582,6 +612,75 @@ impl Parser<'_> {
             body,
             span,
         })
+    }
+    /// Whether the `(` under the cursor opens a lambda rather than a grouped
+    /// expression. Only a lambda can be followed by `{`, `:` or `->` once its
+    /// parentheses close: no operator in the language puts any of them there.
+    /// A condition disables this the same way it disables a bare struct
+    /// literal, so `if (flag) { ... }` keeps its ordinary reading.
+    /// Whether a line break separates the token at `offset` from the next.
+    fn newline_after(&self, offset: usize) -> bool {
+        let index = (self.position + offset).min(self.tokens.len() - 1);
+        let end = self.tokens[index].span.end;
+        let next = self.tokens[(index + 1).min(self.tokens.len() - 1)]
+            .span
+            .start;
+        end <= next && self.source[end..next].contains(['\n', '\r'])
+    }
+    fn at_lambda(&self) -> bool {
+        let mut depth = 0usize;
+        let mut offset = 0usize;
+        loop {
+            match self.peek_kind(offset) {
+                TokenKind::LeftParen => depth += 1,
+                TokenKind::RightParen => {
+                    depth -= 1;
+                    if depth == 0 {
+                        // The body has to open on the same line as the
+                        // parentheses close. Without that, `var x = (None)`
+                        // followed by a block on the next line would read as a
+                        // lambda, since newlines are not tokens.
+                        return !self.newline_after(offset)
+                            && matches!(
+                                self.peek_kind(offset + 1),
+                                TokenKind::LeftBrace | TokenKind::Colon | TokenKind::Arrow
+                            );
+                    }
+                }
+                // An unbalanced `(` is a syntax error either way; let the
+                // ordinary expression parser produce it.
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            offset += 1;
+        }
+    }
+    /// Lambda parameters, where a type may be omitted because the expected
+    /// function type already names it.
+    fn lambda_parameters(&mut self) -> Parsed<Vec<LambdaParameter>> {
+        self.expect(&TokenKind::LeftParen, "`(` to begin the parameters")?;
+        let mut parameters = Vec::new();
+        if !self.at(&TokenKind::RightParen) {
+            loop {
+                let name = self.name("a parameter name")?;
+                let start = name.span.start;
+                let type_ref = if self.take(&TokenKind::Colon).is_some() {
+                    Some(self.type_ref()?)
+                } else {
+                    None
+                };
+                parameters.push(LambdaParameter {
+                    name,
+                    type_ref,
+                    span: Span::new(start, self.previous_end()),
+                });
+                if self.take(&TokenKind::Comma).is_none() || self.at(&TokenKind::RightParen) {
+                    break;
+                }
+            }
+        }
+        self.expect(&TokenKind::RightParen, "`)` after parameters")?;
+        Ok(parameters)
     }
     fn parameter_list(&mut self) -> Parsed<Vec<Parameter>> {
         self.expect(&TokenKind::LeftParen, "`(` after the name")?;
@@ -1096,6 +1195,28 @@ impl Parser<'_> {
                 } else {
                     ExprKind::Identifier(name)
                 }
+            }
+            TokenKind::LeftParen if self.struct_literals && self.at_lambda() => {
+                // `(a: int, b: int): int { ... }`. Methods already declare
+                // themselves without a keyword; a lambda is the same shape
+                // without a name.
+                let start = self.current().span.start;
+                let parameters = self.lambda_parameters()?;
+                let return_type = if self.take(&TokenKind::Colon).is_some()
+                    || self.take(&TokenKind::Arrow).is_some()
+                {
+                    Some(self.type_ref()?)
+                } else {
+                    None
+                };
+                let body = self.block()?;
+                let span = Span::new(start, body.span.end);
+                ExprKind::Lambda(Box::new(Lambda {
+                    parameters,
+                    return_type,
+                    body,
+                    span,
+                }))
             }
             TokenKind::Weak => {
                 self.bump();

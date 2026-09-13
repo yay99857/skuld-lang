@@ -123,10 +123,6 @@ fn void_and_unsupported_features() {
         DiagnosticCode::UnsupportedFeature,
     );
     fails(
-        "func main() { let f = main }",
-        DiagnosticCode::UnsupportedFeature,
-    );
-    fails(
         "func main() { print(1.0 % 2.0) }",
         DiagnosticCode::InvalidOperator,
     );
@@ -834,5 +830,57 @@ fn a_conversion_expects_a_width_of_a_literal_only() {
     fails(
         "func main() { let n: i32 = 3\nlet m: int = 4\nprint(n + m) }",
         DiagnosticCode::TypeMismatch,
+    );
+}
+
+#[test]
+fn a_declared_function_is_a_value_of_its_own_signature() {
+    // Naming a function without calling it used to be an error; M8 makes it a
+    // function value that happens to capture nothing.
+    let source = "func twice(n: int) -> int { return n * 2 }\nfunc main() { let f = twice }";
+    let typed = crate::check(source).expect("a declared function is a value");
+    let start = source.find("twice }").expect("the use");
+    assert!(matches!(
+        typed.expression_type(crate::span::Span::new(start, start + "twice".len())),
+        Some(Type::Function(_))
+    ));
+}
+
+#[test]
+fn a_function_value_may_not_be_stored_where_a_managed_value_could_reach_it() {
+    // The escape rule is the whole safety argument: a closure nothing managed
+    // can reach cannot be half of a cycle.
+    for source in [
+        "class Holder { action: (int) -> int }\nfunc main() { }",
+        "enum Wrap { V((int) -> int) }\nfunc main() { }",
+        "func give() -> (int) -> int { return (n: int): int { return n } }\nfunc main() { }",
+        "func main() { let a: [](int) -> int = [] }",
+        "func main() { let o: Option<(int) -> int> = null }",
+    ] {
+        fails(source, DiagnosticCode::InvalidValueType);
+    }
+}
+
+#[test]
+fn a_lambda_parameter_needs_a_type_when_nothing_supplies_one() {
+    fails(
+        "func main() { let f = (n): int { return n } }",
+        DiagnosticCode::UnknownType,
+    );
+}
+
+#[test]
+fn a_function_value_is_called_with_its_own_signature() {
+    fails(
+        "func apply(f: (int) -> int) -> int { return f(1, 2) }\nfunc main() { }",
+        DiagnosticCode::ArgumentCount,
+    );
+    fails(
+        "func apply(f: (int) -> int) -> int { return f(\"x\") }\nfunc main() { }",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "func main() { let n = 1\n n() }",
+        DiagnosticCode::NotCallable,
     );
 }

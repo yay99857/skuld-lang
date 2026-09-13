@@ -1,0 +1,98 @@
+// Function values: a lambda is a function declaration without a name, and a
+// function value is an argument or a local and nothing else.
+//
+// That restriction is what makes it free. A value nothing managed can hold
+// cannot be half of a reference cycle, so a lambda needs no allocation, no
+// retain and no release — its captures are copied into the enclosing frame.
+
+class Tag {
+    text: string
+
+    show() -> string {
+        return "<${this.text}>"
+    }
+}
+
+func apply(value: int, f: (int) -> int) -> int {
+    return f(value)
+}
+
+func each(values: []int, f: (int) -> void) {
+    for value in values {
+        f(value)
+    }
+}
+
+func count_if(values: []int, keep: (int) -> bool) -> int {
+    var total = 0
+    for value in values {
+        if keep(value) {
+            total = total + 1
+        }
+    }
+    return total
+}
+
+func double(n: int) -> int {
+    return n * 2
+}
+
+func run(f: () -> void) {
+    f()
+}
+
+func main() {
+    // A lambda bound to a local, and one written where it is used.
+    let increment = (n: int): int { return n + 1 }
+    print(apply(10, increment))
+    print(apply(10, (n: int): int { return n * n }))
+
+    // A declared function is a value of its own signature.
+    print(apply(10, double))
+
+    // The expected type supplies a parameter type that is not written.
+    print(apply(10, (n): int { return n - 4 }))
+
+    // `->` and `:` both introduce a result, as they do on a method.
+    print(apply(3, (n: int) -> int { return n * 100 }))
+
+    // Captures are copies of immutable bindings, so nothing can go stale.
+    let base = 1000
+    print(apply(5, (n: int): int { return n + base }))
+
+    // Managed captures: a string, a class and an array. None is retained,
+    // because the value cannot outlive the frame that built it.
+    let name = "ada"
+    let tag = new Tag(text: "lovelace")
+    let numbers = [3, 1, 2]
+    run((): void {
+        print("${name} ${tag.show()} ${numbers.len()}")
+    })
+
+    // A lambda is an ordinary argument, so it composes with the rest.
+    each(numbers, (value: int): void { print(value * 10) })
+    print(count_if(numbers, (value: int): bool { return value > 1 }))
+
+    // Control flow inside a lambda belongs to the lambda.
+    print(apply(9, (n: int): int {
+        if n > 5 {
+            return n
+        }
+        return 0
+    }))
+
+    // Nested lambdas: the inner one reads what the outer one carries.
+    let outer = 7
+    run((): void {
+        run((): void {
+            print(outer)
+        })
+    })
+
+    // A parenthesised condition is still a condition, and a grouped
+    // expression is still a group.
+    let flag = true
+    if (flag) {
+        print((1 + 2) * 3)
+    }
+}

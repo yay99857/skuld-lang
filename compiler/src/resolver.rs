@@ -78,6 +78,9 @@ pub struct Resolution {
     pub file_scopes: Vec<ScopeId>,
     /// The declaration scope of each module, by `ModuleId`.
     pub module_scopes: Vec<ScopeId>,
+    /// What each lambda captures, keyed by its file and body-brace offset, in
+    /// declaration order. A capture is a name the body used and did not bind.
+    pub captures: BTreeMap<(FileId, usize), Vec<SymbolId>>,
 }
 
 impl Resolution {
@@ -112,7 +115,9 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
             references: BTreeMap::new(),
             file_scopes: vec![ScopeId(0); program.files.len()],
             module_scopes: Vec::new(),
+            captures: BTreeMap::new(),
         },
+        lambdas: Vec::new(),
         diagnostics: Vec::new(),
         current: ScopeId(0),
         file: FileId(0),
@@ -270,8 +275,61 @@ struct Resolver {
     /// byte offsets alone no longer identify a position in the program.
     file: FileId,
     module: Option<ModuleId>,
+    /// The body scope and body offset of each lambda being walked, innermost
+    /// last. A name resolved outside one of these crossed its boundary.
+    lambdas: Vec<(ScopeId, usize)>,
 }
 impl Resolver {
+    /// Whether `scope` lies inside `outer`, which is what decides whether a
+    /// name a lambda used is its own or one it captured.
+    fn within(&self, outer: ScopeId, scope: ScopeId) -> bool {
+        let mut current = Some(scope);
+        while let Some(id) = current {
+            if id == outer {
+                return true;
+            }
+            current = self.result.scopes[id.0].parent;
+        }
+        false
+    }
+    /// Record a name a lambda body used but did not declare. Nested lambdas
+    /// each capture it in turn, since an inner one can only read what the
+    /// outer one already carries.
+    fn capture(&mut self, symbol: SymbolId, span: Span) {
+        if self.lambdas.is_empty() {
+            return;
+        }
+        let kind = self.result.symbols[symbol.0].kind;
+        if !matches!(kind, SymbolKind::Parameter | SymbolKind::Variable(_)) {
+            // Functions, enums, modules and the prelude are reachable from
+            // anywhere; only a binding can be captured.
+            return;
+        }
+        let scope = self.result.symbols[symbol.0].scope;
+        for index in 0..self.lambdas.len() {
+            let (lambda_scope, offset) = self.lambdas[index];
+            if self.within(lambda_scope, scope) {
+                continue;
+            }
+            if kind == SymbolKind::Variable(Mutability::Mutable) {
+                self.error(
+                    DiagnosticCode::ImmutableAssignment,
+                    span,
+                    format!(
+                        "`{}` is declared with `var`, and a function value captures values rather than variables",
+                        self.result.symbols[symbol.0].name
+                    ),
+                    "copy it into a `let` before the function value, or pass it as a parameter"
+                        .into(),
+                );
+                return;
+            }
+            let captures = self.result.captures.entry((self.file, offset)).or_default();
+            if !captures.contains(&symbol) {
+                captures.push(symbol);
+            }
+        }
+    }
     fn error(&mut self, code: DiagnosticCode, span: Span, message: String, help: String) {
         self.diagnostics.push(FileDiagnostic {
             file: self.file,
@@ -360,6 +418,7 @@ impl Resolver {
             self.result
                 .references
                 .insert((self.file, name.span.start), id);
+            self.capture(id, name.span);
         } else {
             self.error(
                 DiagnosticCode::UnknownName,
@@ -562,6 +621,19 @@ impl Resolver {
                 for field in fields {
                     self.expression(&field.value);
                 }
+            }
+            ExprKind::Lambda(lambda) => {
+                // Parameters and the body share one scope, as they do in a
+                // declared function. Names the body does not bind resolve
+                // outward, which is what makes a capture a capture.
+                self.enter(lambda.body.span);
+                for parameter in &lambda.parameters {
+                    self.declare(&parameter.name, SymbolKind::Parameter, Visibility::Private);
+                }
+                self.lambdas.push((self.current, lambda.body.span.start));
+                self.statements(&lambda.body);
+                self.lambdas.pop();
+                self.leave();
             }
             ExprKind::Weak(value) => {
                 if let Some(value) = value {

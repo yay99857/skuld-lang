@@ -7,12 +7,19 @@ use crate::{
     type_checker::TypedProgram,
     types::{EnumId, Type},
 };
+use std::cell::RefCell;
 
 /// The checked program, plus the file being walked. Byte offsets repeat
 /// across files, so every table lookup needs both.
 struct Lowering<'a> {
     typed: &'a TypedProgram,
     file: FileId,
+    /// Every lambda in the program, shared by all files so that one index
+    /// names one lambda.
+    lambdas: &'a RefCell<Vec<h::Lambda>>,
+    /// Declared functions used as values, collected here rather than found
+    /// again by walking the finished HIR.
+    function_values: &'a RefCell<Vec<(crate::resolver::SymbolId, crate::types::FunctionTypeId)>>,
 }
 
 impl Lowering<'_> {
@@ -53,10 +60,14 @@ pub fn lower(typed: TypedProgram) -> h::Program {
     let mut externs = Vec::new();
     // Every file of every module, in load order. Symbol ids are already
     // unique across the program, so nothing here has to disambiguate them.
+    let lambdas = RefCell::new(Vec::new());
+    let function_values = RefCell::new(Vec::new());
     let files: Vec<Lowering<'_>> = (0..typed.program.files.len())
         .map(|index| Lowering {
             typed: &typed,
             file: FileId(index),
+            lambdas: &lambdas,
+            function_values: &function_values,
         })
         .collect();
     for cx in &files {
@@ -126,8 +137,15 @@ pub fn lower(typed: TypedProgram) -> h::Program {
             }
         }
     }
+    let lambdas = lambdas.into_inner();
+    let mut function_values = function_values.into_inner();
+    function_values.sort();
+    function_values.dedup();
     h::Program {
         externs,
+        lambdas,
+        function_types: typed.function_signatures.clone(),
+        function_values,
         structs: typed.structs.clone(),
         enums: typed.enums.clone(),
         arrays: typed.arrays.clone(),
@@ -303,6 +321,59 @@ fn strip_groups(mut expr: &ast::Expr) -> &ast::Expr {
 }
 fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
     let kind = match &source.kind {
+        ast::ExprKind::Lambda(lambda) => {
+            let Some(Type::Function(ty)) = cx.ty(source.span) else {
+                unreachable!("internal compiler bug: unchecked function value")
+            };
+            let parameters = lambda
+                .parameters
+                .iter()
+                .map(|parameter| {
+                    let id = cx.decl(parameter.name.span);
+                    h::Parameter {
+                        id,
+                        ty: cx.typed.symbol_types[id.0],
+                        span: parameter.span,
+                    }
+                })
+                .collect();
+            // The resolver already worked out which names crossed the body's
+            // boundary; each is copied in, and each is immutable, so the copy
+            // can never disagree with the original.
+            let captures = cx
+                .typed
+                .resolution
+                .captures
+                .get(&(cx.file, lambda.body.span.start))
+                .map(|symbols| {
+                    symbols
+                        .iter()
+                        .map(|id| h::Parameter {
+                            id: *id,
+                            ty: cx.typed.symbol_types[id.0],
+                            span: lambda.span,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let index = cx.lambdas.borrow().len();
+            // Reserved before the body is lowered, so a nested lambda cannot
+            // take this one's index.
+            cx.lambdas.borrow_mut().push(h::Lambda {
+                index,
+                parameters,
+                captures,
+                return_type: cx.typed.function_signatures[ty.0].return_type,
+                body: h::Block {
+                    statements: Vec::new(),
+                    span: lambda.body.span,
+                },
+                span: lambda.span,
+            });
+            let body = block(&lambda.body, cx);
+            cx.lambdas.borrow_mut()[index].body = body;
+            h::ExprKind::Lambda { index }
+        }
         ast::ExprKind::Array(elements) => {
             h::ExprKind::Array(elements.iter().map(|e| expression(e, cx)).collect())
         }
@@ -380,10 +451,18 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
         },
         ast::ExprKind::Identifier(name) => {
             let id = cx.reference(name.span);
-            if cx.typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::None) {
-                h::ExprKind::None
-            } else {
-                h::ExprKind::Local(id)
+            match cx.typed.resolution.symbols[id.0].kind {
+                SymbolKind::Builtin(Builtin::None) => h::ExprKind::None,
+                // A declared function named where a value is expected becomes
+                // a function value with nothing captured.
+                SymbolKind::Function => {
+                    let Some(Type::Function(ty)) = cx.ty(source.span) else {
+                        unreachable!("internal compiler bug: unchecked function value")
+                    };
+                    cx.function_values.borrow_mut().push((id, ty));
+                    h::ExprKind::FunctionValue { id, ty }
+                }
+                _ => h::ExprKind::Local(id),
             }
         }
         ast::ExprKind::Group(inner) => expression(inner, cx).kind,
@@ -561,6 +640,19 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     ty: cx.ty(source.span).expect("checked expression"),
                     span: source.span,
                 };
+            }
+            // A call through a value: the callee is an expression, not a name.
+            if !matches!(strip_groups(callee).kind, ast::ExprKind::Identifier(_))
+                || matches!(cx.ty(callee.span), Some(Type::Function(_)))
+            {
+                return wrap_expression(
+                    h::ExprKind::Call {
+                        target: h::CallTarget::Value(Box::new(expression(callee, cx))),
+                        arguments: arguments.iter().map(|e| expression(e, cx)).collect(),
+                    },
+                    source,
+                    cx,
+                );
             }
             let ast::ExprKind::Identifier(name) = &strip_groups(callee).kind else {
                 unreachable!("internal compiler bug: indirect checked call")

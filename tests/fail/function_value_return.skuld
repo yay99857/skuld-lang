@@ -1,0 +1,5 @@
+func give() -> (int) -> int {
+    return (n: int): int { return n }
+}
+
+func main() { }
