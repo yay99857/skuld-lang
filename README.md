@@ -356,12 +356,14 @@ and iteration) and M1 (Enums and `match`), alongside
 Option, classes, weak references and arrays.
 M8 (function values and stable sorting), M9 (blocking TCP, HTTP and JSON)
 and M10 (class interfaces) are also implemented, as is `let ... else`.
-The LSP provides diagnostics, completion, hover and definition.
+M11 (the official formatter, `skuld fmt`) and M12 (LSP refactoring) are
+implemented too. The LSP provides diagnostics, completion, hover, definition,
+find-references and rename.
 
 No implementation milestone is active. [ROADMAP.md](ROADMAP.md#next-sequence--planned-not-selected)
-proposes M11–M18: formatting, LSP refactoring, local CLI applications and tests,
+proposes M13–M18: local CLI applications and tests,
 construction defaults, maps, host-name resolution, verified HTTPS, and measured
-performance/portability. M11 is the recommended next step; each milestone still
+performance/portability. M13 is the recommended next step; each milestone still
 requires explicit selection and its open design decisions. General generics and
 self-hosting remain separate candidates.
 Status is reported as completed milestones, not as a completion percentage, and

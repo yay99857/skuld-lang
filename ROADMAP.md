@@ -1,10 +1,9 @@
 # Skuld roadmap
 
 This document records completed milestones and a **proposed** next sequence.
-M1–M11 are implemented. No implementation milestone is active. The current
-request authorizes planning, not starting any of the milestones below; each
-still needs explicit selection and any open design decisions recorded in
-`AGENTS.md`. See `LANGUAGE.md` for semantics and `README.md` for usage.
+M1–M12 are implemented. No implementation milestone is active. Starting any of
+the milestones below still needs explicit selection and any open design
+decisions recorded in `AGENTS.md`. See `LANGUAGE.md` for semantics and `README.md` for usage.
 
 The original target — fetching an HTTP document by IPv4 address and decoding
 JSON — is reached. The next proposed target is a small native command-line
@@ -14,12 +13,14 @@ come before expanding the type system or changing the backend.
 
 ## Current baseline
 
-- **Implemented:** M1–M11, including non-escaping lambdas, stable array sorting,
-  storable class interfaces, modules, the embedded library, blocking HTTP, and
-  the official formatter (`skuld fmt` with `--check`).
+- **Implemented:** M1–M12, including non-escaping lambdas, stable array sorting,
+  storable class interfaces, modules, the embedded library, blocking HTTP, the
+  official formatter (`skuld fmt` with `--check`) and verified rename in the
+  editor.
   `let ... else` also unwraps Option/Result without nesting the success path.
 - **Tooling implemented:** highlighting, the official formatter `skuld fmt`, and
-  a third workspace crate, `lsp/`, with diagnostics, completion, hover and definition.
+  a third workspace crate, `lsp/`, with diagnostics, completion, hover,
+  definition, find-references and rename.
 - **Current limits:** required named fields at construction; no user-defined
   constructors or field defaults; no maps or general generics; no file/argument
   standard library; no language test command. Network
@@ -30,8 +31,7 @@ come before expanding the type system or changing the backend.
   `=>` sorting callback was superseded by M8's `(a, b): int { ... }` form.
   No proposed milestone adds `undefined` or implicit zero values.
 
-The assessment above follows source, fixtures and documentation; this planning
-change does not constitute a fresh execution of the test suite.
+The assessment above follows source, fixtures and documentation.
 
 ## M1 — Enums and `match` — Implemented
 
@@ -498,17 +498,15 @@ Not sequenced with the milestones above and not blocking any of them.
     type knows its module, not its file — so it is found in the syntax the
     program was loaded from, the only record of where something was written.
     The prelude has a hover and no definition: it belongs to the language.
-- **Still planned.** Find-references and rename, which want a use table read
-  the other way round, and formatting, which wants the syntax to stop moving.
-  `LANGUAGE.md` names
-  `fmt`, `test`, `doc` and `new` as future commands; the official formatter in
-  particular has been deferred since the beginning and can land whenever the
-  syntax stops moving.
+- **References and rename — implemented, as M12 below.** They read the use
+  table the other way round, and the safety they need is described there.
+- **Still planned.** `LANGUAGE.md` names `test`, `doc` and `new` as future
+  commands; `fmt` arrived with M11.
 
 ## Next sequence — Planned, not selected
 
 The numbers express a recommended order, not a requirement to implement every
-entry. M11 and M12 improve daily use without new language semantics. M13 is the
+entry. M11 and M12 improved daily use without new language semantics. M13 is the
 first application milestone. M14 and M15 address language ergonomics separately;
 M16 and M17 require explicit foreign-boundary and dependency decisions.
 M18 can collect a baseline earlier, but optimizations must follow measurements.
@@ -516,7 +514,7 @@ M18 can collect a baseline earlier, but optimizations must follow measurements.
 | Milestone | Deliverable | Dependency |
 | --- | --- | --- |
 | M11 | Official formatter | Implemented |
-| M12 | References and safe rename in the LSP | Existing semantic tables |
+| M12 | References and safe rename in the LSP | Implemented |
 | M13 | Local CLI applications and `skuld test` | File/process API design |
 | M14 | Field defaults and construction | Initialization design |
 | M15 | A map for real application data | Collection/type-system decision |
@@ -551,19 +549,51 @@ The tool that makes Skuld code consistent and keeps review discussions on behavi
   untouched. Integration tests in `cli/tests/fmt.rs` and `cli/tests/cli.rs`.
 - **Out of scope, and still out:** syntax changes, import reorganization, and lint rules.
 
-## M12 — References and rename — Planned
+## M12 — References and rename — Implemented
 
-- **Purpose:** make refactoring a multi-module program reliable in the editor.
-- **Scope:** find references, prepare rename and workspace edits for declarations
-  and their resolved uses, including members and qualified imports where supported.
-  Respect open unsaved buffers, file-qualified spans and UTF-16 LSP positions.
-- **Decisions before implementation:** workspace/program-root discovery and the
-  initial set of renameable symbols. Refuse edits when semantic information is
-  stale or a rename would introduce collisions or alter name resolution.
-- **Closing marker:** rename an exported declaration across a multi-file program
-  and recheck it; shadowed names, comments and string contents remain unchanged.
-  Tests cover unsaved files, Unicode positions, collisions and invalid source.
-- **Out of scope:** incremental compilation, automatic fixes and editor-specific UI.
+Refactoring a multi-module program from the editor, without reading every file
+to be sure nothing was missed.
+
+- **Implemented:** `textDocument/references` over the declaration and every
+  resolved use, with `includeDeclaration` honoured; `textDocument/prepareRename`
+  answering the range and placeholder or the reason for a refusal; and
+  `textDocument/rename` returning a workspace edit across every file of every
+  program the server has checked. Offsets are the compiler's bytes and the
+  ranges are UTF-16, like every other answer.
+- **Decision taken — what a workspace is.** The server is told about documents,
+  not about a directory tree, and a Skuld program is identified by its entry
+  file. So the searched set is the programs the editor has open: each document
+  is compiled as the entry of its own program, and a module's uses are found
+  through whichever entry file reaches it. A program nothing open reaches is not
+  searched, and inventing a root by scanning directories would have meant the
+  server reading files nobody asked it to open. Closing a document forgets its
+  check, so a reference search never answers out of a text nobody is looking at.
+- **Decision taken — the initial set of renameable symbols.** Functions,
+  parameters and locals, which are exactly the names the resolver's tables
+  record. A prelude binding, an import qualifier — the last segment of a
+  directory path — a struct, class or enum name, a field, a method, and anything
+  declared in the embedded standard library are each refused with the reason
+  they are refused. Type names are the notable gap: they live in the checker's
+  own namespace and their uses in annotations are not in the use table, so a
+  rename would leave the annotations behind. Moving them means recording type
+  uses, which is a compiler change and not a server one.
+- **Decision taken — a rename is verified, not trusted.** Rewriting the recorded
+  uses is the easy half. Every program the edit touches is checked again over
+  the edited texts, and where each name resolves is compared before and after,
+  offsets shifted by the edits that precede them. A new name that captured a use
+  from an outer scope, or lost one to an inner scope, is refused with its reason
+  even though the result would compile. A buffer that has changed since it last
+  checked is refused too, because its recorded offsets are positions in a text
+  that no longer exists.
+- **Closing marker — reached:** renaming `origin` in `tests/pass/modules/geometry`
+  from the file that imports it edits both files at once and writes neither —
+  a workspace edit is the client's to apply. Tests cover unsaved buffers, an
+  astral character on the edited line, a collision the checker reports, a
+  capture the checker would not, a stale buffer, invalid source, and the
+  refusals above.
+- **Out of scope, and still out:** incremental compilation, automatic fixes,
+  editor-specific UI, renaming a type or a member, and a workspace the editor
+  has not opened.
 
 ## M13 — Local CLI applications and tests — Planned
 

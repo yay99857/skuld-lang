@@ -215,6 +215,8 @@ accurate; documenting a future feature is not a request to implement it.
   `//` comments, exact literal representations, statement boundaries and AST
   semantics. Return types normalize to `-> Type` while `:` remains fully accepted
   in source. All fixtures and examples format idempotently and execute cleanly.
+  M12 (references and rename in the LSP) is complete; its two open decisions
+  were taken as recorded below and in `ROADMAP.md`.
   No milestone is active. Do not infer authorization for further features without
   explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
@@ -308,6 +310,21 @@ accurate; documenting a future feature is not a request to implement it.
   and AST semantics. Top-level and method signatures normalize to `-> Type`, while
   colon return type syntax remains accepted. Match arms normalize to `Pattern: ...`.
   Idempotency and native output preservation are tested across all fixtures.
+- The language server finds references and renames. A workspace is the set of
+  programs the editor has open: each document is compiled as the entry file of
+  its own program, so a module's uses are found through whichever entry file
+  reaches it, a program nothing open reaches is not searched, and closing a
+  document forgets its check. Renameable names are functions, parameters and
+  locals — exactly what the resolver's tables record. A prelude binding, an
+  import qualifier, a type name, a field, a method and anything from the
+  embedded standard library are refused with their reason; type names would
+  need the checker to record where a type is written, which is a compiler
+  change. A rename is verified rather than trusted: every program the edit
+  touches is checked again over the edited texts and the map from each name to
+  the declaration it reaches is compared before and after, so a capture that
+  would still compile is refused. A buffer that has changed since it last
+  checked is refused, since its recorded offsets describe a text that is gone.
+  The server writes nothing: a workspace edit is the client's to apply.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built
