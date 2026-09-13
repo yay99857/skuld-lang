@@ -122,3 +122,23 @@ fn an_unknown_receiver_offers_nothing_rather_than_everything() {
     let typing = format!("{program}// mystery.");
     assert!(at(&typing, typing.len(), Some(&typed)).is_empty());
 }
+
+#[test]
+fn names_an_interface_and_a_function_type_instead_of_a_placeholder() {
+    // Both live in the checker's own tables, so `Display` alone renders them
+    // `<interface>` and `<function>` — which is what a hover used to show.
+    let source = "interface Printable {\n    describe() -> string\n}\n\nclass User: Printable {\n    name: string\n    describe() -> string {\n        return this.name\n    }\n}\n\nfunc run(shown: Printable, pick: (int, int) -> int) {\n    print(shown.describe())\n    print(pick(1, 2))\n}\n\nfunc main() {\n    run(new User(name: \"a\"), (a: int, b: int) -> int { return a - b })\n}\n";
+    let typed = skuld_compiler::check(source).expect("the fixture checks");
+    let resolution = typed.resolution();
+    let named = |name: &str| {
+        let symbol = resolution
+            .symbols
+            .iter()
+            .position(|info| info.name == name)
+            .map(skuld_compiler::resolver::SymbolId)
+            .expect("a symbol with this name");
+        type_name(&typed, typed.symbol_type(symbol))
+    };
+    assert_eq!(named("shown"), "Printable");
+    assert_eq!(named("pick"), "(int, int) -> int");
+}

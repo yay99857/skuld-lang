@@ -411,6 +411,28 @@ pub fn type_name(typed: &TypedProgram, ty: Type) -> String {
             .get(id.0)
             .map(|info| format!("weak {}", info.name))
             .unwrap_or_else(|| "weak".to_owned()),
+        Type::Interface(id) => typed
+            .interfaces()
+            .get(id.0)
+            .map(|info| info.name.clone())
+            .unwrap_or_else(|| "<interface>".to_owned()),
+        // A function type has no declaration to name it, so it is written the
+        // way the language writes one: `(int, int) -> bool`.
+        Type::Function(id) => typed
+            .function_signatures()
+            .get(id.0)
+            .map(|info| {
+                format!(
+                    "({}) -> {}",
+                    info.parameters
+                        .iter()
+                        .map(|parameter| type_name(typed, *parameter))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    type_name(typed, info.return_type)
+                )
+            })
+            .unwrap_or_else(|| "<function>".to_owned()),
         other => other.to_string(),
     }
 }

@@ -78,6 +78,19 @@ impl TypedProgram {
     pub fn structs(&self) -> &[StructInfo] {
         &self.structs
     }
+    /// Declared interfaces, in declaration order, which is what
+    /// `Type::Interface` indexes. Exposed for the same reason `structs` is: a
+    /// tool that names a type needs the table, and nothing inside the compiler
+    /// needed it exposed before.
+    pub fn interfaces(&self) -> &[InterfaceInfo] {
+        &self.interfaces
+    }
+    /// The signatures function values carry, which `Type::Function` indexes.
+    /// A function type has no declaration to point at, so this table is the
+    /// only place its parameters and result are written down.
+    pub fn function_signatures(&self) -> &[FunctionTypeInfo] {
+        &self.function_signatures
+    }
     /// The checked type of a resolved symbol: a local, a parameter or a
     /// binding. A symbol that names a function has no value type, and reads
     /// as `Type::Error` here; ask `signature` for that instead.
