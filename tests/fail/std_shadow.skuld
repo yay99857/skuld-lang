@@ -1,0 +1,7 @@
+// `tests/fail/std/utf8/` sits right beside this file and is still unreachable:
+// the reserved prefix is served from the compiler, so `decoy` does not exist.
+import "std/utf8"
+
+func main() {
+    print(utf8.decoy())
+}

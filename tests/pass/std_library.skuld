@@ -1,0 +1,66 @@
+// The standard library, imported by a program that lives anywhere: `std` is a
+// reserved prefix served from the compiler binary, so this file needs no
+// directory beside it.
+import "std/utf8"
+import "std/strings"
+import "std/cstring"
+
+func show_decode(label: string, bytes: []u8) {
+    match utf8.decode(bytes) {
+        Ok(text): print("${label}: ${text}")
+        Err(error): print("${label}: ${utf8.describe(error)}")
+    }
+}
+
+func main() {
+    // Parsing the shape of an HTTP status line, which is what these helpers
+    // exist for.
+    let line = "  HTTP/1.1 200 OK \r\n"
+    let trimmed = strings.trim(line)
+    print(strings.starts_with(trimmed, "HTTP/"))
+    print(strings.ends_with(trimmed, "OK"))
+    let fields = strings.split(trimmed, " ")
+    print(fields.len())
+    print(fields[1])
+    print(strings.join(fields, "|"))
+
+    if let at = strings.index_of("Content-Length: 42", ": ") {
+        print(at)
+    }
+    print(strings.contains("Content-Length: 42", "Type"))
+
+    // Bytes to text, with an error that says what is wrong and where.
+    show_decode("text", "olá".bytes())
+    var truncated: []u8 = []
+    truncated.push(226)
+    truncated.push(130)
+    show_decode("truncated", truncated)
+    var surrogate: []u8 = []
+    surrogate.push(237)
+    surrogate.push(160)
+    surrogate.push(128)
+    show_decode("surrogate", surrogate)
+
+    match utf8.count("日本語".bytes()) {
+        Ok(points): print(points)
+        Err(error): print(utf8.describe(error))
+    }
+
+    // A NUL-terminated buffer for C, and the refusal when one cannot exist.
+    match cstring.to_c("path") {
+        Ok(buffer): print("${buffer.len()} ${buffer[4]}")
+        Err(error): print(cstring.describe(error))
+    }
+    var embedded: []u8 = []
+    embedded.push(97)
+    embedded.push(0)
+    match utf8.decode(embedded) {
+        Ok(text): {
+            match cstring.to_c(text) {
+                Ok(buffer): print("accepted a NUL")
+                Err(error): print(cstring.describe(error))
+            }
+        }
+        Err(error): print(utf8.describe(error))
+    }
+}

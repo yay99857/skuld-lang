@@ -1,0 +1,5 @@
+// Never compiled: `std` is reserved, so this directory is unreachable. It
+// exists to prove that, by offering a name the real module does not have.
+pub func decoy() -> int {
+    return 1
+}

@@ -1,0 +1,5 @@
+// A reserved path that names no module is an error, never a fallback to disk.
+import "std/nope"
+
+func main() {
+}
