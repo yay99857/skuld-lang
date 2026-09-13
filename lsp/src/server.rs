@@ -122,6 +122,18 @@ impl Server {
                 None
             }
 
+            (Some("textDocument/typeDefinition"), Some(id)) => {
+                let location = self.type_definition(message);
+                respond(output, id.clone(), location);
+                None
+            }
+
+            (Some("textDocument/implementation"), Some(id)) => {
+                let locations = self.implementations(message);
+                respond(output, id.clone(), locations);
+                None
+            }
+
             (Some("textDocument/references"), Some(id)) => {
                 let locations = self.references(message);
                 respond(output, id.clone(), locations);
@@ -398,6 +410,60 @@ impl Server {
                 "range",
                 Json::object([("start", position_json(start)), ("end", position_json(end))]),
             ),
+        ])
+    }
+
+    /// Answer `textDocument/typeDefinition` with where the type of the thing
+    /// under the cursor was declared, which is the question definition cannot
+    /// answer: on `u` in `let u = new User(...)`, definition leads to the
+    /// binding and this leads to `class User`.
+    fn type_definition(&self, message: &Json) -> Json {
+        let Some(path) = document_path(message) else {
+            return Json::Null;
+        };
+        let Some((source, offset, typed)) = self.position_context(message) else {
+            return Json::Null;
+        };
+        match query::type_definition(source, offset, typed) {
+            Some((file, span)) => self.location(&path, typed, file, span),
+            None => Json::Null,
+        }
+    }
+
+    /// Answer `textDocument/implementation` with the classes that declare they
+    /// implement the interface under the cursor — or, on one of its methods,
+    /// with the bodies that implement that method.
+    fn implementations(&self, message: &Json) -> Json {
+        let empty = Json::Array(Vec::new());
+        let Some(path) = document_path(message) else {
+            return empty;
+        };
+        let Some((source, offset, typed)) = self.position_context(message) else {
+            return empty;
+        };
+        Json::Array(
+            query::implementations(source, offset, typed)
+                .into_iter()
+                .map(|(file, span)| self.location(&path, typed, file, span))
+                .filter(|location| *location != Json::Null)
+                .collect(),
+        )
+    }
+
+    /// A location in a file of a program, as the protocol carries one. The
+    /// span is measured against the text that file was checked with, which is
+    /// the text the span came from.
+    fn location(&self, document: &str, typed: &TypedProgram, file: FileId, span: Span) -> Json {
+        let Some(declaring) = typed.program().files.get(file.0) else {
+            return Json::Null;
+        };
+        let Some(target) = file_path(document, typed, file) else {
+            return Json::Null;
+        };
+        let positions = Positions::new(declaring.source.clone());
+        Json::object([
+            ("uri", Json::string(path_to_uri(&target))),
+            ("range", range_json(&positions, span)),
         ])
     }
 
@@ -1298,6 +1364,11 @@ fn initialize_result() -> Json {
             // fragment, so there is no honest answer for a range.
             ("documentFormattingProvider", Json::Bool(true)),
             ("definitionProvider", Json::Bool(true)),
+            ("typeDefinitionProvider", Json::Bool(true)),
+            // Conformance is declared in Skuld, never inferred, so this
+            // answers from the declarations rather than from a search for
+            // classes that happen to have the methods.
+            ("implementationProvider", Json::Bool(true)),
             ("referencesProvider", Json::Bool(true)),
             (
                 "renameProvider",

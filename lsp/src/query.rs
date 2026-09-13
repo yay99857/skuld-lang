@@ -121,6 +121,16 @@ pub fn target_at(source: &str, offset: usize, typed: &TypedProgram) -> Option<Ta
             word,
         ));
     }
+    if let Some(id) = typed
+        .interfaces()
+        .iter()
+        .position(|info| info.name == word.text)
+    {
+        return Some(Target::Type(
+            Type::Interface(skuld_compiler::types::InterfaceId(id)),
+            word,
+        ));
+    }
     None
 }
 
@@ -145,6 +155,7 @@ pub fn describe(typed: &TypedProgram, target: &Target) -> Option<String> {
                 format!("{keyword} {}", word.text)
             }
             Type::Enum(_) => format!("enum {}", word.text),
+            Type::Interface(_) => format!("interface {}", word.text),
             other => type_name(typed, *other),
         },
     })
@@ -155,32 +166,7 @@ pub fn describe(typed: &TypedProgram, target: &Target) -> Option<String> {
 pub fn definition(source: &str, offset: usize, typed: &TypedProgram) -> Option<(FileId, Span)> {
     match target_at(source, offset, typed)? {
         Target::Symbol(symbol, _) => declaration_of(typed, symbol),
-        Target::Type(Type::Struct(id), _) => {
-            let info = typed.structs().get(id.0)?;
-            declaring_file(typed, |program| {
-                program
-                    .structs
-                    .iter()
-                    .any(|declaration| declaration.span == info.span)
-            })
-            .map(|file| (file, info.span))
-        }
-        Target::Type(Type::Enum(id), _) => {
-            let name = typed.enums().get(id.0)?.name.clone();
-            let mut found = None;
-            for (index, file) in typed.program().files.iter().enumerate() {
-                if let Some(declaration) = file
-                    .program
-                    .enums
-                    .iter()
-                    .find(|declaration| declaration.name.text == name)
-                {
-                    found = Some((FileId(index), declaration.name.span));
-                    break;
-                }
-            }
-            found
-        }
+        Target::Type(ty, _) => type_declaration(typed, ty),
         Target::Member {
             receiver: Type::Struct(id),
             word,
@@ -199,8 +185,168 @@ pub fn definition(source: &str, offset: usize, typed: &TypedProgram) -> Option<(
             .map(|file| (file, field.span))
         }
         // A builtin method belongs to the language, not to a file.
-        Target::Member { .. } | Target::Type(_, _) => None,
+        Target::Member { .. } => None,
     }
+}
+
+/// Where a position's **type** is declared: `let u = new User(...)` with the
+/// cursor on `u` leads to `class User`, which is the question definition
+/// cannot answer, since it leads to the binding instead.
+///
+/// A container is looked through: the type definition of a `[]User` is `User`,
+/// and so is a `weak User`'s and an `Option<User>`'s. A `Result` leads to its
+/// success side, which is the one a reader is following.
+pub fn type_definition(
+    source: &str,
+    offset: usize,
+    typed: &TypedProgram,
+) -> Option<(FileId, Span)> {
+    let ty = match target_at(source, offset, typed)? {
+        // A function name has no value type — the checker reads it as
+        // `Type::Error` — and its signature is not a declaration to jump to.
+        Target::Symbol(symbol, _) => typed.symbol_type(symbol),
+        Target::Member { receiver, word } => member_type(typed, receiver, &word)?,
+        // A type name is already its own type.
+        Target::Type(ty, _) => ty,
+    };
+    type_declaration(typed, underlying(typed, ty))
+}
+
+/// Every class that declares it implements the interface at a position, and,
+/// when the position is one of the interface's methods, the implementations of
+/// that method rather than the classes themselves.
+///
+/// Conformance is declared in Skuld, never inferred, so this reads the
+/// declarations rather than looking for classes that happen to have the
+/// methods.
+pub fn implementations(source: &str, offset: usize, typed: &TypedProgram) -> Vec<(FileId, Span)> {
+    let Some(target) = target_at(source, offset, typed) else {
+        return Vec::new();
+    };
+    let (interface, method) = match &target {
+        Target::Type(Type::Interface(id), _) => (*id, None),
+        Target::Member {
+            receiver: Type::Interface(id),
+            word,
+        } => (*id, Some(word.text.clone())),
+        _ => return Vec::new(),
+    };
+    let Some(name) = typed.interfaces().get(interface.0).map(|info| &info.name) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for (index, file) in typed.program().files.iter().enumerate() {
+        for declaration in &file.program.structs {
+            if !declaration
+                .conforms
+                .iter()
+                .any(|path| &path.name.text == name)
+            {
+                continue;
+            }
+            match &method {
+                Some(method) => found.extend(
+                    declaration
+                        .methods
+                        .iter()
+                        .filter(|declared| &declared.name.text == method)
+                        .map(|declared| (FileId(index), declared.name.span)),
+                ),
+                None => found.push((FileId(index), declaration.name.span)),
+            }
+        }
+    }
+    found
+}
+
+/// Where a type was declared. A type that has no declaration of its own — an
+/// integer, a string, an array — leads nowhere, which is not a failure.
+fn type_declaration(typed: &TypedProgram, ty: Type) -> Option<(FileId, Span)> {
+    match ty {
+        Type::Struct(id) | Type::Weak(id) => {
+            let info = typed.structs().get(id.0)?;
+            declaring_file(typed, |program| {
+                program
+                    .structs
+                    .iter()
+                    .any(|declaration| declaration.span == info.span)
+            })
+            .map(|file| (file, info.span))
+        }
+        Type::Enum(id) => {
+            let name = typed.enums().get(id.0)?.name.clone();
+            named_declaration(typed, |program| {
+                program
+                    .enums
+                    .iter()
+                    .find(|declaration| declaration.name.text == name)
+                    .map(|declaration| declaration.name.span)
+            })
+        }
+        Type::Interface(id) => {
+            let name = typed.interfaces().get(id.0)?.name.clone();
+            named_declaration(typed, |program| {
+                program
+                    .interfaces
+                    .iter()
+                    .find(|declaration| declaration.name.text == name)
+                    .map(|declaration| declaration.name.span)
+            })
+        }
+        _ => None,
+    }
+}
+
+/// What a container holds, one level down: the type a reader is following when
+/// the cursor is on a `[]User`, a `weak User` or an `Option<User>`.
+fn underlying(typed: &TypedProgram, ty: Type) -> Type {
+    match ty {
+        Type::Array(id) => typed
+            .arrays()
+            .get(id.0)
+            .map_or(ty, |info| underlying(typed, info.element)),
+        Type::Option(id) => typed
+            .options()
+            .get(id.0)
+            .map_or(ty, |info| underlying(typed, info.element)),
+        // The success side: a reader following a `Result` is following what it
+        // carries, not what went wrong.
+        Type::Result(id) => typed
+            .results()
+            .get(id.0)
+            .map_or(ty, |info| underlying(typed, info.ok)),
+        other => other,
+    }
+}
+
+/// The declared type of a field, or what a method returns.
+fn member_type(typed: &TypedProgram, receiver: Type, word: &Word) -> Option<Type> {
+    let info = match receiver {
+        Type::Struct(id) | Type::Weak(id) => typed.structs().get(id.0)?,
+        _ => return None,
+    };
+    if let Some(field) = info.fields.iter().find(|field| field.name == word.text) {
+        return Some(field.ty);
+    }
+    let method = info
+        .methods
+        .iter()
+        .find(|method| method.name == word.text)?;
+    Some(typed.signature(method.id)?.return_type)
+}
+
+/// The first file whose syntax names a declaration, and the span it names it
+/// at. A type is declared once per program, so the first is the one.
+fn named_declaration(
+    typed: &TypedProgram,
+    span_in: impl Fn(&skuld_compiler::ast::Program) -> Option<Span>,
+) -> Option<(FileId, Span)> {
+    typed
+        .program()
+        .files
+        .iter()
+        .enumerate()
+        .find_map(|(index, file)| span_in(&file.program).map(|span| (FileId(index), span)))
 }
 
 /// The declaration a symbol came from. The resolution records it by position,

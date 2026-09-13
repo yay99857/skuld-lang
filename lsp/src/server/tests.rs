@@ -1468,3 +1468,114 @@ fn the_standard_library_is_not_part_of_the_workspace() {
     ]);
     assert_eq!(result_of(&out, 2), &Json::Array(Vec::new()));
 }
+
+/// The `(line, character)` a location response starts at, and its uri.
+fn located(result: &Json) -> (String, i64, i64) {
+    (
+        result
+            .get("uri")
+            .and_then(Json::as_str)
+            .expect("a uri")
+            .to_owned(),
+        result
+            .path(&["range", "start", "line"])
+            .and_then(Json::as_i64)
+            .expect("a line"),
+        result
+            .path(&["range", "start", "character"])
+            .and_then(Json::as_i64)
+            .expect("a character"),
+    )
+}
+
+#[test]
+fn the_server_advertises_and_answers_type_definition() {
+    let path = "/tmp/skuld-lsp-test/type-definition.skuld";
+    let source = "class User {\n    name: string\n}\n\nfunc main() {\n    let u = new User(name: \"a\")\n    print(u.name)\n}\n";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        // Line 6 is `    print(u.name)`; the cursor rests on `u`.
+        position_request(2, "textDocument/typeDefinition", path, 6, 10),
+    ]);
+    assert_eq!(
+        out[0].path(&["result", "capabilities", "typeDefinitionProvider"]),
+        Some(&Json::Bool(true))
+    );
+    let (uri, line, _) = located(result_of(&out, 2));
+    assert_eq!(uri, path_to_uri(path));
+    assert_eq!(line, 0, "the class declaration, not the binding");
+}
+
+#[test]
+fn type_definition_looks_through_an_array_and_an_option() {
+    let path = "/tmp/skuld-lsp-test/type-definition-container.skuld";
+    let source = "class User {\n    name: string\n}\n\nfunc main() {\n    var all = [new User(name: \"a\")]\n    let first: Option<User> = all[0]\n    if let one = first {\n        print(one.name)\n    }\n    print(all.len())\n}\n";
+    let (out, _) = converse(&[
+        did_open(path, source),
+        // `all`, an array of users.
+        position_request(2, "textDocument/typeDefinition", path, 10, 10),
+        // `one`, an Option payload.
+        position_request(3, "textDocument/typeDefinition", path, 8, 14),
+    ]);
+    assert_eq!(located(result_of(&out, 2)).1, 0);
+    assert_eq!(located(result_of(&out, 3)).1, 0);
+}
+
+#[test]
+fn type_definition_of_something_with_no_declaration_is_null() {
+    let path = "/tmp/skuld-lsp-test/type-definition-int.skuld";
+    let (out, _) = converse(&[
+        did_open(
+            path,
+            "func main() {\n    let count = 1\n    print(count)\n}\n",
+        ),
+        position_request(2, "textDocument/typeDefinition", path, 2, 10),
+    ]);
+    assert_eq!(result_of(&out, 2), &Json::Null);
+}
+
+#[test]
+fn the_server_advertises_and_answers_implementation() {
+    let path = "/tmp/skuld-lsp-test/implementation.skuld";
+    let source = "interface Printable {\n    describe() -> string\n}\n\nclass User: Printable {\n    name: string\n    describe() -> string {\n        return this.name\n    }\n}\n\nclass Tag: Printable {\n    text: string\n    describe() -> string {\n        return this.text\n    }\n}\n\nfunc show(item: Printable) {\n    print(item.describe())\n}\n\nfunc main() {\n    show(new User(name: \"a\"))\n    show(new Tag(text: \"b\"))\n}\n";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        // The interface name in the signature of `show`, on line 18.
+        position_request(2, "textDocument/implementation", path, 18, 18),
+        // The method called through the interface, on line 19.
+        position_request(3, "textDocument/implementation", path, 19, 16),
+    ]);
+    assert_eq!(
+        out[0].path(&["result", "capabilities", "implementationProvider"]),
+        Some(&Json::Bool(true))
+    );
+    let classes: Vec<i64> = result_of(&out, 2)
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|location| located(location).1)
+        .collect();
+    assert_eq!(classes, [4, 11], "both classes that declare conformance");
+    let methods: Vec<i64> = result_of(&out, 3)
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|location| located(location).1)
+        .collect();
+    assert_eq!(methods, [6, 13], "the bodies, not the classes");
+}
+
+#[test]
+fn implementation_of_a_name_that_is_not_an_interface_is_empty() {
+    let path = "/tmp/skuld-lsp-test/implementation-none.skuld";
+    let (out, _) = converse(&[
+        did_open(
+            path,
+            "func main() {\n    let count = 1\n    print(count)\n}\n",
+        ),
+        position_request(2, "textDocument/implementation", path, 2, 10),
+    ]);
+    assert_eq!(result_of(&out, 2), &Json::Array(Vec::new()));
+}
