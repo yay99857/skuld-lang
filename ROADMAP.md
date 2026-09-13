@@ -1,7 +1,7 @@
 # Skuld roadmap
 
 This document records completed milestones and a **proposed** next sequence.
-M1–M13 are implemented. No implementation milestone is active. Starting any of
+M1–M14 are implemented. No implementation milestone is active. Starting any of
 the milestones below still needs explicit selection and any open design
 decisions recorded in `AGENTS.md`. See `LANGUAGE.md` for semantics and `README.md` for usage.
 
@@ -13,16 +13,18 @@ come before expanding the type system or changing the backend.
 
 ## Current baseline
 
-- **Implemented:** M1–M13, including non-escaping lambdas, stable array sorting,
+- **Implemented:** M1–M14, including non-escaping lambdas, stable array sorting,
   storable class interfaces, modules, the embedded library, blocking HTTP, the
   official formatter (`skuld fmt` with `--check`), verified rename in the
-  editor, whole-file reads and writes, the process arguments, and `skuld test`.
+  editor, whole-file reads and writes, the process arguments, `skuld test`, and
+  field defaults at construction.
   `let ... else` also unwraps Option/Result without nesting the success path.
 - **Tooling implemented:** highlighting, the official formatter `skuld fmt`, and
   a third workspace crate, `lsp/`, with diagnostics, completion, hover,
   definition, find-references and rename.
-- **Current limits:** required named fields at construction; no user-defined
-  constructors or field defaults; no maps or general generics; a file API that
+- **Current limits:** no user-defined constructor with a body, so a field
+  default is an expression and not a step that can fail; no maps or general
+  generics; a file API that
   is whole-file and by path only, with no `errno`. Network
   access has no host-name resolution, errno detail or TLS. Linux x86_64 is the
   currently tested native target; Go/Rust-level performance remains unmeasured.
@@ -516,7 +518,7 @@ M18 can collect a baseline earlier, but optimizations must follow measurements.
 | M11 | Official formatter | Implemented |
 | M12 | References and safe rename in the LSP | Implemented |
 | M13 | Local CLI applications and `skuld test` | Implemented |
-| M14 | Field defaults and construction | Initialization design |
+| M14 | Field defaults and construction | Implemented |
 | M15 | A map for real application data | Collection/type-system decision |
 | M16 | Host names and useful network errors | Foreign-boundary decision |
 | M17 | Verified HTTPS | M16 and TLS dependency policy |
@@ -666,20 +668,54 @@ dotted path and writes the result, and `skuld test` runs its suite.
   package registry, a project generator, a general IO framework, `errno`
   detail, and any file API that is not whole-file.
 
-## M14 — Field defaults and construction — Planned
+## M14 — Field defaults and construction — Implemented
 
-- **Purpose:** let classes establish useful initial state without spelling every
-  field at every call site, addressing the remaining construction sketch.
-- **Scope:** design field defaults and user-defined class initialization while
-  preserving `new Class(...)`, strong typing and fully initialized objects.
-- **Decisions before implementation:** constructor spelling, parameter matching,
-  default evaluation order, access to `this`, failure through Result, and whether
-  struct defaults belong here or later. No syntax is accepted by this roadmap.
-- **Closing marker:** executable examples cover defaulted and supplied fields;
-  missing required fields and use of an uninitialized field are diagnostics.
-  Managed defaults and any approved failing initialization release exactly once,
-  with left-to-right evaluation verified under sanitizers.
-- **Out of scope:** overloads, inheritance, global statements and zero/null defaults.
+```skuld
+class Account {
+    owner: string = "unnamed"
+    tags: []string = []
+    balance: int = 0
+}
+
+let blank = new Account()
+let ada = new Account(owner: "Ada", balance: 120)
+```
+
+- **Implemented:** `name: Type = expression` on a field of a class or a struct;
+  a field with a default may be left out of `new C(...)` and of `S { ... }`;
+  the default is checked once against the field's type where it is written, and
+  evaluated at every construction.
+- **Decision taken — a default is an expression, not a constructor.** There is
+  no `init` block with a body. A constructor would mean a partially
+  initialized `this` — a reference to an object whose fields do not all have
+  values yet — and that is the one thing construction in Skuld has always
+  guaranteed against. Defaults keep the guarantee for free: every field either
+  carries one or must be supplied. What this costs is initialization that can
+  fail, which would need a constructor returning a `Result`; that is a decision
+  of its own, and a function returning `Result<Account, E>` is already the way
+  to write it.
+- **Decision taken — a default sees the file, not the object.** It resolves in
+  the scope of the file that declares the type, so neither `this` nor a sibling
+  field is in scope — there is no object at the point a default runs. Both are
+  what a reader reaches for first, so an unknown name in a default says exactly
+  that instead of the generic spelling advice.
+- **Decision taken — order.** The arguments that were written are evaluated
+  first, left to right, exactly as everywhere else in the language; then the
+  defaults of the fields nobody wrote, in declaration order. Evaluating
+  everything in field order would have reordered the arguments a caller wrote,
+  which is the one rule `AGENTS.md` will not trade.
+- **Decision taken — structs too.** The check and the lowering step are the
+  same for both, and leaving value types out would have been an arbitrary seam
+  in the language rather than a simplification.
+- **Closing marker — reached:** `examples/defaults.skuld` and
+  `tests/pass/field_defaults.skuld` cover defaulted and supplied fields, a
+  managed default per object, and the evaluation order, under the address,
+  leak and UB sanitizers with the rest of `tests/pass`. The three
+  `tests/fail/field_default_*` fixtures hold the diagnostics: a default of the
+  wrong type, one reaching for `this` or a sibling field, and a field without a
+  default left out of a construction.
+- **Out of scope, and still out:** overloads, inheritance, global statements,
+  zero or null defaults, a constructor body, and initialization that fails.
 
 ## M15 — Maps with an application consumer — Planned
 

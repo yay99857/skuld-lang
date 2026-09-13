@@ -384,10 +384,47 @@ func main() {
 ```
 
 Fields are declared one per line, following the statement-boundary rule.
-Record construction names every field exactly once: there are no defaults and
+Record construction names every field without a default exactly once: there is
 no partial initialization, so a missing field is `E0112` and a repeated one is
 a duplicate declaration. Field order in construction is free; the backend lays
 fields out in declaration order.
+
+## Field defaults — Implemented
+
+```skuld
+class Account {
+    owner: string = "unnamed"
+    tags: []string = []
+    balance: int = 0
+}
+
+func main() {
+    print(new Account().balance)
+    let ada = new Account(owner: "Ada", balance: 120)
+    let origin = Vec2 { x: 0.0, y: 0.0 }
+}
+```
+
+A field written `name: Type = expression` may be left out of a construction,
+and the expression is evaluated there, once per object — two objects never
+share a defaulted array. Classes and structs both take them, and a struct whose
+fields all default is written `Point {}`.
+
+There is no zero value and no `undefined` behind this: a field either carries a
+default its author wrote or has to be supplied, so an object is always fully
+initialized.
+
+A default is an expression of the file that declares the type, not code inside
+it. `this` is not in scope, and neither is another field: there is no object at
+the point a default runs. Using either is `E0201`, with a help line saying so.
+
+Evaluation order is the usual one. The arguments that were written are
+evaluated first, left to right, and then the defaults of the fields nobody
+wrote, in declaration order.
+
+There is no constructor with a body. One would expose a `this` whose fields are
+not all set, which construction guarantees against; initialization that can
+fail is therefore an ordinary function returning a `Result`.
 
 A struct cannot contain itself. A value type has no indirection, so the size
 would not exist; the checker rejects it rather than the C compiler.
@@ -1374,11 +1411,11 @@ string slicing and the `extern "C"` boundary.
 Future commands: `new` and `doc` (`fmt` and `test` are implemented). LLVM/Cranelift and eventual
 self-hosting remain long-term possibilities.
 
-`ROADMAP.md` records M1–M13 as implemented, including function values,
+`ROADMAP.md` records M1–M14 as implemented, including function values,
 callbacks, interfaces, blocking TCP/HTTP with JSON, the official formatter
 `skuld fmt`, find-references and rename in the editor, and a native command-line
-application with its own `skuld test` suite. Its proposed M14–M18 sequence
-covers construction defaults, maps, name resolution, HTTPS, and measured
+application with its own `skuld test` suite and field defaults at construction.
+Its proposed M15–M18 sequence covers maps, name resolution, HTTPS, and measured
 performance/portability. These proposals do not settle their syntax
 or authorize implementation. No implementation milestone is active.
 

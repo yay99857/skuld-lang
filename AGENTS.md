@@ -19,8 +19,9 @@ accurate; documenting a future feature is not a request to implement it.
 - The implemented class syntax in `LANGUAGE.md` adopts `hello()` methods,
   implicit `this` and `new User(...)` construction. Top-level functions retain
   `func`. Do not restore the older class `func greet(self)` or
-  `User { ... }` syntax. User-defined constructors and field defaults still need design;
-  current construction requires every named field;
+  `User { ... }` syntax. Field defaults arrived with M14, so `new User()` is
+  written where every field has one; a user-defined constructor with a body
+  still needs design and is deliberately absent;
   global statements and sorting callbacks remain experimental proposals.
 - Read comments as design feedback. Examples marked for revision are not
   settled syntax. An `undefined` output comment does not establish an undefined
@@ -220,6 +221,8 @@ accurate; documenting a future feature is not a request to implement it.
   were taken as recorded below and in `ROADMAP.md`.
   M13 (local CLI applications and `skuld test`) is complete, with its file,
   process and test-discovery decisions recorded below and in `ROADMAP.md`.
+  M14 (field defaults) is complete; a constructor with a body is not part of
+  it, for the reason recorded below.
   No milestone is active. Do not infer authorization for further features without
   explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
@@ -351,6 +354,19 @@ accurate; documenting a future feature is not a request to implement it.
   and `--` included; `--` keeps its own meaning of "every later argument is a
   path", and only `run` accepts `--args`, since nothing else executes a
   program.
+- A field may carry a default: `name: Type = expression`, on a class or a
+  struct alike. A field with one may be left out of `new C(...)` or `S { ... }`;
+  a field without one must still be supplied, so an object is never partially
+  initialized. There is no constructor with a body, and that is the reason
+  defaults exist in this shape: a constructor would expose a `this` whose
+  fields are not all set yet, which construction has always guaranteed against.
+  Initialization that can fail is therefore a function returning a `Result`,
+  not a failing constructor. A default resolves in the scope of the file that
+  declares the type — `this` and sibling fields are not in scope, since there
+  is no object when it runs — is checked once against the field's type where it
+  is written, and is evaluated at every construction, in the declaring file's
+  coordinates. Order is the usual one: written arguments first, left to right,
+  then the defaults of the fields nobody wrote, in declaration order.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built

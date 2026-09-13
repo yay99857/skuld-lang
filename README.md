@@ -374,15 +374,16 @@ and iteration) and M1 (Enums and `match`), alongside
 Option, classes, weak references and arrays.
 M8 (function values and stable sorting), M9 (blocking TCP, HTTP and JSON)
 and M10 (class interfaces) are also implemented, as is `let ... else`.
-M11 (the official formatter, `skuld fmt`), M12 (LSP refactoring) and M13 (local
-CLI applications and `skuld test`) are implemented too. The LSP provides
+M11 (the official formatter, `skuld fmt`), M12 (LSP refactoring), M13 (local
+CLI applications and `skuld test`) and M14 (field defaults) are implemented
+too. The LSP provides
 diagnostics, completion, hover, definition, find-references and rename, and
 `examples/jsontool.skuld` is a multi-module native tool with its own test suite.
 
 No implementation milestone is active. [ROADMAP.md](ROADMAP.md#next-sequence--planned-not-selected)
-proposes M14–M18: construction defaults, maps, host-name resolution, verified
-HTTPS, and measured performance/portability. M14 is the recommended next step;
-each milestone still requires explicit selection and its open design decisions. General generics and
+proposes M15–M18: maps, host-name resolution, verified HTTPS, and measured
+performance/portability. M15 is the recommended next step; each milestone still
+requires explicit selection and its open design decisions. General generics and
 self-hosting remain separate candidates.
 Status is reported as completed milestones, not as a completion percentage, and
 implies neither production readiness nor measured Go/Rust performance.
