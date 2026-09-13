@@ -148,6 +148,89 @@ pub fn hover(source: &str, offset: usize, typed: &TypedProgram) -> Option<(Strin
     Some((text, span))
 }
 
+/// Where a position's name is declared: the file it lives in, and the span of
+/// its name there. A prelude binding has nowhere to go, which is not a failure.
+pub fn definition(source: &str, offset: usize, typed: &TypedProgram) -> Option<(FileId, Span)> {
+    match target_at(source, offset, typed)? {
+        Target::Symbol(symbol, _) => declaration_of(typed, symbol),
+        Target::Type(Type::Struct(id), _) => {
+            let info = typed.structs().get(id.0)?;
+            declaring_file(typed, |program| {
+                program
+                    .structs
+                    .iter()
+                    .any(|declaration| declaration.span == info.span)
+            })
+            .map(|file| (file, info.span))
+        }
+        Target::Type(Type::Enum(id), _) => {
+            let name = typed.enums().get(id.0)?.name.clone();
+            let mut found = None;
+            for (index, file) in typed.program().files.iter().enumerate() {
+                if let Some(declaration) = file
+                    .program
+                    .enums
+                    .iter()
+                    .find(|declaration| declaration.name.text == name)
+                {
+                    found = Some((FileId(index), declaration.name.span));
+                    break;
+                }
+            }
+            found
+        }
+        Target::Member {
+            receiver: Type::Struct(id),
+            word,
+        } => {
+            let info = typed.structs().get(id.0)?;
+            if let Some(method) = info.methods.iter().find(|method| method.name == word.text) {
+                return declaration_of(typed, method.id);
+            }
+            let field = info.fields.iter().find(|field| field.name == word.text)?;
+            declaring_file(typed, |program| {
+                program
+                    .structs
+                    .iter()
+                    .any(|declaration| declaration.span == info.span)
+            })
+            .map(|file| (file, field.span))
+        }
+        // A builtin method belongs to the language, not to a file.
+        Target::Member { .. } | Target::Type(_, _) => None,
+    }
+}
+
+/// The declaration a symbol came from. The resolution records it by position,
+/// so the position is what identifies the file.
+fn declaration_of(typed: &TypedProgram, symbol: SymbolId) -> Option<(FileId, Span)> {
+    let resolution = typed.resolution();
+    let (&(file, start), _) = resolution
+        .declarations
+        .iter()
+        .find(|(_, declared)| **declared == symbol)?;
+    let span = resolution
+        .symbols
+        .get(symbol.0)
+        .and_then(|info| info.span)
+        .unwrap_or_else(|| Span::new(start, start));
+    Some((file, span))
+}
+
+/// Which file's syntax satisfies a predicate. A type has no file of its own in
+/// the checker's tables, so it is found where it was written.
+fn declaring_file(
+    typed: &TypedProgram,
+    matches: impl Fn(&skuld_compiler::ast::Program) -> bool,
+) -> Option<FileId> {
+    typed
+        .program()
+        .files
+        .iter()
+        .position(|file| matches(&file.program))
+        .map(FileId)
+}
+
 fn describe_symbol(typed: &TypedProgram, symbol: SymbolId, word: &Word) -> String {
     let resolution = typed.resolution();
     let Some(info) = resolution.symbols.get(symbol.0) else {

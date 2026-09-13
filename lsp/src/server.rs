@@ -95,6 +95,12 @@ impl Server {
                 None
             }
 
+            (Some("textDocument/definition"), Some(id)) => {
+                let location = self.definition(message);
+                respond(output, id.clone(), location);
+                None
+            }
+
             (Some("textDocument/hover"), Some(id)) => {
                 let hover = self.hover(message);
                 respond(output, id.clone(), hover);
@@ -273,6 +279,48 @@ impl Server {
         }
     }
 
+    /// Answer `textDocument/definition` with where a name was declared, which
+    /// may be a file the editor does not have open.
+    fn definition(&self, message: &Json) -> Json {
+        let Some(path) = document_path(message) else {
+            return Json::Null;
+        };
+        let Some((source, offset, typed)) = self.position_context(message) else {
+            return Json::Null;
+        };
+        let Some((file, span)) = query::definition(source, offset, typed) else {
+            return Json::Null;
+        };
+        let Some(declaring) = typed.program().files.get(file.0) else {
+            return Json::Null;
+        };
+        // A module file is named relative to the program root; the entry file
+        // is named as the editor opened it.
+        let target = if file.0 == 0 {
+            path
+        } else {
+            Path::new(&path)
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join(&declaring.name)
+                .to_string_lossy()
+                .into_owned()
+        };
+        let positions = Positions::new(declaring.source.clone());
+        let start = positions.position(span.start);
+        let end = positions.position(span.end);
+        Json::object([
+            ("uri", Json::string(path_to_uri(&target))),
+            (
+                "range",
+                Json::object([
+                    ("start", position_json(start)),
+                    ("end", position_json(end)),
+                ]),
+            ),
+        ])
+    }
+
     /// Answer `textDocument/hover` with the declaration a reader would
     /// otherwise have to go and find.
     fn hover(&self, message: &Json) -> Json {
@@ -436,6 +484,7 @@ fn initialize_result() -> Json {
             // if a client would have preferred something else.
             ("positionEncoding", Json::string("utf-16")),
             ("hoverProvider", Json::Bool(true)),
+            ("definitionProvider", Json::Bool(true)),
             (
                 "completionProvider",
                 Json::object([

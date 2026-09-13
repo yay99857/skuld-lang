@@ -525,3 +525,62 @@ fn hover_over_nothing_answers_null_rather_than_an_error() {
         .expect("a hover response");
     assert_eq!(*hover, Json::Null);
 }
+
+fn definition_at(path: &str, line: i64, character: i64) -> Json {
+    Json::object([
+        ("jsonrpc", Json::string("2.0")),
+        ("id", Json::number(11.0)),
+        ("method", Json::string("textDocument/definition")),
+        (
+            "params",
+            Json::object([
+                (
+                    "textDocument",
+                    Json::object([("uri", Json::string(path_to_uri(path)))]),
+                ),
+                (
+                    "position",
+                    Json::object([
+                        ("line", Json::number(line as f64)),
+                        ("character", Json::number(character as f64)),
+                    ]),
+                ),
+            ]),
+        ),
+    ])
+}
+
+#[test]
+fn definition_crosses_into_the_module_that_declared_the_name() {
+    // The point of a module system, from an editor: following a qualified name
+    // into a file the editor never opened.
+    let entry = fixture_path("lsp_definition.skuld");
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(
+            &entry,
+            "import \"modules/geometry\"\nfunc main() {\n    print(geometry.origin().sum())\n}\n",
+        ),
+        // Line 2, inside `origin`.
+        definition_at(&entry, 2, 22),
+    ]);
+    assert_eq!(
+        out[0].path(&["result", "capabilities", "definitionProvider"]),
+        Some(&Json::Bool(true))
+    );
+    let location = out
+        .iter()
+        .rfind(|message| message.get("id").and_then(Json::as_i64) == Some(11))
+        .and_then(|message| message.get("result"))
+        .expect("a definition response");
+    let uri = location.get("uri").and_then(Json::as_str).expect("a uri");
+    assert!(
+        uri.ends_with("/tests/pass/modules/geometry/point.skuld"),
+        "expected the module file, got {uri}"
+    );
+    // `pub func origin()` is on line 17 of that file, zero-based.
+    assert_eq!(
+        location.path(&["range", "start", "line"]).and_then(Json::as_i64),
+        Some(17)
+    );
+}
