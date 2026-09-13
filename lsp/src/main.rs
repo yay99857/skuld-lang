@@ -11,6 +11,7 @@ mod query;
 mod rename;
 mod rpc;
 mod server;
+mod signature;
 mod symbols;
 mod text;
 

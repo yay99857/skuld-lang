@@ -12,6 +12,7 @@ use crate::json::Json;
 use crate::query;
 use crate::rename::{self, Refusal};
 use crate::rpc::{self, ReadError};
+use crate::signature;
 use crate::symbols::{self, Symbol};
 use crate::text::{Positions, path_to_uri, uri_to_path};
 use skuld_compiler::module::{Errors, FileId, ModuleLoader};
@@ -166,6 +167,12 @@ impl Server {
             (Some("textDocument/hover"), Some(id)) => {
                 let hover = self.hover(message);
                 respond(output, id.clone(), hover);
+                None
+            }
+
+            (Some("textDocument/signatureHelp"), Some(id)) => {
+                let help = self.signature_help(message);
+                respond(output, id.clone(), help);
                 None
             }
 
@@ -834,6 +841,55 @@ impl Server {
         Some((source, offset, typed))
     }
 
+    /// Answer `textDocument/signatureHelp` with the signature of the call the
+    /// cursor is inside.
+    ///
+    /// Like completion, it reads the last check that succeeded and the text as
+    /// it stands now: a call is asked about exactly while it is half-written,
+    /// so the current text never parses and the tables are a moment stale.
+    fn signature_help(&self, message: &Json) -> Json {
+        let Some((source, offset, typed)) = self.position_context(message) else {
+            return Json::Null;
+        };
+        let Some(help) = signature::at(source, offset, typed) else {
+            return Json::Null;
+        };
+        let parameters = help
+            .parameters
+            .iter()
+            .map(|&(start, end)| {
+                Json::object([(
+                    // A pair of offsets into the label rather than a repeated
+                    // string: the client then highlights the exact run, and
+                    // cannot mismatch a parameter that reads like another.
+                    "label",
+                    Json::Array(vec![Json::number(start as f64), Json::number(end as f64)]),
+                )])
+            })
+            .collect();
+        let mut signature = vec![
+            ("label", Json::string(&help.label)),
+            ("parameters", Json::Array(parameters)),
+        ];
+        if let Some(active) = help.active {
+            signature.push(("activeParameter", Json::number(active as f64)));
+        }
+        Json::object([
+            ("signatures", Json::Array(vec![Json::object(signature)])),
+            ("activeSignature", Json::number(0.0)),
+            // Skuld has no overloading, so the one signature is the active
+            // one; a missing `activeParameter` means nothing is highlighted,
+            // which is the honest answer for a construction by field name.
+            (
+                "activeParameter",
+                match help.active {
+                    Some(active) => Json::number(active as f64),
+                    None => Json::Null,
+                },
+            ),
+        ])
+    }
+
     /// Answer `textDocument/completion` from the last good check of the
     /// document, which may be a moment behind the text on screen.
     fn completions(&self, message: &Json) -> Json {
@@ -1087,6 +1143,17 @@ fn initialize_result() -> Json {
                 // Prepare first: a name this server will not move should be
                 // refused before the user types a replacement, not after.
                 Json::object([("prepareProvider", Json::Bool(true))]),
+            ),
+            (
+                "signatureHelpProvider",
+                Json::object([
+                    // `(` opens a signature and `,` moves to the next
+                    // parameter; without these the client never asks.
+                    (
+                        "triggerCharacters",
+                        Json::Array(vec![Json::string("("), Json::string(",")]),
+                    ),
+                ]),
             ),
             (
                 "completionProvider",

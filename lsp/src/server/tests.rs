@@ -1234,3 +1234,87 @@ fn a_document_that_never_checked_has_no_hints() {
     ]);
     assert_eq!(result_of(&out, 2), &Json::Array(Vec::new()));
 }
+
+#[test]
+fn the_server_advertises_and_answers_signature_help() {
+    let path = "/tmp/skuld-lsp-test/signature.skuld";
+    let source = "func add(a: int, b: int) -> int {\n    return a + b\n}\n\nfunc main() {\n    print(add(1, 2))\n}\n";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        // Line 5 is `    print(add(1, 2))`; the cursor rests on the second
+        // argument.
+        position_request(2, "textDocument/signatureHelp", path, 5, 17),
+    ]);
+    assert_eq!(
+        out[0]
+            .path(&[
+                "result",
+                "capabilities",
+                "signatureHelpProvider",
+                "triggerCharacters"
+            ])
+            .and_then(Json::as_array)
+            .map(|characters| characters.len()),
+        Some(2)
+    );
+    let help = result_of(&out, 2);
+    let signatures = help
+        .get("signatures")
+        .and_then(Json::as_array)
+        .expect("one signature");
+    assert_eq!(signatures.len(), 1);
+    assert_eq!(
+        signatures[0].get("label").and_then(Json::as_str),
+        Some("add(a: int, b: int) -> int")
+    );
+    assert_eq!(
+        help.get("activeParameter").and_then(Json::as_i64),
+        Some(1),
+        "the cursor is on the second argument"
+    );
+    // Each parameter is a pair of offsets into the label, not a repeated
+    // string the client would have to match.
+    let parameters = signatures[0]
+        .get("parameters")
+        .and_then(Json::as_array)
+        .expect("two parameters");
+    assert_eq!(
+        parameters[1]
+            .get("label")
+            .and_then(Json::as_array)
+            .map(|pair| pair.iter().filter_map(Json::as_i64).collect::<Vec<_>>()),
+        Some(vec![12, 18])
+    );
+}
+
+#[test]
+fn signature_help_survives_a_call_that_is_still_being_typed() {
+    let path = "/tmp/skuld-lsp-test/signature-typing.skuld";
+    let complete = "func add(a: int, b: int) -> int {\n    return a + b\n}\n\nfunc main() {\n    print(add(1, 2))\n}\n";
+    let typing = "func add(a: int, b: int) -> int {\n    return a + b\n}\n\nfunc main() {\n    print(add(1, \n}\n";
+    let (out, _) = converse(&[
+        did_open(path, complete),
+        did_change(path, typing),
+        position_request(2, "textDocument/signatureHelp", path, 5, 17),
+    ]);
+    assert_eq!(
+        result_of(&out, 2)
+            .get("signatures")
+            .and_then(Json::as_array)
+            .and_then(<[Json]>::first)
+            .and_then(|signature| signature.get("label"))
+            .and_then(Json::as_str),
+        Some("add(a: int, b: int) -> int")
+    );
+}
+
+#[test]
+fn signature_help_outside_a_call_is_null() {
+    let path = "/tmp/skuld-lsp-test/signature-none.skuld";
+    let (out, _) = converse(&[
+        did_open(path, "func main() {\n    print(1)\n}\n"),
+        position_request(2, "textDocument/signatureHelp", path, 0, 0),
+    ]);
+    assert_eq!(result_of(&out, 2), &Json::Null);
+}

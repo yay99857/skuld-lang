@@ -217,7 +217,7 @@ fn signature_text(parameters: &[Parameter], return_type: Option<&TypeRef>) -> St
 
 /// A source type written back out. This is the syntax, not the checker's
 /// `Type`: an outline is drawn for a file that may not check at all.
-fn type_text(type_ref: &TypeRef) -> String {
+pub fn type_text(type_ref: &TypeRef) -> String {
     match type_ref {
         TypeRef::Named(path) => path_text(path),
         TypeRef::Option { element, .. } => format!("Option<{}>", type_text(element)),

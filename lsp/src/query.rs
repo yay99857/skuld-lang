@@ -129,7 +129,13 @@ pub fn target_at(source: &str, offset: usize, typed: &TypedProgram) -> Option<Ta
 pub fn hover(source: &str, offset: usize, typed: &TypedProgram) -> Option<(String, Span)> {
     let target = target_at(source, offset, typed)?;
     let span = Span::new(target.word().start, target.word().end);
-    let text = match &target {
+    Some((describe(typed, &target)?, span))
+}
+
+/// How a target reads on one line. It is the hover text, and it is also what
+/// signature help falls back to for a name that was never declared in a file.
+pub fn describe(typed: &TypedProgram, target: &Target) -> Option<String> {
+    Some(match target {
         Target::Symbol(symbol, word) => describe_symbol(typed, *symbol, word),
         Target::Member { receiver, word } => describe_member(typed, *receiver, word)?,
         Target::Type(ty, word) => match ty {
@@ -141,8 +147,7 @@ pub fn hover(source: &str, offset: usize, typed: &TypedProgram) -> Option<(Strin
             Type::Enum(_) => format!("enum {}", word.text),
             other => type_name(typed, *other),
         },
-    };
-    Some((text, span))
+    })
 }
 
 /// Where a position's name is declared: the file it lives in, and the span of
