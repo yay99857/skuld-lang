@@ -636,9 +636,15 @@ impl Parser<'_> {
             }
             self.expect(&TokenKind::Colon, "`:` and a field type")?;
             let type_ref = self.type_ref()?;
+            // `= expression` makes the field optional at every construction.
+            let default = match self.take(&TokenKind::Equal) {
+                Some(_) => Some(self.nested(Parser::expression)?),
+                None => None,
+            };
             fields.push(FieldDecl {
                 name,
                 type_ref,
+                default,
                 span: Span::new(field_start, self.previous_end()),
             });
             self.take(&TokenKind::Comma);

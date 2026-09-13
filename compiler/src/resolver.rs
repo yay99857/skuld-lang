@@ -118,6 +118,7 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
             captures: BTreeMap::new(),
         },
         lambdas: Vec::new(),
+        in_field_default: false,
         diagnostics: Vec::new(),
         current: ScopeId(0),
         file: FileId(0),
@@ -225,6 +226,18 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
         // resolve as bare identifiers: a method is reached through `this` or a
         // value.
         for declaration in &syntax.structs {
+            // A field default is written in the type's declaration but runs at
+            // every construction, where there is no object yet. It resolves in
+            // the file scope for that reason: `this` is not in scope, and
+            // neither is another field.
+            for field in &declaration.fields {
+                if let Some(default) = &field.default {
+                    resolver.current = file_scope;
+                    resolver.in_field_default = true;
+                    resolver.expression(default);
+                    resolver.in_field_default = false;
+                }
+            }
             resolver.current = file_scope;
             resolver.enter_scope(Some(declaration.span));
             for method in &declaration.methods {
@@ -278,6 +291,9 @@ struct Resolver {
     /// The body scope and body offset of each lambda being walked, innermost
     /// last. A name resolved outside one of these crossed its boundary.
     lambdas: Vec<(ScopeId, usize)>,
+    /// Whether the expression being walked is a field default, which changes
+    /// only what an unknown name is told.
+    in_field_default: bool,
 }
 impl Resolver {
     /// Whether `scope` lies inside `outer`, which is what decides whether a
@@ -419,15 +435,22 @@ impl Resolver {
                 .references
                 .insert((self.file, name.span.start), id);
             self.capture(id, name.span);
-        } else {
-            self.error(
-                DiagnosticCode::UnknownName,
-                name.span,
-                format!("unknown identifier `{}`", name.text),
-                "check the spelling or declare this name in an enclosing scope before using it"
-                    .into(),
-            );
+            return;
         }
+        // A field default is written inside a type but runs where the object
+        // is being made, so the two names a reader reaches for first — `this`
+        // and a sibling field — are exactly the ones that are not there.
+        let help = if self.in_field_default {
+            "a field default is evaluated at every construction, before there is an object, so `this` and the other fields are not in scope"
+        } else {
+            "check the spelling or declare this name in an enclosing scope before using it"
+        };
+        self.error(
+            DiagnosticCode::UnknownName,
+            name.span,
+            format!("unknown identifier `{}`", name.text),
+            help.into(),
+        );
     }
     /// The right half of `module.name`. A module's scope is not an enclosing
     /// scope of the importing file, so this looks in exactly one place rather

@@ -139,6 +139,9 @@ pub struct StructDecl {
 pub struct FieldDecl {
     pub name: Name,
     pub type_ref: TypeRef,
+    /// `name: Type = expression`. A field with a default may be left out of a
+    /// construction, and the expression is evaluated there, once per object.
+    pub default: Option<Expr>,
     pub span: Span,
 }
 

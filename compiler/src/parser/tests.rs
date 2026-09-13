@@ -1001,3 +1001,19 @@ fn a_class_declares_the_interfaces_it_implements() {
     );
     assert!(program.structs[1].conforms.is_empty());
 }
+
+#[test]
+fn a_field_may_carry_a_default() {
+    let parsed = program("class User {\n    name: string = \"anonymous\"\n    age: int\n}\n");
+    let fields = &parsed.structs[0].fields;
+    assert_eq!(fields.len(), 2);
+    let default = fields[0].default.as_ref().expect("a default expression");
+    assert!(matches!(
+        &default.kind,
+        ExprKind::Literal(Literal::String(text)) if text == "anonymous"
+    ));
+    // A field without one is unchanged, and the default is not confused with
+    // the next field.
+    assert!(fields[1].default.is_none());
+    assert_eq!(fields[1].name.text, "age");
+}

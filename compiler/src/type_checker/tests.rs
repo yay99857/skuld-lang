@@ -1032,3 +1032,28 @@ fn a_class_widens_into_an_expected_option_of_an_interface() {
         "interface P { show() -> string }\nclass C: P { show() -> string { return \"x\" } }\nfunc main() { let v: Option<P> = new C()\n if let p = v { print(p.show()) } }",
     );
 }
+
+#[test]
+fn a_field_with_a_default_may_be_left_out_of_a_construction() {
+    let class = "class User {\n    name: string = \"anonymous\"\n    age: int = 0\n}\n";
+    valid(&format!(
+        "{class}func main() {{ let u = new User()\nprint(u.name) }}"
+    ));
+    valid(&format!(
+        "{class}func main() {{ let u = new User(age: 7)\nprint(u.name) }}"
+    ));
+    // A field without a default is still required.
+    fails(
+        "class User {\n    name: string\n    age: int = 0\n}\nfunc main() { let u = new User()\nprint(u.name) }",
+        DiagnosticCode::MissingField,
+    );
+    // The default has to be the field's type.
+    fails(
+        "class User {\n    age: int = \"old\"\n}\nfunc main() { let u = new User()\nprint(u.age) }",
+        DiagnosticCode::TypeMismatch,
+    );
+    // A struct takes defaults the same way.
+    valid(
+        "struct Point {\n    x: int = 0\n    y: int = 0\n}\nfunc main() { let p = Point { y: 2 }\nprint(p.x) }",
+    );
+}

@@ -185,6 +185,7 @@ pub(crate) fn type_check(
                 reference: declaration.kind == TypeDeclKind::Reference,
                 fields: Vec::new(),
                 methods: Vec::new(),
+                file: FileId(index),
                 span: declaration.span,
             });
             struct_sites.push((FileId(index), position));
@@ -253,10 +254,12 @@ pub(crate) fn type_check(
             fields.push(FieldInfo {
                 name: field.name.text.clone(),
                 ty,
+                default: field.default.clone(),
                 span: field.span,
             });
         }
         checker.structs[index].fields = fields;
+        checker.structs[index].file = file;
     }
     // A value type has no indirection, so containing itself — directly or
     // through other value types — would have no size. A class field is a
@@ -569,6 +572,28 @@ pub(crate) fn type_check(
             "missing entrypoint `func main()`",
         ),
     }
+    // Field defaults, now that every signature exists and before any body:
+    // the expression is checked once, where it is written, and evaluated at
+    // every construction.
+    for (index, &(file, position)) in struct_sites.iter().enumerate() {
+        checker.file = file;
+        checker.module = program.files[file.0].module;
+        let declaration = &program.files[file.0].program.structs[position];
+        for field in &declaration.fields {
+            let Some(default) = &field.default else {
+                continue;
+            };
+            let Some((_, declared)) = checker.structs[index].field(&field.name.text) else {
+                continue;
+            };
+            let expected = declared.ty;
+            let previous = checker.expected_context;
+            checker.expected_context = Some(expected);
+            let found = checker.expression(default);
+            checker.expected_context = previous;
+            checker.expect_type(expected, found, default.span);
+        }
+    }
     for (index, file) in program.files.iter().enumerate() {
         checker.file = FileId(index);
         checker.module = file.module;
@@ -716,6 +741,9 @@ pub struct StructInfo {
     /// Field order is declaration order, which the backend layout follows.
     pub fields: Vec<FieldInfo>,
     pub methods: Vec<MethodInfo>,
+    /// Where the declaration was written. A field default is an expression in
+    /// that file, and its recorded types are keyed by it.
+    pub file: FileId,
     pub span: Span,
 }
 
@@ -730,6 +758,10 @@ pub struct MethodInfo {
 pub struct FieldInfo {
     pub name: String,
     pub ty: Type,
+    /// `name: Type = expression`. A field with one may be left out of a
+    /// construction; the expression is then evaluated there, once per object,
+    /// in the file that declared the field.
+    pub default: Option<crate::ast::Expr>,
     pub span: Span,
 }
 
@@ -1818,13 +1850,13 @@ impl Checker<'_> {
             initialized[index] = true;
             self.expect_type(declared.ty, found, field.value.span);
         }
-        // Every field must be given a value: there are no defaults and no
-        // partially initialized values.
+        // Every field without a default must be given a value: an object is
+        // never partially initialized.
         let missing: Vec<_> = self.structs[id.0]
             .fields
             .iter()
             .zip(&initialized)
-            .filter(|(_, done)| !**done)
+            .filter(|(field, done)| !**done && field.default.is_none())
             .map(|(field, _)| format!("`{}`", field.name))
             .collect();
         if !missing.is_empty() {

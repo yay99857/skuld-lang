@@ -13,7 +13,10 @@ use std::cell::RefCell;
 /// across files, so every table lookup needs both.
 struct Lowering<'a> {
     typed: &'a TypedProgram,
-    file: FileId,
+    /// The file whose tables the spans below belong to. It is a cell because
+    /// lowering a field default steps into the file that declared the field
+    /// and back, and the context is shared by reference.
+    file: std::cell::Cell<FileId>,
     /// Every lambda in the program, shared by all files so that one index
     /// names one lambda.
     lambdas: &'a RefCell<Vec<h::Lambda>>,
@@ -28,21 +31,22 @@ struct Lowering<'a> {
 
 impl Lowering<'_> {
     fn decl(&self, span: Span) -> SymbolId {
-        self.typed.resolution.declarations[&(self.file, span.start)]
+        self.typed.resolution.declarations[&(self.file.get(), span.start)]
     }
     fn reference(&self, span: Span) -> SymbolId {
-        self.typed.resolution.references[&(self.file, span.start)]
+        self.typed.resolution.references[&(self.file.get(), span.start)]
     }
     fn ty(&self, span: Span) -> Option<Type> {
-        self.typed.expression_type_in(self.file, span)
+        self.typed.expression_type_in(self.file.get(), span)
     }
     /// The enum named by the left of `Enum.Variant` or `module.Enum.Variant`.
     /// Checking already accepted it, so this only has to find it again.
     fn enum_prefix(&self, object: &ast::Expr) -> Option<EnumId> {
         let (module, name) = match &object.kind {
-            ast::ExprKind::Identifier(name) => {
-                (self.typed.program.files[self.file.0].module, &name.text)
-            }
+            ast::ExprKind::Identifier(name) => (
+                self.typed.program.files[self.file.get().0].module,
+                &name.text,
+            ),
             ast::ExprKind::Member { object, member } => {
                 let ast::ExprKind::Identifier(qualifier) = &object.kind else {
                     return None;
@@ -50,7 +54,7 @@ impl Lowering<'_> {
                 let module = self
                     .typed
                     .resolution
-                    .module_in_file(self.file, &qualifier.text)?;
+                    .module_in_file(self.file.get(), &qualifier.text)?;
                 (module, &member.text)
             }
             _ => return None,
@@ -71,7 +75,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
     let files: Vec<Lowering<'_>> = (0..typed.program.files.len())
         .map(|index| Lowering {
             typed: &typed,
-            file: FileId(index),
+            file: std::cell::Cell::new(FileId(index)),
             lambdas: &lambdas,
             function_values: &function_values,
             sorts: &sorts,
@@ -79,7 +83,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
         })
         .collect();
     for cx in &files {
-        let syntax = &typed.program.files[cx.file.0].program;
+        let syntax = &typed.program.files[cx.file.get().0].program;
         for block in &syntax.externs {
             for function in &block.functions {
                 let id = cx.decl(function.name.span);
@@ -386,7 +390,7 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                 .typed
                 .resolution
                 .captures
-                .get(&(cx.file, lambda.body.span.start))
+                .get(&(cx.file.get(), lambda.body.span.start))
                 .map(|symbols| {
                     symbols
                         .iter()
@@ -447,7 +451,7 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
             let Some(Type::Struct(id)) = cx.ty(source.span) else {
                 unreachable!("internal compiler bug: unchecked struct literal")
             };
-            let values = fields
+            let mut values: Vec<(usize, h::Expr)> = fields
                 .iter()
                 .map(|field| {
                     let index = cx.typed.structs[id.0]
@@ -458,6 +462,25 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     (index, expression(&field.value, cx))
                 })
                 .collect();
+            // Then the fields nobody wrote, in declaration order. The written
+            // arguments are evaluated first, in the order they were written,
+            // which is the rule everywhere else in the language; a default is
+            // an expression of the declaring file, so it is lowered with that
+            // file's recorded types.
+            let declaring = cx.typed.structs[id.0].file;
+            for index in 0..cx.typed.structs[id.0].fields.len() {
+                if values.iter().any(|(written, _)| *written == index) {
+                    continue;
+                }
+                let default = cx.typed.structs[id.0].fields[index]
+                    .default
+                    .clone()
+                    .expect("checked construction leaves no field unset");
+                let current = cx.file.replace(declaring);
+                let lowered = expression(&default, cx);
+                cx.file.set(current);
+                values.push((index, lowered));
+            }
             h::ExprKind::StructLiteral { id, fields: values }
         }
         ast::ExprKind::Member { object, member } => {
@@ -657,7 +680,7 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     && cx
                         .typed
                         .resolution
-                        .module_in_file(cx.file, &qualifier.text)
+                        .module_in_file(cx.file.get(), &qualifier.text)
                         .is_some()
                 {
                     return h::Expr {
@@ -792,7 +815,7 @@ fn wrap_expression(kind: h::ExprKind, source: &ast::Expr, cx: &Lowering<'_>) -> 
     if let Some(Type::Interface(interface)) = cx
         .typed
         .interface_wraps
-        .get(&(cx.file, source.span.start, source.span.end))
+        .get(&(cx.file.get(), source.span.start, source.span.end))
         .copied()
         && let Type::Struct(class) = lowered.ty
     {
@@ -810,7 +833,7 @@ fn wrap_expression(kind: h::ExprKind, source: &ast::Expr, cx: &Lowering<'_>) -> 
     if let Some(target_type) =
         cx.typed
             .implicit_wraps
-            .get(&(cx.file, source.span.start, source.span.end))
+            .get(&(cx.file.get(), source.span.start, source.span.end))
     {
         h::Expr {
             kind: h::ExprKind::Some(Box::new(lowered)),
