@@ -220,6 +220,16 @@ the error types the language has so far been unable to name.
 - **Out of scope:** collections beyond arrays (no map, no set — a hash map is
   its own milestone), formatting beyond interpolation, time, randomness,
   filesystem traversal, threads.
+- **Decision taken:** `std` is a **reserved import prefix** resolved to sources
+  embedded in the compiler binary, never to the filesystem. `import "std/utf8"`
+  therefore works from any directory with no installation step, and a user
+  directory named `std` in the program root neither shadows it nor is reachable
+  as it; every other path keeps M6's rule of resolving under the program root.
+  A compiler-supplied search path was rejected for creating a real installation
+  step and making a program's compilability depend on its environment; the cost
+  accepted in exchange is that updating the library means rebuilding the
+  compiler, which is the right trade while the library is small and moves with
+  the language.
 - **Depends on:** M6 for module boundaries, M5 for anything touching the OS.
 - **Open risk:** a standard library written before its users exist becomes a
   museum of guesses. Each entry needs a caller in a milestone already planned,
@@ -312,7 +322,10 @@ above.
    Answered for M6 by the user: a module is a **directory**, export is an
    explicit **`pub`**, use is always **qualified** (`json.parse`), and an import
    cycle is an error. Whether the resolver grows a module dimension or gains a
-   table above it is an implementation question left to that milestone.
+   table above it is an implementation question left to that milestone. Where a
+   module path is **rooted** was left open by M6 and answered separately by the
+   user for M7: a reserved `std` prefix over sources embedded in the compiler
+   binary, with every other path still relative to the program root.
 7. Whether function values may capture. Non-capturing values are enough for
    `sort()` and create no cycles; capturing ones make a lambda a managed value
    and can capture `this`, which the reference counter cannot collect.
