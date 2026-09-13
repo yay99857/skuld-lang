@@ -222,8 +222,12 @@ embedded in the compiler binary, so it needs no installation and a directory
 named `std` beside a program cannot replace it. It is deliberately small —
 `std/utf8` decodes bytes with a real error type, `std/strings` has byte-offset
 helpers, `std/cstring` builds the NUL-terminated buffer C expects, `std/fs`
-reads and writes whole files, `std/os` reaches the process arguments and exit
-status, and `std/testing` holds the assertions `skuld test` runs.
+reads and writes whole files, `std/os` reaches the process arguments, exit
+status and `errno`, `std/map` is a string-keyed index, `std/dns` resolves host
+names by speaking DNS over UDP, and `std/testing` holds the assertions
+`skuld test` runs. `std/tls` and `std/https` are the exception to the
+no-dependencies rule and are opt-in: a program that imports them links OpenSSL
+itself with `-lssl -lcrypto`, and verification cannot be turned off.
 
 ```skuld
 import "std/strings"
@@ -375,8 +379,9 @@ Option, classes, weak references and arrays.
 M8 (function values and stable sorting), M9 (blocking TCP, HTTP and JSON)
 and M10 (class interfaces) are also implemented, as is `let ... else`.
 M11 (the official formatter, `skuld fmt`), M12 (LSP refactoring), M13 (local
-CLI applications and `skuld test`) and M14 (field defaults) are implemented
-too. The LSP provides
+CLI applications and `skuld test`), M14 (field defaults), M15 (a string-keyed
+map), M16 (host names and system error reasons) and M17 (verified HTTPS) are
+implemented too. The LSP provides
 diagnostics, completion, hover, definition, find-references, rename, the
 document outline and formatting through `skuld fmt`'s own formatter, and
 `examples/jsontool.skuld` is a multi-module native tool with its own test suite.

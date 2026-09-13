@@ -222,7 +222,9 @@ accurate; documenting a future feature is not a request to implement it.
   M13 (local CLI applications and `skuld test`) is complete, with its file,
   process and test-discovery decisions recorded below and in `ROADMAP.md`.
   M14 (field defaults) is complete; a constructor with a body is not part of
-  it, for the reason recorded below.
+  it, for the reason recorded below. M15 (a string-keyed map), M16 (host names
+  and error detail) and M17 (verified HTTPS) are complete, each with its
+  decision recorded below and in `ROADMAP.md`.
   No milestone is active. Do not infer authorization for further features without
   explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
@@ -255,9 +257,11 @@ accurate; documenting a future feature is not a request to implement it.
   `validate`, `decode`, `count`, `describe`), `std/strings` (`starts_with`,
   `ends_with`, `index_of`, `contains`, `trim`, `split`, `join`, all in byte
   offsets) and `std/cstring` (`to_c`, refusing an embedded NUL); M9 added
-  `std/json`, `std/net` and `std/http`, and M13 `std/fs` (whole files by path),
-  `std/os` (arguments, flush, exit) and `std/testing` (the assertions `skuld
-  test` runs). It stays small
+  `std/json`, `std/net` and `std/http`; M13 `std/fs` (whole files by path),
+  `std/os` (arguments, flush, exit, and now `errno`) and `std/testing` (the
+  assertions `skuld test` runs); M15 `std/map`; M16 `std/dns`; and M17
+  `std/ffi`, `std/tls` and `std/https`, the last two being the only modules
+  that need a library named on the command line. It stays small
   on purpose: every entry needs a caller in a milestone already planned, and
   adding one means changing the compiler, which is the intended brake. The
   builtin `bytes_to_string` keeps returning `Result<string, string>`: making it
@@ -298,17 +302,26 @@ accurate; documenting a future feature is not a request to implement it.
   the nested `match` at a call site too Rust-shaped; the Go model was considered
   and is blocked by Skuld having no zero values, which is a decision worth
   keeping.
-- The standard library reaches the network, with three limits that are
-  structural rather than unfinished, each following from pointer reads being out
-  of scope at the foreign boundary. There is no name resolution — every resolver
-  in libc answers with a pointer to a structure — so a connection is made to an
-  IPv4 address and `http.get` refuses a name by name. There is no `errno`, so a
-  network failure says which step failed, not why. There is no TLS, so `https://`
-  is refused rather than attempted; binding one is a milestone of its own and
-  arguably a dependency-policy decision. Do not close any of these three without
-  an explicit decision: the alternatives are a read primitive at the boundary, a
-  resolver written in Skuld over UDP, and a TLS dependency, and each changes
-  what the project is.
+- The three limits the network library used to have are closed, each by the
+  decision recorded in `ROADMAP.md`, and none of them by a read primitive at
+  the foreign boundary. Name resolution is `std/dns`, a DNS client written in
+  Skuld over a `connect`ed UDP socket: IPv4 A records, servers from
+  `/etc/resolv.conf`, a three-second timeout, no cache, and a query id from the
+  clock, since the language has no random source. Error detail is a runtime
+  bridge like M13's — `sk_errno` and `sk_error_message` — so `std/fs` and
+  `std/net` carry an `OsFailure` of what was attempted and the system's number.
+  TLS is OpenSSL through the FFI, quarantined in `std/tls` and `std/https`:
+  `std/http` still refuses `https://` and links nothing, and a program that
+  wants TLS imports it and passes `-lssl -lcrypto` itself. Verification cannot
+  be turned off from Skuld and there is no `insecure` flag. `std/ffi` adds the
+  only two pointer operations that read no memory — `null()` and `is_null()` —
+  because a library that allocates answers with NULL. Do not add a
+  dereferencing primitive; that rule is what makes this FFI safe.
+- `std/map` is a `StringMap`: string keys, integer values, open addressing,
+  iteration in insertion order. It is an index — the value is a position, a
+  count or an identifier, and what is indexed stays in the array that holds it,
+  which is why JSON keeps its member order and duplicates. It is not a general
+  collection, and choosing it authorized neither generics nor a builtin map.
 - Network tests stay hermetic. `cli/tests/network.rs` starts its own server on
   an ephemeral loopback port and stops it; nothing in the suite touches the
   network, and `tests/pass` has no server at all, so the library halves are

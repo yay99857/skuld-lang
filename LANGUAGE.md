@@ -1304,6 +1304,25 @@ the runtime offers a count, a length and a copy into bytes Skuld already owns.
 `equal_bool`, `fail` and `passed`. A failing assertion prints why and ends the
 process, because Skuld has no recoverable panic to carry on from.
 
+**`std/map`** is a `StringMap`: `set`, `get`, `has`, `remove`, `len`, `keys`
+and `values`, with string keys, integer values and iteration in insertion
+order. It is an index rather than a general collection — the value is a
+position, a count or an identifier, and what is indexed stays in the array that
+holds it. Generics remain out, and choosing a map did not authorize them.
+
+**`std/dns`** resolves a host name to an IPv4 address by speaking DNS over a
+`connect`ed UDP socket, because every resolver in libc answers with a pointer
+and the foreign boundary does not read through one. Servers come from
+`/etc/resolv.conf`, a query times out after three seconds, and there is no
+cache.
+
+**`std/tls` and `std/https`** are the one place the project takes a
+dependency, and it is opt-in: they bind OpenSSL, so a program that imports
+them links it itself with `-lssl -lcrypto`. `std/http` still refuses `https://`
+and links nothing. Verification cannot be turned off from Skuld: the chain is
+checked against the system trust store and the name against the certificate,
+and there is no `insecure` flag.
+
 **What the library is not.** There is no collection beyond arrays, no map, no
 time, no randomness and no filesystem traversal. It is not a package registry,
 and there is no way to add to it except by changing the compiler — which is the
@@ -1321,8 +1340,13 @@ move with the language.
 | `std/net` | A blocking TCP connection over libc sockets |
 | `std/http` | An HTTP/1.1 client written on `std/net` |
 | `std/fs` | Reading and writing a whole file, by path |
-| `std/os` | The process arguments, an output flush and an exit status |
+| `std/os` | The process arguments, a flush, an exit status and `errno` |
 | `std/testing` | The assertions `skuld test` runs |
+| `std/map` | A map from `string` to `int`, iterated in insertion order |
+| `std/dns` | Host names, by speaking DNS over UDP |
+| `std/ffi` | The null pointer, and whether a pointer is it |
+| `std/tls` | A verified TLS connection over OpenSSL (needs `-lssl -lcrypto`) |
+| `std/https` | The HTTP client of `std/http` over `std/tls` |
 
 The last three arrived with M9, and reach as far as fetching a document and
 decoding it:
@@ -1411,12 +1435,12 @@ string slicing and the `extern "C"` boundary.
 Future commands: `new` and `doc` (`fmt` and `test` are implemented). LLVM/Cranelift and eventual
 self-hosting remain long-term possibilities.
 
-`ROADMAP.md` records M1–M14 as implemented, including function values,
+`ROADMAP.md` records M1–M17 as implemented, including function values,
 callbacks, interfaces, blocking TCP/HTTP with JSON, the official formatter
 `skuld fmt`, find-references and rename in the editor, and a native command-line
-application with its own `skuld test` suite and field defaults at construction.
-Its proposed M15–M18 sequence covers maps, name resolution, HTTPS, and measured
-performance/portability. These proposals do not settle their syntax
+application with its own `skuld test` suite, field defaults at construction, a
+string-keyed map, host-name resolution and verified HTTPS. Its proposed M18
+covers measured performance and portability. These proposals do not settle their syntax
 or authorize implementation. No implementation milestone is active.
 
 ## Unsupported features and experimental status

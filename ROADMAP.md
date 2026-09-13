@@ -1,7 +1,7 @@
 # Skuld roadmap
 
 This document records completed milestones and a **proposed** next sequence.
-M1–M14 are implemented. No implementation milestone is active. Starting any of
+M1–M17 are implemented. No implementation milestone is active. Starting any of
 the milestones below still needs explicit selection and any open design
 decisions recorded in `AGENTS.md`. See `LANGUAGE.md` for semantics and `README.md` for usage.
 
@@ -13,21 +13,23 @@ come before expanding the type system or changing the backend.
 
 ## Current baseline
 
-- **Implemented:** M1–M14, including non-escaping lambdas, stable array sorting,
+- **Implemented:** M1–M17, including non-escaping lambdas, stable array sorting,
   storable class interfaces, modules, the embedded library, blocking HTTP, the
   official formatter (`skuld fmt` with `--check`), verified rename in the
-  editor, whole-file reads and writes, the process arguments, `skuld test`, and
-  field defaults at construction.
+  editor, whole-file reads and writes, the process arguments, `skuld test`,
+  field defaults at construction, a string-keyed map, a DNS resolver written in
+  Skuld, system error reasons, and verified TLS.
   `let ... else` also unwraps Option/Result without nesting the success path.
 - **Tooling implemented:** highlighting, the official formatter `skuld fmt`, and
   a third workspace crate, `lsp/`, with diagnostics, completion, hover,
   definition, find-references and rename.
 - **Current limits:** no user-defined constructor with a body, so a field
-  default is an expression and not a step that can fail; no maps or general
-  generics; a file API that
-  is whole-file and by path only, with no `errno`. Network
-  access has no host-name resolution, errno detail or TLS. Linux x86_64 is the
-  currently tested native target; Go/Rust-level performance remains unmeasured.
+  default is an expression and not a step that can fail; no general generics,
+  and the map is string-keyed with integer values rather than a general
+  collection; a file API that is whole-file and by path only. Name resolution
+  is IPv4 A records over UDP, without a cache. TLS is OpenSSL through the FFI
+  and is opt-in at link time. Linux x86_64 is the currently tested native
+  target; Go/Rust-level performance remains unmeasured.
 - **Syntax reference:** `test.skuld` remains an untouched design sketch.
   Its global statements and incomplete `new User()` are unsupported, and its
   `=>` sorting callback was superseded by M8's `(a, b): int { ... }` form.
@@ -509,8 +511,8 @@ Not sequenced with the milestones above and not blocking any of them.
 
 The numbers express a recommended order, not a requirement to implement every
 entry. M11 and M12 improved daily use without new language semantics. M13 was the
-first application milestone. M14 and M15 address language ergonomics separately;
-M16 and M17 require explicit foreign-boundary and dependency decisions.
+first application milestone. M14 and M15 addressed language ergonomics separately;
+M16 and M17 took the foreign-boundary and dependency decisions they needed.
 M18 can collect a baseline earlier, but optimizations must follow measurements.
 
 | Milestone | Deliverable | Dependency |
@@ -519,9 +521,9 @@ M18 can collect a baseline earlier, but optimizations must follow measurements.
 | M12 | References and safe rename in the LSP | Implemented |
 | M13 | Local CLI applications and `skuld test` | Implemented |
 | M14 | Field defaults and construction | Implemented |
-| M15 | A map for real application data | Collection/type-system decision |
-| M16 | Host names and useful network errors | Foreign-boundary decision |
-| M17 | Verified HTTPS | M16 and TLS dependency policy |
+| M15 | A map for real application data | Implemented |
+| M16 | Host names and useful network errors | Implemented |
+| M17 | Verified HTTPS | Implemented |
 | M18 | Performance baseline and a second native target | Representative applications |
 
 ## M11 — Official formatter — Implemented
@@ -717,56 +719,115 @@ let ada = new Account(owner: "Ada", balance: 120)
 - **Out of scope, and still out:** overloads, inheritance, global statements,
   zero or null defaults, a constructor body, and initialization that fails.
 
-## M15 — Maps with an application consumer — Planned
+## M15 — Maps with an application consumer — Implemented
 
-- **Purpose:** remove repeated linear searches in application indexes; JSON object
-  lookup is a candidate consumer, not permission to change its semantics.
-- **Scope:** a small map API for insertion, lookup, replacement, removal and
-  iteration, with managed key/value cleanup and specified mutation behavior.
-- **Decision gate:** choose a concrete string-keyed library collection, a builtin
-  map, or general generics. Generics are not implicitly authorized by choosing
-  maps; if selected, split their design and implementation into a separately
-  approved milestone before implementing the collection.
-- **Other decisions:** equality/hash rules, value versus reference semantics,
-  iteration order, missing-key representation and behavior during iteration.
-  Preserve JSON field order and duplicate keys unless explicitly changed; an
-  auxiliary index can coexist with the current list representation.
-- **Closing marker:** a real CLI workload uses the collection; tests exercise
-  collisions, resizing, missing keys, replacement and managed-value cleanup.
-  Compare lookup costs against the existing array approach with equal inputs.
-- **Out of scope:** sets, arbitrary user hash implementations and a broad
-  collection hierarchy unless separately selected.
+- **Decision taken — a concrete library collection, not a builtin and not
+  generics.** Generics are a milestone of their own that nothing has
+  authorized, and a builtin map would have put a second collection in the
+  compiler for one consumer. `std/map` is therefore a `StringMap`: a map from
+  `string` to `int`, written in Skuld. The value is a position, a count or an
+  identifier, and what is being indexed stays in the array that already holds
+  it — which is how a JSON object keeps its order and its duplicates and is
+  still searchable.
+- **Implemented:** `set` (answering what it replaced), `get`, `has`, `remove`,
+  `len`, `keys`, `values`, open addressing with linear probing, and geometric
+  growth at 70% occupancy counting removed entries.
+- **Decision taken — iteration is insertion order.** A hash table has no order
+  of its own, so the choice was between whatever the buckets hold — which
+  changes at every resize — and the order the caller built. Predictable output
+  is worth the key list it costs. A removed key keeps its slot so the rest of
+  that order is untouched, and a rehash is where removed entries are really
+  dropped. A key removed and set again keeps its original place, because it
+  keeps its original entry.
+- **Decision taken — a missing key is an `Option`,** which is what the language
+  already says about absence; there is no zero value to return instead.
+- **Equality and hashing:** keys compare by their bytes, and the hash is a
+  polynomial over them, kept under 2^30 so it cannot overflow an `int`. Skuld
+  has no bitwise operators, so FNV-1a — which needs a xor — was not available.
+  It is not meant to resist a hostile key set, and a user-supplied hash is out
+  of scope.
+- **JSON is untouched:** its members stay a list in source order with
+  duplicates preserved, exactly as M4 decided.
+- **Closing marker — reached:** `jsontool --keys` counts every member name in a
+  document, which is a lookup per member and quadratic through an array.
+  Measured with `tests/bench/map_lookup.skuld` on the machine that wrote this,
+  20000 keys take **1896 ms** through the parallel-array search and **21 ms**
+  through the map; at 2000 keys it is 26 ms against 3 ms.
+  `tests/pass/string_map.skuld` covers replacement, removal, growth across
+  several rehashes, collisions and a missing key, under the address, leak and
+  UB sanitizers with the rest of `tests/pass`.
+- **Out of scope, and still out:** sets, user hash implementations, a
+  collection hierarchy, and any key type but `string`.
 
-## M16 — Host names and network error detail — Planned
+## M16 — Host names and network error detail — Implemented
 
-- **Purpose:** remove the IPv4-literal-only restriction and report the reason
-  a network operation failed, not just its step.
-- **Decision gate:** choose an explicit foreign-memory primitive, a narrowly
-  scoped native bridge, or a resolver in Skuld over UDP. The UDP choice does
-  not solve errno access; choose that separately. None is authorized here.
-- **Scope after that decision:** name resolution for the current blocking TCP
-  client, resolver-result cleanup and structured OS errors. Decide IPv4-only
-  versus IPv6, address fallback, timeout policy and platform coverage first.
-- **Closing marker:** a controlled local name resolves and an HTTP request to a
-  loopback server succeeds; resolution failures, connection failures and cleanup
-  are tested through deterministic fixtures or an injected resolver. No test
-  relies on public DNS or an external service.
-- **Out of scope:** TLS, servers, async IO and unrestricted FFI expansion.
+- **Decision taken — a resolver in Skuld over UDP.** The gate was between a
+  foreign-memory primitive, a native bridge and this. Every resolver in libc
+  answers with a pointer to a structure, and a primitive that read through one
+  would have weakened the single rule that makes this FFI safe, for one caller.
+  `std/dns` is a DNS client written in Skuld: a UDP socket `connect`ed to the
+  server, so `send` and `recv` suffice and `recvfrom`'s address-out parameter
+  is never needed.
+- **Decision taken — `errno` is a runtime bridge, separately.** The UDP choice
+  says nothing about error detail. `errno` is a macro over a function returning
+  a pointer and `strerror` answers with one, so `sk_errno` and
+  `sk_error_message` read them in the runtime and hand back a number and bytes,
+  exactly as M13's argument bridge does. `std/fs` and `std/net` now carry an
+  `OsFailure` — what was attempted and the system's number — so a refused
+  connection reads "could not connect to 127.0.0.1:9: Connection refused".
+- **Scope taken:** IPv4 A records, servers from `/etc/resolv.conf` in order, a
+  three-second receive timeout so an unreachable server fails rather than
+  hangs, and a literal address resolved as itself without asking anyone. A
+  name that does not exist is final; a transport failure moves to the next
+  server.
+- **Still provisional:** there is no random source in the language, so the
+  query id comes from the clock. With the socket's ephemeral port it is what an
+  answer has to match, and that is not a defence against an off-path attacker.
+  It is meant for the nameserver the machine already trusts.
+- **Closing marker — reached:** `cli/tests/resolver.rs` runs a DNS server on a
+  loopback port of its own and an HTTP server beside it: a name resolves
+  against the first and the address that comes back is what the request goes
+  to. It also covers a refused name, a literal, a server that never answers and
+  a label longer than the protocol allows. Nothing in the suite touches public
+  DNS.
+- **Out of scope, and still out:** IPv6, CNAME chasing, a cache, `search`
+  domains, TCP fallback for truncated answers, and servers, async IO or
+  unrestricted FFI expansion.
 
-## M17 — HTTPS with certificate verification — Planned
+## M17 — HTTPS with certificate verification — Implemented
 
-- **Purpose:** make the document-fetching application usable with HTTPS endpoints.
-- **Dependencies:** M16 and an explicit choice of TLS provider, supported versions,
-  linking/distribution policy and trust-store integration. No custom cryptography.
-- **Scope:** blocking HTTPS with certificate-chain and host-name verification,
-  SNI, bounded IO behavior and structured handshake/verification errors.
-- **Decisions before implementation:** connection/resource ownership, trust roots,
-  timeout behavior and whether redirects stay rejected or get a separate design.
-- **Closing marker:** local TLS integration tests with a test CA accept the
-  intended host and reject wrong names, expired and untrusted certificates;
-  early failures release sockets and TLS resources. A Skuld program fetches and
-  parses JSON over that verified connection without disabling verification.
-- **Out of scope:** HTTP/2, connection pools, async, TLS servers and public-network tests.
+- **Decision taken — OpenSSL, through the FFI.** Custom cryptography is out of
+  the question and nothing authorizes it, so a system library was the only
+  honest option. Supported versions are whatever the linked OpenSSL negotiates
+  through `TLS_client_method`.
+- **Decision taken — the dependency is quarantined, not spread.** `std/tls`
+  and `std/https` are their own modules; `std/http` still refuses `https://`
+  and links nothing. A program that wants TLS imports it and says so:
+  `skuld build fetch.skuld -lssl -lcrypto`. That keeps the compiler free of
+  dependencies and makes the one a program takes visible in its build command.
+- **Decision taken — verification cannot be turned off.** There is no
+  `insecure` flag, because the first thing anybody would do with one is reach
+  for it. The chain is checked against the system trust store
+  (`SSL_CTX_set_default_verify_paths`), the name against the certificate
+  (`SSL_set1_host` before the handshake and the verification result read
+  after), and SNI is sent so the right certificate arrives.
+- **Decision taken — two pointer operations were needed and no more.**
+  `std/ffi` has `null()` and `is_null()`: a library that allocates answers with
+  NULL and one that takes an optional callback wants NULL. Neither reads
+  through a pointer, so dereferencing and arithmetic stay out.
+- **Ownership:** a connection owns its socket, its `SSL` and its `SSL_CTX`, and
+  `close()` releases them in that order. Every failure on the way in releases
+  what it had already taken; the whole path runs clean under the address and
+  leak sanitizers.
+- **Closing marker — reached:** `cli/tests/https.rs` creates a certificate
+  authority, signs a certificate for `localhost` with it, runs
+  `openssl s_server` on a loopback port and fetches JSON over the verified
+  connection, parsing it with `std/json`. It refuses an untrusted chain, a
+  certificate for another name and an expired one, each with its own message.
+  No test disables verification and none reaches the public network.
+- **Out of scope, and still out:** HTTP/2, connection pools, async, TLS
+  servers, client certificates, redirects, and any test against a public
+  endpoint.
 
 ## M18 — Measured performance and portability — Planned
 
