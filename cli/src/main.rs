@@ -8,14 +8,53 @@ use skuld_compiler::{
     span::SourceFile,
 };
 use std::{
-    env, fs,
+    env,
+    ffi::{OsStr, OsString},
+    fs,
     io::{self, Write},
     path::{Path, PathBuf},
     process::ExitCode,
 };
 
-const USAGE: &str = "Usage: skuld <lex|parse|resolve|check|emit-c|build|run> <file.skuld> [-l<library> | -L<directory>]...";
-#[derive(Clone, Copy)]
+const USAGE: &str =
+    "usage: skuld <command> <file.skuld> [options]   (`skuld --help` for the full list)";
+
+const HELP: &str = "\
+skuld — the Skuld compiler
+
+usage:
+    skuld <command> <file.skuld> [options]
+
+commands:
+    run        check, compile and execute; keeps no artifacts
+    build      check and compile to an executable in the working directory
+    check      static checking only; needs no clang and prints nothing on success
+    emit-c     print the generated C to stdout
+    lex        print the token stream of the one file named
+    parse      print the syntax tree of the one file named
+    resolve    print the resolution tables of the whole program
+
+options:
+    -o <path>        where `build` writes the executable
+    -l<library>      link a library, e.g. -lm            (build and run)
+    -L<directory>    add a library search directory      (build and run)
+    --               read every later argument as a path, never a flag
+    -h, --help       print this help
+    -V, --version    print the version
+
+exit codes:
+    0    success; for `run`, the compiled program's own exit code
+    1    the program was rejected, or a tool failed
+    2    the command line was invalid
+
+examples:
+    skuld run examples/hello.skuld
+    skuld check src/main.skuld
+    skuld build program.skuld -o bin/program -lm
+    skuld emit-c program.skuld > generated.c
+";
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Action {
     Lex,
     Parse,
@@ -25,68 +64,216 @@ enum Action {
     Build,
     Run,
 }
-fn main() -> ExitCode {
-    let args: Vec<_> = env::args_os().skip(1).collect();
-    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
-        return write_output(&format!("{USAGE}\n"));
+
+impl Action {
+    const NAMES: [(&'static str, Self); 7] = [
+        ("lex", Self::Lex),
+        ("parse", Self::Parse),
+        ("resolve", Self::Resolve),
+        ("check", Self::Check),
+        ("emit-c", Self::EmitC),
+        ("build", Self::Build),
+        ("run", Self::Run),
+    ];
+    fn parse(name: &str) -> Option<Self> {
+        Self::NAMES
+            .iter()
+            .find(|(spelling, _)| *spelling == name)
+            .map(|(_, action)| *action)
     }
-    if args.len() < 2 {
-        eprintln!("{USAGE}");
-        return ExitCode::from(2);
+    /// Whether this stage ever reaches clang, which is what makes a linker
+    /// argument meaningful.
+    fn links(self) -> bool {
+        matches!(self, Self::Build | Self::Run)
     }
-    let action = match args[0].to_str() {
-        Some("lex") => Action::Lex,
-        Some("parse") => Action::Parse,
-        Some("resolve") => Action::Resolve,
-        Some("check") => Action::Check,
-        Some("emit-c") => Action::EmitC,
-        Some("build") => Action::Build,
-        Some("run") => Action::Run,
-        _ => {
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
-        }
-    };
-    // Linker arguments are restricted to library selection: nothing here may
-    // redirect clang's output or change how the program itself is compiled.
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Invocation {
+    action: Action,
+    file: PathBuf,
+    link_flags: Vec<String>,
+    /// Only `build` writes a file, and only `-o` chooses where.
+    output: Option<PathBuf>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Command {
+    /// Print to stdout and exit successfully: help and version are answers,
+    /// not errors, so they never go to stderr.
+    Print(String),
+    Invoke(Box<Invocation>),
+    /// Print to stderr and exit 2: the command line itself was wrong.
+    Misuse(String),
+}
+
+/// Flags may appear before or after the file, `--` ends them, and nothing is
+/// positional but the command and the file.
+fn parse_arguments(arguments: &[OsString]) -> Command {
+    let mut positional: Vec<&OsStr> = Vec::new();
     let mut link_flags = Vec::new();
-    for argument in &args[2..] {
-        let Some(flag) = argument.to_str() else {
-            eprintln!("error: linker arguments must be valid UTF-8");
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
-        };
-        if !matches!(action, Action::Build | Action::Run) {
-            eprintln!("error: linker arguments are only meaningful for `build` and `run`");
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
+    let mut output: Option<PathBuf> = None;
+    let mut flags_over = false;
+    let mut pending_output = false;
+    for argument in arguments {
+        if pending_output {
+            output = Some(PathBuf::from(argument));
+            pending_output = false;
+            continue;
         }
-        if !((flag.starts_with("-l") || flag.starts_with("-L")) && flag.len() > 2) {
-            eprintln!(
-                "error: unsupported linker argument `{flag}`; only `-l<library>` and `-L<directory>` are accepted"
-            );
-            eprintln!("{USAGE}");
-            return ExitCode::from(2);
+        let text = argument.to_str();
+        if flags_over || !text.is_some_and(|text| text.starts_with('-') && text.len() > 1) {
+            positional.push(argument);
+            continue;
         }
-        link_flags.push(flag.to_owned());
+        // `text` is Some here: only a valid UTF-8 argument reaches this point.
+        let flag = text.unwrap_or_default();
+        match flag {
+            "--" => flags_over = true,
+            "-h" | "--help" => return Command::Print(HELP.to_owned()),
+            "-V" | "--version" => {
+                return Command::Print(format!("skuld {}\n", env!("CARGO_PKG_VERSION")));
+            }
+            "-o" | "--output" => pending_output = true,
+            _ if flag.starts_with("-o") => output = Some(PathBuf::from(&flag[2..])),
+            _ if (flag.starts_with("-l") || flag.starts_with("-L")) && flag.len() > 2 => {
+                link_flags.push(flag.to_owned());
+            }
+            _ => {
+                return Command::Misuse(format!(
+                    "unknown option `{flag}`\n{USAGE}\nonly `-o`, `-l<library>` and `-L<directory>` are accepted"
+                ));
+            }
+        }
     }
-    let text = match fs::read_to_string(&args[1]) {
+    if pending_output {
+        return Command::Misuse(format!(
+            "`-o` needs a path to write the executable to\n{USAGE}"
+        ));
+    }
+    let Some(name) = positional.first() else {
+        return Command::Misuse(format!("no command given\n{USAGE}"));
+    };
+    let Some(action) = name.to_str().and_then(Action::parse) else {
+        let name = name.to_string_lossy();
+        let mut message = format!("unknown command `{name}`");
+        if let Some(guess) = nearest_command(&name) {
+            message.push_str(&format!("; did you mean `{guess}`?"));
+        }
+        message.push('\n');
+        message.push_str(USAGE);
+        return Command::Misuse(message);
+    };
+    let Some(file) = positional.get(1) else {
+        let mut message = format!("`{}` needs a file to work on", name.to_string_lossy());
+        // `-osomething.skuld` is `-o` with a joined value, the way a C compiler
+        // reads it, so a source whose name begins with a dash disappears into
+        // an option. Say so, rather than leaving the reader to work it out.
+        if let Some(taken) = output
+            .as_ref()
+            .filter(|path| path.extension().is_some_and(|e| e == "skuld"))
+        {
+            message.push_str(&format!(
+                "\nnote: `-o` took `{}` as the path to write to; pass a file whose name begins with `-` after `--`",
+                taken.display()
+            ));
+        }
+        message.push('\n');
+        message.push_str(USAGE);
+        return Command::Misuse(message);
+    };
+    if let Some(extra) = positional.get(2) {
+        return Command::Misuse(format!(
+            "unexpected argument `{}`; one file at a time\n{USAGE}",
+            extra.to_string_lossy()
+        ));
+    }
+    // Restricting linker arguments to library selection keeps a build from
+    // being redirected or recompiled differently through this door.
+    if !link_flags.is_empty() && !action.links() {
+        return Command::Misuse(format!(
+            "linker arguments are only meaningful for `build` and `run`\n{USAGE}"
+        ));
+    }
+    if output.is_some() && action != Action::Build {
+        return Command::Misuse(format!(
+            "`-o` chooses where `build` writes its executable, and applies to nothing else\n{USAGE}"
+        ));
+    }
+    Command::Invoke(Box::new(Invocation {
+        action,
+        file: PathBuf::from(file),
+        link_flags,
+        output,
+    }))
+}
+
+/// A close typo gets a suggestion; anything further apart gets the usage line
+/// rather than a guess that would send the reader somewhere else.
+fn nearest_command(given: &str) -> Option<&'static str> {
+    let allowed = if given.chars().count() <= 3 { 1 } else { 2 };
+    Action::NAMES
+        .iter()
+        .map(|(name, _)| *name)
+        .map(|name| (edit_distance(given, name), name))
+        .filter(|(distance, _)| *distance <= allowed)
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, name)| name)
+}
+
+/// Edit distance counting a swap of two neighbours as one mistake, because
+/// `buidl` for `build` is one slip of the fingers and not two.
+fn edit_distance(left: &str, right: &str) -> usize {
+    let left: Vec<char> = left.chars().collect();
+    let right: Vec<char> = right.chars().collect();
+    let mut rows = vec![vec![0_usize; right.len() + 1]; left.len() + 1];
+    for (i, row) in rows.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in rows[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=left.len() {
+        for j in 1..=right.len() {
+            let cost = usize::from(left[i - 1] != right[j - 1]);
+            let mut best = (rows[i - 1][j - 1] + cost)
+                .min(rows[i - 1][j] + 1)
+                .min(rows[i][j - 1] + 1);
+            if i > 1 && j > 1 && left[i - 1] == right[j - 2] && left[i - 2] == right[j - 1] {
+                best = best.min(rows[i - 2][j - 2] + 1);
+            }
+            rows[i][j] = best;
+        }
+    }
+    rows[left.len()][right.len()]
+}
+
+fn main() -> ExitCode {
+    let arguments: Vec<OsString> = env::args_os().skip(1).collect();
+    let invocation = match parse_arguments(&arguments) {
+        Command::Print(text) => return write_output(&text),
+        Command::Misuse(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::from(2);
+        }
+        Command::Invoke(invocation) => *invocation,
+    };
+    let action = invocation.action;
+    let link_flags = invocation.link_flags;
+    let entry = invocation.file;
+    let text = match fs::read_to_string(&entry) {
         Ok(text) => text,
         Err(error) => {
-            eprintln!(
-                "error: cannot read `{}`: {error}",
-                args[1].to_string_lossy()
-            );
+            eprintln!("error: cannot read `{}`: {error}", entry.display());
             return ExitCode::FAILURE;
         }
     };
-    let entry = PathBuf::from(&args[1]);
     // Import paths are relative to the directory the entry file lives in.
     // That directory is the program root; a module is a directory under it.
     let mut loader = Directories {
         root: entry.parent().unwrap_or(Path::new(".")).to_path_buf(),
     };
-    let source = SourceFile::new(args[1].to_string_lossy(), text);
+    let source = SourceFile::new(entry.to_string_lossy(), text);
     let result = match action {
         Action::Lex => {
             let output = lex(&source.text);
@@ -132,7 +319,7 @@ fn main() -> ExitCode {
             }
         },
         Ok(output) if matches!(action, Action::Build) => {
-            let executable = match executable_path(Path::new(&args[1])) {
+            let executable = match executable_path(&entry, invocation.output.as_deref()) {
                 Ok(path) => path,
                 Err(error) => {
                     eprintln!("error: {error}");
@@ -150,26 +337,52 @@ fn main() -> ExitCode {
         Ok(output) => write_output(&output),
     }
 }
-/// The executable lands in the working directory under the source file's stem,
-/// so building never writes next to the source or into a directory the user did
-/// not choose.
-fn executable_path(source: &Path) -> Result<PathBuf, String> {
-    let stem = source
-        .file_stem()
-        .ok_or_else(|| format!("`{}` has no file name to build from", source.display()))?;
-    if stem.is_empty() {
-        return Err(format!("`{}` has an empty file name", source.display()));
-    }
-    let mut name = stem.to_os_string();
-    if cfg!(windows) {
-        name.push(".exe");
-    }
-    let executable = PathBuf::from(&name);
+/// Without `-o` the executable lands in the working directory under the source
+/// file's stem, so building never writes next to the source or into a directory
+/// the user did not choose. With `-o` the user chose it, and the only rule kept
+/// is that a build must not consume its own source.
+fn executable_path(source: &Path, requested: Option<&Path>) -> Result<PathBuf, String> {
+    let executable = match requested {
+        Some(path) => {
+            if path.as_os_str().is_empty() {
+                return Err("`-o` needs a path to write the executable to".to_owned());
+            }
+            if path.is_dir() {
+                return Err(format!(
+                    "`{}` is a directory; `-o` names the executable itself",
+                    path.display()
+                ));
+            }
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+                && !parent.is_dir()
+            {
+                return Err(format!(
+                    "`{}` does not exist; create it before writing an executable into it",
+                    parent.display()
+                ));
+            }
+            path.to_path_buf()
+        }
+        None => {
+            let stem = source
+                .file_stem()
+                .ok_or_else(|| format!("`{}` has no file name to build from", source.display()))?;
+            if stem.is_empty() {
+                return Err(format!("`{}` has an empty file name", source.display()));
+            }
+            let mut name = stem.to_os_string();
+            if cfg!(windows) {
+                name.push(".exe");
+            }
+            PathBuf::from(&name)
+        }
+    };
     // Without an extension the stem is the source itself; refuse rather than
     // overwrite the program being compiled.
     if same_file(&executable, source) {
         return Err(format!(
-            "building `{}` would overwrite it; rename the source to end in `.skuld`",
+            "building `{}` would overwrite it; choose another path with `-o`, or rename the source to end in `.skuld`",
             source.display()
         ));
     }
@@ -271,4 +484,159 @@ fn outside(path: &str, root: &Path) -> String {
          what is under its own root, and a link out of it is not followed",
         root.display()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(arguments: &[&str]) -> Command {
+        let arguments: Vec<OsString> = arguments.iter().map(OsString::from).collect();
+        parse_arguments(&arguments)
+    }
+    fn invocation(arguments: &[&str]) -> Invocation {
+        match parse(arguments) {
+            Command::Invoke(invocation) => *invocation,
+            other => panic!("{arguments:?} should be an invocation, got {other:?}"),
+        }
+    }
+    fn misuse(arguments: &[&str]) -> String {
+        match parse(arguments) {
+            Command::Misuse(message) => message,
+            other => panic!("{arguments:?} should be a misuse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_flag_may_sit_on_either_side_of_the_file() {
+        let expected = Invocation {
+            action: Action::Run,
+            file: PathBuf::from("program.skuld"),
+            link_flags: vec!["-lm".to_owned()],
+            output: None,
+        };
+        assert_eq!(invocation(&["run", "program.skuld", "-lm"]), expected);
+        assert_eq!(invocation(&["run", "-lm", "program.skuld"]), expected);
+        assert_eq!(invocation(&["-lm", "run", "program.skuld"]), expected);
+    }
+
+    #[test]
+    fn a_separator_ends_the_flags() {
+        // Without `--`, a file whose name begins with a dash is read as an
+        // option: `-odd-name.skuld` is `-o` with a joined value, the way every
+        // C compiler reads it. That ambiguity is exactly what `--` resolves.
+        let parsed = invocation(&["check", "--", "-odd-name.skuld"]);
+        assert_eq!(parsed.file, PathBuf::from("-odd-name.skuld"));
+        assert!(parsed.link_flags.is_empty());
+        let swallowed = misuse(&["check", "-odd-name.skuld"]);
+        assert!(
+            swallowed.contains("`-o` took `dd-name.skuld`"),
+            "{swallowed}"
+        );
+        assert!(swallowed.contains("after `--`"), "{swallowed}");
+        assert!(misuse(&["check", "-weird.skuld"]).contains("unknown option"));
+    }
+
+    #[test]
+    fn an_output_path_is_taken_joined_or_separate() {
+        for arguments in [
+            &["build", "program.skuld", "-o", "bin/program"][..],
+            &["build", "program.skuld", "-obin/program"][..],
+            &["build", "-o", "bin/program", "program.skuld"][..],
+            &["build", "program.skuld", "--output", "bin/program"][..],
+        ] {
+            let parsed = invocation(arguments);
+            assert_eq!(parsed.output, Some(PathBuf::from("bin/program")));
+            assert_eq!(parsed.file, PathBuf::from("program.skuld"));
+        }
+        assert!(misuse(&["build", "program.skuld", "-o"]).contains("needs a path"));
+    }
+
+    #[test]
+    fn an_option_is_refused_where_it_would_mean_nothing() {
+        // Silently ignoring one would hide a mistake the user is about to repeat.
+        assert!(misuse(&["check", "program.skuld", "-lm"]).contains("`build` and `run`"));
+        assert!(misuse(&["lex", "program.skuld", "-L/opt/lib"]).contains("`build` and `run`"));
+        assert!(misuse(&["run", "program.skuld", "-o", "program"]).contains("`-o`"));
+        assert!(misuse(&["run", "program.skuld", "-O2"]).contains("unknown option"));
+        // A bare `-l` names no library.
+        assert!(misuse(&["run", "program.skuld", "-l"]).contains("unknown option"));
+    }
+
+    #[test]
+    fn help_and_version_answer_before_anything_else_is_judged() {
+        for arguments in [
+            &["--help"][..],
+            &["-h"][..],
+            &["nonsense", "--help"][..],
+            &["build", "--help", "-o"][..],
+        ] {
+            let Command::Print(text) = parse(arguments) else {
+                panic!("{arguments:?} should print help");
+            };
+            assert!(text.contains("commands:"), "{arguments:?}");
+        }
+        for arguments in [
+            &["--version"][..],
+            &["-V"][..],
+            &["run", "-V", "x.skuld"][..],
+        ] {
+            let Command::Print(text) = parse(arguments) else {
+                panic!("{arguments:?} should print the version");
+            };
+            assert!(text.starts_with("skuld "), "{arguments:?}");
+        }
+    }
+
+    #[test]
+    fn a_missing_or_mistyped_command_says_what_to_do() {
+        assert!(misuse(&[]).contains("no command given"));
+        assert!(misuse(&["run"]).contains("needs a file"));
+        assert!(misuse(&["run", "a.skuld", "b.skuld"]).contains("one file at a time"));
+        assert!(misuse(&["buidl", "x.skuld"]).contains("did you mean `build`?"));
+        assert!(misuse(&["chekc", "x.skuld"]).contains("did you mean `check`?"));
+        // A word that resembles nothing gets no guess.
+        let far = misuse(&["frobnicate", "x.skuld"]);
+        assert!(far.contains("unknown command"), "{far}");
+        assert!(!far.contains("did you mean"), "{far}");
+    }
+
+    #[test]
+    fn a_swap_of_two_letters_is_one_mistake() {
+        assert_eq!(edit_distance("build", "build"), 0);
+        assert_eq!(edit_distance("buidl", "build"), 1);
+        assert_eq!(edit_distance("biuld", "build"), 1);
+        assert_eq!(edit_distance("bild", "build"), 1);
+        assert_eq!(edit_distance("", "run"), 3);
+        assert_eq!(edit_distance("emit-c", "emit-c"), 0);
+    }
+
+    #[test]
+    fn an_output_path_is_the_users_to_choose_but_never_the_source() {
+        let source = Path::new("program.skuld");
+        assert_eq!(
+            executable_path(source, None).expect("default"),
+            PathBuf::from(if cfg!(windows) {
+                "program.exe"
+            } else {
+                "program"
+            })
+        );
+        // `-o` may point anywhere the user can write: unlike a module path, it
+        // carries no code into the build and was typed on purpose.
+        assert_eq!(
+            executable_path(source, Some(Path::new("../program"))).expect("explicit"),
+            PathBuf::from("../program")
+        );
+        let directory = executable_path(source, Some(Path::new(".")));
+        assert!(
+            directory.is_err_and(|message| message.contains("is a directory")),
+            "a directory is not an executable"
+        );
+        let missing = executable_path(source, Some(Path::new("no/such/place/program")));
+        assert!(
+            missing.is_err_and(|message| message.contains("does not exist")),
+            "a missing parent is reported before clang is launched"
+        );
+    }
 }

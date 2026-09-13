@@ -42,18 +42,84 @@ fn invalid_arguments() {
         vec!["lex", "x.skuld", "-lm"],
         vec!["run", "x.skuld", "-O2"],
         vec!["run", "x.skuld", "-l"],
+        // `-o` chooses where `build` writes, and nothing else writes a file.
+        vec!["run", "x.skuld", "-o", "program"],
+        vec!["check", "x.skuld", "-o", "program"],
+        vec!["build", "x.skuld", "-o"],
     ] {
-        let output = cli().args(args).output().expect("start CLI");
-        assert_eq!(output.status.code(), Some(2));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("Usage:"));
+        let output = cli().args(&args).output().expect("start CLI");
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("usage:"), "{args:?}: {stderr}");
+        // A misuse names what to read next rather than dumping the whole help.
+        assert!(stderr.contains("--help"), "{args:?}: {stderr}");
     }
-    let help = cli().arg("--help").output().expect("start CLI");
-    assert!(help.status.success());
-    // Every accepted action must be discoverable from the usage line.
-    let text = String::from_utf8_lossy(&help.stdout);
-    for action in ["lex", "parse", "resolve", "check", "emit-c", "build", "run"] {
-        assert!(text.contains(action), "`{action}` missing from: {text}");
+    // A near miss is worth a suggestion; a wild guess is not.
+    let typo = cli()
+        .args(["buidl", "x.skuld"])
+        .output()
+        .expect("start CLI");
+    assert!(
+        String::from_utf8_lossy(&typo.stderr).contains("did you mean `build`?"),
+        "{}",
+        String::from_utf8_lossy(&typo.stderr)
+    );
+    for flag in ["--help", "-h"] {
+        let help = cli().arg(flag).output().expect("start CLI");
+        assert!(help.status.success());
+        // Every accepted command and option must be discoverable from the help,
+        // which goes to stdout: it is an answer, not an error.
+        let text = String::from_utf8_lossy(&help.stdout);
+        assert!(help.stderr.is_empty());
+        for item in [
+            "lex",
+            "parse",
+            "resolve",
+            "check",
+            "emit-c",
+            "build",
+            "run",
+            "-o",
+            "-l",
+            "-L",
+            "--",
+            "exit codes",
+        ] {
+            assert!(text.contains(item), "`{item}` missing from: {text}");
+        }
     }
+    for flag in ["--version", "-V"] {
+        let version = cli().arg(flag).output().expect("start CLI");
+        assert!(version.status.success());
+        let text = String::from_utf8_lossy(&version.stdout);
+        assert!(text.starts_with("skuld "), "{text}");
+        assert!(text.contains(env!("CARGO_PKG_VERSION")), "{text}");
+    }
+    // Help answers even when the rest of the command line is nonsense, so a
+    // reader who is lost can always get it.
+    let rescued = cli()
+        .args(["nonsense", "--help", "-o"])
+        .output()
+        .expect("start CLI");
+    assert!(rescued.status.success());
+    assert!(String::from_utf8_lossy(&rescued.stdout).contains("commands:"));
+}
+
+#[test]
+fn options_may_come_before_the_file_and_after_a_separator() {
+    let fixture = std::env::temp_dir().join(format!("skuld-order-{}.skuld", std::process::id()));
+    std::fs::write(&fixture, "func main() { print(7) }").expect("write fixture");
+    // A flag before the file is the same command as a flag after it.
+    for args in [
+        vec!["run".into(), fixture.display().to_string()],
+        vec!["run".into(), "-lm".into(), fixture.display().to_string()],
+        vec!["run".into(), "--".into(), fixture.display().to_string()],
+    ] {
+        let output = cli().args(&args).output().expect("start CLI");
+        assert!(output.status.success(), "{args:?}");
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n", "{args:?}");
+    }
+    std::fs::remove_file(fixture).expect("remove fixture");
 }
 
 #[test]
