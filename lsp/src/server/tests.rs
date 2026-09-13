@@ -199,9 +199,10 @@ fn an_unknown_request_is_refused_but_an_unknown_notification_is_not() {
         ("jsonrpc", Json::string("2.0")),
         ("method", Json::string("textDocument/inventedNotification")),
     ]);
-    // `hover`, `references` and `rename` are answered now, so the refused
-    // request has to be one the server genuinely does not implement.
-    let (out, _) = converse(&[request(7, "textDocument/documentSymbol"), notification]);
+    // `hover`, `references`, `rename` and the outline are answered now, so
+    // the refused request has to be one the server genuinely does not
+    // implement.
+    let (out, _) = converse(&[request(7, "textDocument/codeAction"), notification]);
     assert_eq!(out.len(), 1, "a notification must not be answered");
     assert_eq!(out[0].get("id").unwrap().as_i64(), Some(7));
     assert_eq!(
@@ -926,4 +927,90 @@ fn a_document_that_never_checked_is_refused_rather_than_guessed_at() {
         .and_then(Json::as_str)
         .expect("a refusal");
     assert!(message.contains("no successful check"), "{message}");
+}
+
+/// A request naming a document and nothing else, which is the shape of
+/// `documentSymbol`.
+fn document_request(id: i64, method: &str, path: &str) -> Json {
+    Json::object([
+        ("jsonrpc", Json::string("2.0")),
+        ("id", Json::number(id as f64)),
+        ("method", Json::string(method)),
+        (
+            "params",
+            Json::object([(
+                "textDocument",
+                Json::object([("uri", Json::string(path_to_uri(path)))]),
+            )]),
+        ),
+    ])
+}
+
+fn result_of(messages: &[Json], id: i64) -> &Json {
+    messages
+        .iter()
+        .rfind(|message| message.get("id").and_then(Json::as_i64) == Some(id))
+        .and_then(|message| message.get("result"))
+        .expect("a response for this request")
+}
+
+#[test]
+fn the_server_advertises_and_answers_the_outline() {
+    let path = "/tmp/skuld-lsp-test/outline.skuld";
+    let source = "class User {\n    name: string\n    hello() {\n        print(this.name)\n    }\n}\n\nfunc main() {\n    let u = new User(name: \"a\")\n    u.hello()\n}\n";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        document_request(2, "textDocument/documentSymbol", path),
+    ]);
+    assert_eq!(
+        out[0].path(&["result", "capabilities", "documentSymbolProvider"]),
+        Some(&Json::Bool(true))
+    );
+    let symbols = result_of(&out, 2).as_array().expect("an outline");
+    assert_eq!(symbols.len(), 2);
+    assert_eq!(symbols[0].get("name").and_then(Json::as_str), Some("User"));
+    assert_eq!(symbols[0].get("kind").and_then(Json::as_i64), Some(5));
+    // The class starts on line 0 and the name sits inside that range.
+    assert_eq!(
+        symbols[0]
+            .path(&["selectionRange", "start", "character"])
+            .and_then(Json::as_i64),
+        Some(6)
+    );
+    let children = symbols[0]
+        .get("children")
+        .and_then(Json::as_array)
+        .expect("a field and a method");
+    assert_eq!(children.len(), 2);
+    assert_eq!(
+        children[1].get("name").and_then(Json::as_str),
+        Some("hello")
+    );
+    assert_eq!(symbols[1].get("name").and_then(Json::as_str), Some("main"));
+}
+
+#[test]
+fn the_outline_survives_a_document_that_stopped_parsing() {
+    // The outline is what a client draws while the user types, so it falls
+    // back to the last text that parsed rather than emptying itself.
+    let path = "/tmp/skuld-lsp-test/half-typed.skuld";
+    let (out, _) = converse(&[
+        did_open(path, "func main() {\n}\n"),
+        did_change(path, "func main() {\n}\nfunc half("),
+        document_request(2, "textDocument/documentSymbol", path),
+    ]);
+    let symbols = result_of(&out, 2).as_array().expect("an outline");
+    assert_eq!(symbols.len(), 1);
+    assert_eq!(symbols[0].get("name").and_then(Json::as_str), Some("main"));
+}
+
+#[test]
+fn an_outline_of_an_unopened_document_is_empty_rather_than_an_error() {
+    let (out, _) = converse(&[document_request(
+        2,
+        "textDocument/documentSymbol",
+        "/tmp/skuld-lsp-test/never-opened.skuld",
+    )]);
+    assert_eq!(result_of(&out, 2), &Json::Array(Vec::new()));
 }

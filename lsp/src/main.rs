@@ -10,6 +10,7 @@ mod query;
 mod rename;
 mod rpc;
 mod server;
+mod symbols;
 mod text;
 
 use std::io::{self, BufReader};

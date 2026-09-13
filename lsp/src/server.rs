@@ -11,6 +11,7 @@ use crate::json::Json;
 use crate::query;
 use crate::rename::{self, Refusal};
 use crate::rpc::{self, ReadError};
+use crate::symbols::{self, Symbol};
 use crate::text::{Positions, path_to_uri, uri_to_path};
 use skuld_compiler::module::{Errors, FileId, ModuleLoader};
 use skuld_compiler::resolver::SymbolId;
@@ -126,6 +127,12 @@ impl Server {
                     Ok(edit) => respond(output, id.clone(), edit),
                     Err(reason) => respond_error(output, id.clone(), INVALID_REQUEST, &reason),
                 }
+                None
+            }
+
+            (Some("textDocument/documentSymbol"), Some(id)) => {
+                let symbols = self.document_symbols(message);
+                respond(output, id.clone(), symbols);
                 None
             }
 
@@ -609,6 +616,45 @@ impl Server {
             .map_err(|errors| first_message(&errors))
     }
 
+    /// Answer `textDocument/documentSymbol` with the outline of the file.
+    ///
+    /// The outline comes from the syntax, so it is the one answer that needs
+    /// no check at all. When the text on screen does not parse, the last text
+    /// that did is used instead: an outline that empties itself on every
+    /// half-typed declaration is worse than one a keystroke behind.
+    fn document_symbols(&self, message: &Json) -> Json {
+        let empty = Json::Array(Vec::new());
+        let Some(path) = document_path(message) else {
+            return empty;
+        };
+        let Some(source) = self.open.get(&path) else {
+            return empty;
+        };
+        let fallback = self
+            .checked
+            .get(&path)
+            .and_then(|typed| typed.program().files.first())
+            .map(|file| file.source.clone());
+        let (text, program) = match skuld_compiler::parse(source).program {
+            Some(program) => (source.clone(), program),
+            None => match fallback.and_then(|text| {
+                skuld_compiler::parse(&text)
+                    .program
+                    .map(|program| (text, program))
+            }) {
+                Some(pair) => pair,
+                None => return empty,
+            },
+        };
+        let positions = Positions::new(text);
+        Json::Array(
+            symbols::outline(&program)
+                .iter()
+                .map(|symbol| symbol_json(&positions, symbol))
+                .collect(),
+        )
+    }
+
     /// Answer `textDocument/hover` with the declaration a reader would
     /// otherwise have to go and find.
     fn hover(&self, message: &Json) -> Json {
@@ -827,6 +873,33 @@ fn first_message(errors: &Errors) -> String {
     }
 }
 
+/// One outline entry, with its children. The recursion is here rather than in
+/// `symbols` so that module stays free of the protocol.
+fn symbol_json(positions: &Positions, symbol: &Symbol) -> Json {
+    let mut fields = vec![
+        ("name", Json::string(&symbol.name)),
+        ("kind", Json::number(symbol.kind)),
+        ("range", range_json(positions, symbol.range)),
+        ("selectionRange", range_json(positions, symbol.selection)),
+    ];
+    if let Some(detail) = &symbol.detail {
+        fields.push(("detail", Json::string(detail)));
+    }
+    if !symbol.children.is_empty() {
+        fields.push((
+            "children",
+            Json::Array(
+                symbol
+                    .children
+                    .iter()
+                    .map(|child| symbol_json(positions, child))
+                    .collect(),
+            ),
+        ));
+    }
+    Json::object(fields)
+}
+
 fn range_json(positions: &Positions, span: Span) -> Json {
     Json::object([
         ("start", position_json(positions.position(span.start))),
@@ -851,6 +924,7 @@ fn initialize_result() -> Json {
             // if a client would have preferred something else.
             ("positionEncoding", Json::string("utf-16")),
             ("hoverProvider", Json::Bool(true)),
+            ("documentSymbolProvider", Json::Bool(true)),
             ("definitionProvider", Json::Bool(true)),
             ("referencesProvider", Json::Bool(true)),
             (
