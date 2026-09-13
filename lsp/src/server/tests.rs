@@ -1579,3 +1579,48 @@ fn implementation_of_a_name_that_is_not_an_interface_is_empty() {
     ]);
     assert_eq!(result_of(&out, 2), &Json::Array(Vec::new()));
 }
+
+#[test]
+fn the_server_advertises_and_answers_folding_ranges() {
+    let path = "/tmp/skuld-lsp-test/folding.skuld";
+    let source = "import \"a\"\nimport \"b\"\n\nfunc main() {\n    print(1)\n}\n";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        document_request(2, "textDocument/foldingRange", path),
+    ]);
+    assert_eq!(
+        out[0].path(&["result", "capabilities", "foldingRangeProvider"]),
+        Some(&Json::Bool(true))
+    );
+    let ranges: Vec<(i64, i64, Option<&str>)> = result_of(&out, 2)
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|range| {
+            (
+                range.get("startLine").and_then(Json::as_i64).unwrap(),
+                range.get("endLine").and_then(Json::as_i64).unwrap(),
+                range.get("kind").and_then(Json::as_str),
+            )
+        })
+        .collect();
+    assert_eq!(ranges, [(0, 1, Some("imports")), (3, 5, None)]);
+}
+
+#[test]
+fn folding_answers_a_document_that_does_not_parse() {
+    // It reads tokens, so the half-typed text on screen still folds.
+    let path = "/tmp/skuld-lsp-test/folding-broken.skuld";
+    let (out, _) = converse(&[
+        did_open(path, "func main() {\n    print(\n"),
+        document_request(2, "textDocument/foldingRange", path),
+    ]);
+    assert_eq!(result_of(&out, 2), &Json::Array(Vec::new()));
+    // And a block that is closed folds even when the file as a whole is not.
+    let (out, _) = converse(&[
+        did_open(path, "func main() {\n    print(1)\n}\nfunc half(\n"),
+        document_request(3, "textDocument/foldingRange", path),
+    ]);
+    assert_eq!(result_of(&out, 3).as_array().map(<[Json]>::len), Some(1));
+}

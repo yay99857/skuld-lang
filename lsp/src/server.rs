@@ -7,6 +7,7 @@
 //! a later stage, not a bigger version of this one.
 
 use crate::complete;
+use crate::folding;
 use crate::hints;
 use crate::json::Json;
 use crate::query;
@@ -173,6 +174,12 @@ impl Server {
             (Some("textDocument/semanticTokens/full"), Some(id)) => {
                 let tokens = self.semantic_tokens(message);
                 respond(output, id.clone(), tokens);
+                None
+            }
+
+            (Some("textDocument/foldingRange"), Some(id)) => {
+                let ranges = self.folding_ranges(message);
+                respond(output, id.clone(), ranges);
                 None
             }
 
@@ -901,6 +908,38 @@ impl Server {
         Json::object([("data", Json::Array(data))])
     }
 
+    /// Answer `textDocument/foldingRange` with the runs of lines an editor may
+    /// collapse.
+    ///
+    /// This is the one answer that needs no check at all — not even a parse.
+    /// It reads the token stream, so it is right about the text on screen
+    /// however broken that text is, which is what folding has to be.
+    fn folding_ranges(&self, message: &Json) -> Json {
+        let empty = Json::Array(Vec::new());
+        let Some(path) = document_path(message) else {
+            return empty;
+        };
+        let Some(source) = self.open.get(&path) else {
+            return empty;
+        };
+        let positions = Positions::new(source.clone());
+        Json::Array(
+            folding::folds(source, &positions)
+                .into_iter()
+                .map(|fold| {
+                    let mut fields = vec![
+                        ("startLine", Json::number(fold.start_line as f64)),
+                        ("endLine", Json::number(fold.end_line as f64)),
+                    ];
+                    if let Some(kind) = fold.kind {
+                        fields.push(("kind", Json::string(kind)));
+                    }
+                    Json::object(fields)
+                })
+                .collect(),
+        )
+    }
+
     /// Answer `textDocument/documentSymbol` with the outline of the file.
     ///
     /// The outline comes from the syntax, so it is the one answer that needs
@@ -1345,6 +1384,7 @@ fn initialize_result() -> Json {
                 ]),
             ),
             ("documentSymbolProvider", Json::Bool(true)),
+            ("foldingRangeProvider", Json::Bool(true)),
             // Whole-document only: the formatter reads a program, not a
             // fragment, so there is no honest answer for a range.
             ("documentFormattingProvider", Json::Bool(true)),
