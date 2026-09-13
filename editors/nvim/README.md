@@ -8,6 +8,7 @@ any milestone and blocks none.
 syntax/skuld.vim      highlighting
 ftdetect/skuld.vim    *.skuld -> filetype skuld
 lsp/skuld.lua         how to launch skuld-lsp (Neovim 0.11+)
+plugin/skuld-icon.lua the file icon, for the tree and the statusline
 ```
 
 ## What it covers
@@ -35,6 +36,22 @@ One approximation: the lexer counts brace depth inside `${ }` properly, while
 this file tracks one level of nesting. A record literal inside an interpolation
 highlights correctly; a record literal inside a record literal inside an
 interpolation does not.
+
+## The icon
+
+`plugin/skuld-icon.lua` gives `.skuld` files their own icon, so the file tree
+(neo-tree, nvim-tree, snacks explorer) and the statusline (lualine) stop
+drawing the default page. The glyph is the Nerd Font hourglass, U+F254, in
+purple: Skuld is the norn of what is yet to come. `assets/skuld.svg` is the
+same mark drawn as a logo, for anywhere a font glyph will not do.
+
+It needs a Nerd Font in the terminal; without one the cell shows a box, and
+nothing else changes. Two icon providers exist — `mini.icons`, which is what
+LazyVim installs and what it makes `nvim-web-devicons` resolve to, and
+`nvim-web-devicons` itself — and both are registered when present. Neither is
+required, and neither is pulled in: a provider that is lazy is only told once
+something has already loaded it, which is why the registration also runs on
+`VimEnter` and on each `FileType` until both have been reached.
 
 ## The language server
 
@@ -112,10 +129,11 @@ for it is circular and nothing ever loads.
 Or without a plugin manager:
 
 ```sh
-mkdir -p ~/.config/nvim/syntax ~/.config/nvim/ftdetect ~/.config/nvim/lsp
+mkdir -p ~/.config/nvim/syntax ~/.config/nvim/ftdetect ~/.config/nvim/lsp ~/.config/nvim/plugin
 ln -s ~/www/skuld-lang/editors/nvim/syntax/skuld.vim ~/.config/nvim/syntax/
 ln -s ~/www/skuld-lang/editors/nvim/ftdetect/skuld.vim ~/.config/nvim/ftdetect/
 ln -s ~/www/skuld-lang/editors/nvim/lsp/skuld.lua ~/.config/nvim/lsp/
+ln -s ~/www/skuld-lang/editors/nvim/plugin/skuld-icon.lua ~/.config/nvim/plugin/
 ```
 
 ## Maintaining it
