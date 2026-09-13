@@ -198,8 +198,11 @@ accurate; documenting a future feature is not a request to implement it.
   concurrently in another session (`2606206`, `e3d84c2`) and owns its own
   status entry. M8 (function values and lambdas) is complete; its three open
   design questions were delegated by the user and are recorded in `ROADMAP.md`.
-  No milestone is active. Do not infer authorization for further features
-  without explicit decision.
+  M9 (sockets, HTTP and the long-range target) is complete: `std/net` is a
+  blocking TCP connection over libc, `std/http` an HTTP/1.1 client on top of
+  it, and `std/json` is M4's parser promoted out of its fixture. A Skuld
+  program fetches a document and decodes it. No milestone is active. Do not
+  infer authorization for further features without explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
   and string slices → `extern "C"` FFI → modules → standard library → function
   values → sockets. It is a plan, not a selection: a remaining entry is Planned,
@@ -252,6 +255,21 @@ accurate; documenting a future feature is not a request to implement it.
   read as one. `sort()` is in place, returns void, is stable, and runs on a
   snapshot so a comparator that mutates the array aborts instead of reading a
   reallocated buffer.
+- The standard library reaches the network, with three limits that are
+  structural rather than unfinished, each following from pointer reads being out
+  of scope at the foreign boundary. There is no name resolution — every resolver
+  in libc answers with a pointer to a structure — so a connection is made to an
+  IPv4 address and `http.get` refuses a name by name. There is no `errno`, so a
+  network failure says which step failed, not why. There is no TLS, so `https://`
+  is refused rather than attempted; binding one is a milestone of its own and
+  arguably a dependency-policy decision. Do not close any of these three without
+  an explicit decision: the alternatives are a read primitive at the boundary, a
+  resolver written in Skuld over UDP, and a TLS dependency, and each changes
+  what the project is.
+- Network tests stay hermetic. `cli/tests/network.rs` starts its own server on
+  an ephemeral loopback port and stops it; nothing in the suite touches the
+  network, and `tests/pass` has no server at all, so the library halves are
+  tested there and the socket half only in `cli/tests`.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built

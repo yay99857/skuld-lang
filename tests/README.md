@@ -114,3 +114,12 @@ return type, an array element, an `Option` payload, an enum payload, capturing
 a `var`, and calling with the wrong signature. `trap/sort_mutation` pins a
 comparator that changes the array it is sorting, which aborts rather than
 merging out of a reallocated buffer.
+
+The standard library's network reach is tested in two halves, because
+`tests/pass` runs programs with nothing to talk to. `pass/std_http_json` parses
+an HTTP response from bytes and decodes its body as JSON — header lookup, a
+declared length that truncates, and each way a response or URL can be malformed
+— and runs under the sanitizers with everything else. The socket half lives in
+`cli/tests/network.rs`, which binds an ephemeral loopback port, answers one
+request and stops, asserting both the program's output and the request the
+client actually produced. Nothing in the suite touches the network.

@@ -1138,10 +1138,69 @@ CStringError>` copies the bytes and appends the terminator, refusing a string
 that already contains a NUL, since a C string would end there.
 
 **What the library is not.** There is no collection beyond arrays, no map, no
-time, no randomness, no filesystem traversal and no networking. It is not a
-package registry, and there is no way to add to it except by changing the
-compiler — which is the price of embedding, and a deliberate brake while the
-library is small enough to move with the language.
+time, no randomness and no filesystem traversal. It is not a package registry,
+and there is no way to add to it except by changing the compiler — which is the
+price of embedding, and a deliberate brake while the library is small enough to
+move with the language.
+
+**What it holds**, each entry with a caller in a milestone that asked for it:
+
+| Module | What it is |
+| --- | --- |
+| `std/utf8` | Strict UTF-8 validation and decoding, with a real error type |
+| `std/strings` | `starts_with`, `ends_with`, `index_of`, `contains`, `trim`, `split`, `join` |
+| `std/cstring` | Building the NUL-terminated buffer a C function expects |
+| `std/json` | Parsing and rendering JSON over `[]u8` |
+| `std/net` | A blocking TCP connection over libc sockets |
+| `std/http` | An HTTP/1.1 client written on `std/net` |
+
+The last three arrived with M9, and reach as far as fetching a document and
+decoding it:
+
+```skuld
+import "std/http"
+import "std/json"
+
+func main() {
+    match http.get("http://127.0.0.1:8080/data.json") {
+        Ok(response): {
+            match json.parse(response.body) {
+                Ok(document): {
+                    if let name = json.lookup(document, "name") {
+                        print(json.render(name))
+                    }
+                }
+                Err(reason): print(json.describe(reason))
+            }
+        }
+        Err(reason): print(http.describe(reason))
+    }
+}
+```
+
+`std/json` is M4's closing marker promoted out of its fixture: an object is a
+list of key/value pairs in source order, so lookup is linear and duplicate keys
+are preserved. `std/net` speaks `sockaddr_in` on a little-endian Linux, built
+byte by byte rather than through `inet_pton`, because parsing four octets is
+arithmetic Skuld can do without another foreign call.
+
+Three limits are worth stating plainly, because each is a consequence of a rule
+the language already had rather than a gap waiting to be filled quietly.
+
+**There is no name resolution.** A connection is made to an IPv4 address, never
+to a host name. `getaddrinfo` and `gethostbyname` both answer with a pointer to
+a structure, and reading through a pointer is out of scope at the foreign
+boundary, so no resolver in libc is reachable. `http.get` says so by name when
+it is handed one: ``` `skuld.example` is a name, and there is no resolver ```.
+Getting names would take either a read primitive at the boundary or a resolver
+written in Skuld over UDP — each a decision of its own.
+
+**There is no TLS**, so `https://` is refused rather than attempted. Binding a
+system TLS library is a milestone of its own and arguably a dependency-policy
+question rather than a technical one.
+
+**There is no `errno`.** A network failure says which step failed — opening,
+connecting, sending, receiving — and not why, for the same pointer reason.
 
 ## Demonstration proposals — Experimental
 

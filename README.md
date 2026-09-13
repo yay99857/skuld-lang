@@ -160,6 +160,21 @@ cycle nothing frees; the rule removes the reachability, and in exchange a
 function value never allocates, retains or releases. Captures are copies of
 immutable bindings. Storing a callback for later waits for interfaces.
 
+The library ships inside the compiler behind a reserved `std` prefix, and
+reaches as far as fetching a document and decoding it:
+
+```skuld
+import "std/http"
+import "std/json"
+
+let response = http.get("http://127.0.0.1:8080/data.json")
+```
+
+Plain HTTP only, and to an IPv4 address: TLS is refused by name, and there is
+no resolver, because reading through a pointer is out of scope at the foreign
+boundary and every resolver in libc answers with one. Both say so where they
+are used.
+
 A program can span several modules. A module is a directory whose `.skuld`
 files share one namespace; `import "net/socket"` binds the path's last segment,
 so its exports are reached as `socket.connect(...)` and never unqualified.
