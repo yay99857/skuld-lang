@@ -1,0 +1,13 @@
+// An `if` that only sometimes returns still falls through.
+func fallible() -> Result<int, string> {
+    return Ok(1)
+}
+
+func main() {
+    let value = fallible() else reason {
+        if reason.len() > 0 {
+            return
+        }
+    }
+    print(value)
+}

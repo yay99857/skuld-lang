@@ -1,0 +1,6 @@
+func main() {
+    let value = 42 else {
+        return
+    }
+    print(value)
+}

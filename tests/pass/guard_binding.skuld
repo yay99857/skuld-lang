@@ -1,0 +1,99 @@
+// `let name = value else { ... }`: a declaration that unwraps, with the block
+// that runs when there is nothing to unwrap.
+//
+// The block must not fall through. That is the whole of the rule: the name is
+// in scope after the statement, so falling past the block would leave it
+// unbound. `return`, `break` and `continue` all leave; an `if` that only
+// sometimes returns does not.
+
+class Doc {
+    title: string
+}
+
+func load(ok: bool) -> Result<Doc, string> {
+    if ok {
+        return Ok(new Doc(title: "a " + "title"))
+    }
+    return Err("missing " + "document")
+}
+
+func maybe(n: int) -> Option<string> {
+    if n > 0 {
+        return "positive"
+    }
+    return null
+}
+
+func halve(n: int) -> Result<int, string> {
+    if n % 2 != 0 {
+        return Err("${n} is odd")
+    }
+    return Ok(n / 2)
+}
+
+func report(ok: bool) {
+    // A Result names its error; the block sees it and nothing else does.
+    let doc = load(ok) else reason {
+        print("error: ${reason}")
+        return
+    }
+    print(doc.title)
+}
+
+func describe(n: int) {
+    // An Option carries no error, so there is nothing to name.
+    let word = maybe(n) else {
+        print("nothing")
+        return
+    }
+    print(word)
+}
+
+func sum_even(values: []int) -> int {
+    var total = 0
+    for value in values {
+        // `continue` leaves the block as surely as `return` does.
+        let half = halve(value) else reason {
+            continue
+        }
+        total = total + half
+    }
+    return total
+}
+
+func count_until_odd(values: []int) -> int {
+    var seen = 0
+    for value in values {
+        let half = halve(value) else reason {
+            break
+        }
+        seen = seen + 1
+    }
+    return seen
+}
+
+func main() {
+    report(true)
+    report(false)
+    describe(1)
+    describe(0)
+    print(sum_even([2, 3, 4, 5, 6]))
+    print(count_until_odd([2, 4, 5, 6]))
+
+    // A `var` unwraps the same way, and stays assignable afterwards.
+    var count = halve(10) else reason {
+        print(reason)
+        return
+    }
+    count = count + 1
+    print(count)
+
+    // The unwrapped name outlives the statement, which is the point.
+    let doc = load(true) else reason {
+        return
+    }
+    let again = maybe(2) else {
+        return
+    }
+    print("${doc.title} / ${again}")
+}

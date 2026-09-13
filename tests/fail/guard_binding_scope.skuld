@@ -1,0 +1,11 @@
+// The error is named only inside the block that handles it.
+func fallible() -> Result<int, string> {
+    return Ok(1)
+}
+
+func main() {
+    let value = fallible() else reason {
+        return
+    }
+    print(reason)
+}

@@ -1,0 +1,11 @@
+// An Option carries no error, so there is nothing for the block to name.
+func maybe() -> Option<int> {
+    return 1
+}
+
+func main() {
+    let value = maybe() else reason {
+        return
+    }
+    print(value)
+}

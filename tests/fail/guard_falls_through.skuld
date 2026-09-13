@@ -1,0 +1,12 @@
+// The name is in scope after the statement, so a block that can fall through
+// would leave it unbound.
+func fallible() -> Result<int, string> {
+    return Ok(1)
+}
+
+func main() {
+    let value = fallible() else reason {
+        print(reason)
+    }
+    print(value)
+}
