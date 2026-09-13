@@ -48,10 +48,16 @@ same mark drawn as a logo, for anywhere a font glyph will not do.
 It needs a Nerd Font in the terminal; without one the cell shows a box, and
 nothing else changes. Two icon providers exist — `mini.icons`, which is what
 LazyVim installs and what it makes `nvim-web-devicons` resolve to, and
-`nvim-web-devicons` itself — and both are registered when present. Neither is
-required, and neither is pulled in: a provider that is lazy is only told once
-something has already loaded it, which is why the registration also runs on
-`VimEnter` and on each `FileType` until both have been reached.
+`nvim-web-devicons` itself — and whichever is installed is registered. Neither
+is required.
+
+The timing is the whole of it. A provider is normally lazy, so it loads the
+first time something asks it to draw — and that first request is the file tree
+asking for this very icon, which is too late to be told about it. So the
+provider is loaded on purpose at `VeryLazy` (`VimEnter` without LazyVim) and
+extended in the same breath, before anything draws. Under a plugin manager the
+`require` is what runs the provider's own `setup()`, which is why the
+registration has to come after it rather than before.
 
 ## The language server
 

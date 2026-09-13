@@ -17,67 +17,85 @@ local CTERM = "141"
 
 local registered = { mini = false, devicons = false }
 
--- Returns true once neither provider has anything left to be told.
-local function register()
+local function register_mini()
+  if registered.mini or _G.MiniIcons == nil then
+    return
+  end
+  local ok, mini = pcall(require, "mini.icons")
+  if not ok then
+    return
+  end
+  registered.mini = true
   -- `mini.icons` keeps its table in the config it was set up with, and merging
-  -- into `MiniIcons.config` is the supported way to add one. Only do it once
-  -- the plugin has actually been set up, or this would be overwritten by the
-  -- setup call that comes later.
-  if not registered.mini and _G.MiniIcons ~= nil then
-    local ok, mini = pcall(require, "mini.icons")
-    if ok then
-      registered.mini = true
-      mini.setup(vim.tbl_deep_extend("force", _G.MiniIcons.config or {}, {
-        extension = { skuld = { glyph = GLYPH, hl = "MiniIconsPurple" } },
-        filetype = { skuld = { glyph = GLYPH, hl = "MiniIconsPurple" } },
-      }))
-    end
-  end
+  -- into `MiniIcons.config` is the supported way to add one. This runs after
+  -- its own `setup()`, never before: the earlier call would be overwritten.
+  mini.setup(vim.tbl_deep_extend("force", _G.MiniIcons.config or {}, {
+    extension = { skuld = { glyph = GLYPH, hl = "MiniIconsPurple" } },
+    filetype = { skuld = { glyph = GLYPH, hl = "MiniIconsPurple" } },
+  }))
+end
 
-  -- `nvim-web-devicons` is only touched when it is already loaded: requiring it
-  -- would pull the plugin in under a manager that had it lazy, and under
-  -- LazyVim the require would land on the mock `mini.icons` installs anyway.
+local function register_devicons()
   local devicons = package.loaded["nvim-web-devicons"]
-  if not registered.devicons and devicons ~= nil and type(devicons.set_icon) == "function" then
-    registered.devicons = true
-    devicons.set_icon({
-      skuld = { icon = GLYPH, color = COLOR, cterm_color = CTERM, name = "Skuld" },
-    })
-    if type(devicons.set_icon_by_filetype) == "function" then
-      devicons.set_icon_by_filetype({ skuld = "skuld" })
+  if registered.devicons or devicons == nil or type(devicons.set_icon) ~= "function" then
+    return
+  end
+  registered.devicons = true
+  devicons.set_icon({
+    skuld = { icon = GLYPH, color = COLOR, cterm_color = CTERM, name = "Skuld" },
+  })
+  if type(devicons.set_icon_by_filetype) == "function" then
+    devicons.set_icon_by_filetype({ skuld = "skuld" })
+  end
+end
+
+local function register()
+  register_mini()
+  register_devicons()
+  return registered.mini and registered.devicons
+end
+
+-- A provider is normally lazy: it loads the first time something asks it to
+-- draw, which is after this file has run. Waiting for that moment is not
+-- enough, because the request that loads it is also the request that wants the
+-- icon — the file tree draws its first line before we could be told. So load
+-- one on purpose, once Neovim has finished starting. Under a plugin manager
+-- the `require` is what runs the provider's own `setup()`, and this code runs
+-- immediately after it, still ahead of anything that draws.
+local function load_provider()
+  if _G.MiniIcons == nil and package.loaded["nvim-web-devicons"] == nil then
+    if not pcall(require, "mini.icons") then
+      pcall(require, "nvim-web-devicons")
     end
   end
-
-  return registered.mini and registered.devicons
+  register()
 end
 
 register()
 
--- Startup order is not ours to control: a provider is usually lazy, and loads
--- the first time something asks it to draw — which is after this file and after
--- `VimEnter`. Look again at every moment one can have appeared, until there is
--- nobody left to tell.
 local group = vim.api.nvim_create_augroup("SkuldIcon", { clear = true })
 
--- `LazyLoad` is lazy.nvim announcing a plugin it has just loaded *and*
--- configured, which is the exact moment a provider becomes ours to extend:
--- setting it up before its own `setup()` would only be overwritten.
+-- `VeryLazy` is LazyVim's "startup is over"; `VimEnter` is the same moment for
+-- everyone else. Whichever arrives first does the work, and the second finds
+-- nothing left to do.
 vim.api.nvim_create_autocmd("User", {
   group = group,
-  pattern = { "LazyLoad", "VeryLazy" },
-  callback = function(event)
-    if event.match == "LazyLoad" then
-      local plugin = event.data
-      if plugin ~= "mini.icons" and plugin ~= "nvim-web-devicons" then
-        return
-      end
-    end
-    register()
-  end,
+  pattern = "VeryLazy",
+  callback = load_provider,
+})
+vim.api.nvim_create_autocmd("VimEnter", {
+  group = group,
+  callback = load_provider,
 })
 
-vim.api.nvim_create_autocmd({ "VimEnter", "FileType" }, {
+-- And if something loaded a provider before either of those, take it then:
+-- lazy.nvim announces a plugin it has loaded *and* configured with `LazyLoad`.
+vim.api.nvim_create_autocmd("User", {
   group = group,
-  pattern = "*",
-  callback = register, -- returning true here deletes the autocommand
+  pattern = "LazyLoad",
+  callback = function(event)
+    if event.data == "mini.icons" or event.data == "nvim-web-devicons" then
+      register()
+    end
+  end,
 })
