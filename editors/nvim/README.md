@@ -41,9 +41,9 @@ interpolation does not.
 
 `plugin/skuld-icon.lua` gives `.skuld` files their own icon, so the file tree
 (neo-tree, nvim-tree, snacks explorer) and the statusline (lualine) stop
-drawing the default page. The glyph is the Nerd Font hourglass, U+F254, in
-purple: Skuld is the norn of what is yet to come. `assets/skuld.svg` is the
-same mark drawn as a logo, for anywhere a font glyph will not do.
+drawing the default page. The glyph is the Nerd Font boxed S, U+F0B1A, in
+purple. `assets/skuld.svg` is the same mark drawn as a logo: a letter cut in
+straight strokes, the way a rune is cut, for anywhere a font glyph will not do.
 
 It needs a Nerd Font in the terminal; without one the cell shows a box, and
 nothing else changes. Two icon providers exist — `mini.icons`, which is what

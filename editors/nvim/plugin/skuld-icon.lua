@@ -1,9 +1,10 @@
 -- The Skuld file icon, for whatever draws icons in this configuration.
 --
--- The glyph is the Nerd Font hourglass (U+F254), the same mark as
--- `assets/skuld.svg`: Skuld is the norn of what is yet to come. It lives in
--- the Nerd Font private use area, so a terminal without a patched font shows
--- a box here and nothing else breaks.
+-- The glyph is a boxed S (U+F0B1A), the same mark as `assets/skuld.svg`: a
+-- letter cut in straight strokes, which is the one thing a rune and a file
+-- icon at sixteen pixels agree on. It lives in the Nerd Font private use
+-- area, so a terminal without a patched font shows a box here and nothing
+-- else breaks.
 --
 -- Two icon providers exist and a configuration may have either: `mini.icons`
 -- (what LazyVim installs, and what it makes `nvim-web-devicons` resolve to)
@@ -15,7 +16,7 @@
 -- use area character, and a pipeline that does not know that — a patch, a
 -- copy through a terminal — silently drops it, leaving an empty glyph that
 -- draws as nothing at all.
-local GLYPH = vim.fn.nr2char(0xF254) -- nf-fa-hourglass
+local GLYPH = vim.fn.nr2char(0xF0B1A) -- nf-md-alpha_s_box
 local COLOR = "#8A7CF0"
 local CTERM = "141"
 
