@@ -1845,3 +1845,62 @@ fn a_client_that_never_claimed_nesting_gets_the_flat_outline() {
         Some(path_to_uri(path).as_str())
     );
 }
+
+#[test]
+fn semantic_tokens_answer_a_window_when_one_is_asked_for() {
+    let path = "/tmp/skuld-lsp-test/tokens-range.skuld";
+    let source = "func first() {\n    print(1)\n}\n\nfunc second() {\n    print(2)\n}\n\nfunc main() {\n    first()\n    second()\n}\n";
+    let ranged = Json::object([
+        ("jsonrpc", Json::string("2.0")),
+        ("id", Json::number(2.0)),
+        ("method", Json::string("textDocument/semanticTokens/range")),
+        (
+            "params",
+            Json::object([
+                (
+                    "textDocument",
+                    Json::object([("uri", Json::string(path_to_uri(path)))]),
+                ),
+                (
+                    "range",
+                    Json::object([
+                        (
+                            "start",
+                            Json::object([
+                                ("line", Json::number(4.0)),
+                                ("character", Json::number(0.0)),
+                            ]),
+                        ),
+                        (
+                            "end",
+                            Json::object([
+                                ("line", Json::number(6.0)),
+                                ("character", Json::number(0.0)),
+                            ]),
+                        ),
+                    ]),
+                ),
+            ]),
+        ),
+    ]);
+    let (out, _) = converse(&[request(1, "initialize"), did_open(path, source), ranged]);
+    assert_eq!(
+        out[0].path(&["result", "capabilities", "semanticTokensProvider", "range"]),
+        Some(&Json::Bool(true))
+    );
+    let data: Vec<i64> = result_of(&out, 2)
+        .get("data")
+        .and_then(Json::as_array)
+        .expect("a token stream")
+        .iter()
+        .filter_map(Json::as_i64)
+        .collect();
+    // Only `second` and the `print` under it, and the first delta is measured
+    // from the top of the document, not from a token that was not sent.
+    #[rustfmt::skip]
+    let expected: Vec<i64> = vec![
+        4, 5, 6, 5, 0b001,
+        1, 4, 5, 5, 0b100,
+    ];
+    assert_eq!(data, expected);
+}

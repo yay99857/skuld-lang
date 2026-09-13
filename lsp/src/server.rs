@@ -197,7 +197,13 @@ impl Server {
             }
 
             (Some("textDocument/semanticTokens/full"), Some(id)) => {
-                let tokens = self.semantic_tokens(message);
+                let tokens = self.semantic_tokens(message, false);
+                respond(output, id.clone(), tokens);
+                None
+            }
+
+            (Some("textDocument/semanticTokens/range"), Some(id)) => {
+                let tokens = self.semantic_tokens(message, true);
                 respond(output, id.clone(), tokens);
                 None
             }
@@ -1069,7 +1075,7 @@ impl Server {
     /// What is added is the part a syntax file can only guess — that `User` is
     /// a class, `count` a binding that cannot be assigned again, `len` a
     /// method of the language rather than a name in this file.
-    fn semantic_tokens(&self, message: &Json) -> Json {
+    fn semantic_tokens(&self, message: &Json, windowed: bool) -> Json {
         let empty = Json::object([("data", Json::Array(Vec::new()))]);
         let Some(path) = document_path(message) else {
             return empty;
@@ -1078,10 +1084,21 @@ impl Server {
             return empty;
         };
         let positions = Positions::new(source.clone());
+        // A ranged request asks about the part of the document on screen. The
+        // deltas are relative to the tokens actually sent, so the window is
+        // applied before any of them is encoded.
+        let window = if windowed {
+            requested_range(message, &positions, source.len())
+        } else {
+            0..source.len() + 1
+        };
         let mut data = Vec::new();
         let mut line = 0;
         let mut character = 0;
         for token in tokens::tokens(source, typed) {
+            if !window.contains(&token.start) {
+                continue;
+            }
             let start = positions.position(token.start);
             let end = positions.position(token.end);
             // A name never holds a newline, so a token that appears to span
@@ -1475,14 +1492,6 @@ impl ModuleLoader for OpenFirst<'_> {
     }
 }
 
-/// Whether the text declares a top-level `main`, which is what makes it an
-/// entry file rather than a module the editor happens to be showing.
-fn declares_main(source: &str) -> bool {
-    skuld_compiler::parse(source)
-        .program
-        .is_some_and(|program| program.functions.iter().any(|f| f.name.text == "main"))
-}
-
 /// One end of a call hierarchy while it is being collected: the item itself,
 /// the file the calls are written in, and where each of them is.
 struct CallGroup {
@@ -1507,6 +1516,14 @@ impl Direction {
             Self::Outgoing => "to",
         }
     }
+}
+
+/// Whether the text declares a top-level `main`, which is what makes it an
+/// entry file rather than a module the editor happens to be showing.
+fn declares_main(source: &str) -> bool {
+    skuld_compiler::parse(source)
+        .program
+        .is_some_and(|program| program.functions.iter().any(|f| f.name.text == "main"))
 }
 
 /// The occurrences of one declaration, and where the declaration itself is.
@@ -1689,6 +1706,9 @@ fn initialize_result() -> Json {
                     // the previous stream per document to diff against, which
                     // is state to go stale for a file this size.
                     ("full", Json::Bool(true)),
+                    // A window is answered too, since a client asks for one
+                    // while a large file is still opening.
+                    ("range", Json::Bool(true)),
                 ]),
             ),
             ("documentSymbolProvider", Json::Bool(true)),
