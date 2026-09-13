@@ -1,0 +1,40 @@
+struct Item { text: string }
+class User { name: string }
+func main() {
+    let items: []Item = []
+    var i = 0
+    while i < 40 { items.push(Item { text: "item" + "!" })
+        i += 1 }
+    items.insert(1, items[0])
+    if let Some(item) = items.remove(0) { print(item.text) }
+    items[0].text = "changed"
+    if let Some(item) = items.pop() { print(item.text) }
+    let options: []Option<string> = []
+    options.push(None)
+    options.insert(0, Some("a" + "b"))
+    if let Some(value) = options.remove(0) {
+        if let Some(text) = value { print(text) }
+    }
+    let rows: [][]int = []
+    rows.push([])
+    rows[0].push(7)
+    if let Some(row) = rows.pop() { print(row[0]) }
+    let users: []User = []
+    var observer: weak User = weak()
+    {
+        let user = new User(name: "Ada")
+        observer = weak(user)
+        users.push(user)
+        users.insert(0, users[0])
+    }
+    print(observer.alive())
+    {
+        if let Some(user) = users.remove(0) { print(user.name) }
+        users.pop()
+    }
+    print(observer.alive())
+    let refs: []weak User = []
+    refs.push(weak())
+    refs.insert(0, observer)
+    if let Some(ref) = refs.pop() { print(ref.alive()) }
+}

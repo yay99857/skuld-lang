@@ -1,0 +1,14 @@
+enum Foo {
+    A
+}
+
+enum Bar {
+    B
+}
+
+func main() {
+    let x = Foo.A
+    match x {
+        Bar.B: {}
+    }
+}

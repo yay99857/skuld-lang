@@ -1,0 +1,6 @@
+func main() {
+    let x = 10
+    match x {
+        _: {}
+    }
+}

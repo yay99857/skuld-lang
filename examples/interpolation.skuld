@@ -2,7 +2,7 @@ struct Person {
     name: string
     age: int
 
-    introduction() -> string {
+    introduction(): string {
         return "I am ${this.name}, ${this.age} years old."
     }
 }

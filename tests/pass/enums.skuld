@@ -1,0 +1,89 @@
+enum Status {
+    Active,
+    Inactive
+}
+
+enum Shape {
+    Circle(int),
+    Square(int),
+    Point
+}
+
+class Item {
+    name: string
+}
+
+enum Container {
+    Empty,
+    HoldItem(Item),
+    HoldList([]string)
+}
+
+func describe_shape(s: Shape) -> string {
+    match s {
+        Shape.Circle(r): {
+            return "circle"
+        }
+        Shape.Square(w): {
+            return "square"
+        }
+        Shape.Point: {
+            return "point"
+        }
+    }
+}
+
+func describe_status(s: Status) -> string {
+    match s {
+        Status.Active: return "active"
+        _: return "other"
+    }
+}
+
+func main() {
+    let st = Status.Active
+    print(describe_status(st))
+    print(describe_status(Status.Inactive))
+
+    let sh1 = Shape.Circle(10)
+    let sh2 = Shape.Point
+    print(describe_shape(sh1))
+    print(describe_shape(sh2))
+
+    var c = Container.HoldItem(new Item(name: "sword"))
+    match c {
+        Container.HoldItem(item): {
+            print(item.name)
+        }
+        _: {
+            print("not item")
+        }
+    }
+
+    c = Container.HoldList(["apple", "banana"])
+    match c {
+        Container.HoldList(list): {
+            print(list.len())
+            print(list[0])
+            print(list[1])
+        }
+        _: {
+            print("other")
+        }
+    }
+
+    c = Container.Empty
+    match c {
+        Container.Empty: {
+            print("empty")
+        }
+        _: {
+            print("not empty")
+        }
+    }
+
+    let opt: Option<Status> = Status.Active
+    if let s = opt {
+        print(describe_status(s))
+    }
+}

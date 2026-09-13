@@ -1,0 +1,43 @@
+func main() {
+    // Basic range
+    for i in 0..4 {
+        print(i)
+    }
+
+    // Negative bounds
+    for i in -2..2 {
+        print(i)
+    }
+
+    // Zero iterations (start >= end)
+    for i in 5..5 {
+        print("never")
+    }
+    for i in 5..2 {
+        print("never")
+    }
+
+    // Dynamic expressions as bounds
+    let base = 10
+    for i in base..(base + 3) {
+        print(i)
+    }
+
+    // Break and continue
+    for i in 0..10 {
+        if i == 1 {
+            continue
+        }
+        if i == 4 {
+            break
+        }
+        print(i)
+    }
+
+    // Nested loops
+    for x in 0..2 {
+        for y in 0..2 {
+            print("${x}:${y}")
+        }
+    }
+}

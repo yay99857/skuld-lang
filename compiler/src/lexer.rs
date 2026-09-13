@@ -101,6 +101,7 @@ impl Lexer<'_> {
                 ('-', Some('=')) => Some(MinusEqual),
                 ('*', Some('=')) => Some(StarEqual),
                 ('/', Some('=')) => Some(SlashEqual),
+                ('.', Some('.')) => Some(DotDot),
                 _ => None,
             };
             if let Some(kind) = pair {

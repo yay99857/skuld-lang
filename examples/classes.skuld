@@ -8,7 +8,7 @@ class Counter {
         this.value += 1
     }
 
-    add(amount: int) -> Counter {
+    add(amount: int): Counter {
         this.value += amount
         return this
     }

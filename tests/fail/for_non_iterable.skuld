@@ -1,0 +1,6 @@
+func main() {
+    let x = 42
+    for item in x {
+        print(item)
+    }
+}

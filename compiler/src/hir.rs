@@ -11,6 +11,7 @@ use crate::{
 pub struct Program {
     /// Declaration order, which is also the emitted field layout.
     pub(crate) structs: Vec<StructInfo>,
+    pub(crate) enums: Vec<crate::types::EnumInfo>,
     pub(crate) arrays: Vec<crate::types::ArrayInfo>,
     pub(crate) options: Vec<crate::types::OptionInfo>,
     pub(crate) functions: Vec<Function>,
@@ -77,6 +78,33 @@ pub(crate) enum StatementKind {
     },
     Break,
     Continue,
+    Match {
+        value: Expr,
+        arms: Vec<MatchArm>,
+    },
+    For {
+        variable: SymbolId,
+        iterable: ForIterable,
+        body: Block,
+    },
+}
+#[derive(Debug)]
+pub(crate) enum ForIterable {
+    Range { start: Expr, end: Expr },
+    Array(Expr),
+}
+#[derive(Debug)]
+pub(crate) struct MatchArm {
+    pub pattern: MatchPattern,
+    pub body: Block,
+}
+#[derive(Debug)]
+pub(crate) enum MatchPattern {
+    Variant {
+        variant_index: usize,
+        binding: Option<SymbolId>,
+    },
+    Wildcard,
 }
 #[derive(Debug)]
 pub(crate) struct Expr {
@@ -129,6 +157,11 @@ pub(crate) enum ExprKind {
     },
     Weak(Option<Box<Expr>>),
     ArrayLen(Box<Expr>),
+    ArrayCall {
+        object: Box<Expr>,
+        method: ArrayMethod,
+        arguments: Vec<Expr>,
+    },
     WeakAlive(Box<Expr>),
     WeakGet(Box<Expr>),
     WeakUpgrade(Box<Expr>),
@@ -136,6 +169,10 @@ pub(crate) enum ExprKind {
     None,
     IsSome(Box<Expr>),
     IsNone(Box<Expr>),
+    EnumVariant {
+        variant_index: usize,
+        payload: Option<Box<Expr>>,
+    },
 }
 
 #[derive(Debug)]
@@ -151,6 +188,14 @@ pub(crate) enum Place {
     ReferenceField { object: Box<Expr>, index: usize },
     Index { object: Box<Expr>, index: Box<Expr> },
 }
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ArrayMethod {
+    Push,
+    Insert,
+    Pop,
+    Remove,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum CallTarget {
     Function(SymbolId),

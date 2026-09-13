@@ -4,11 +4,11 @@ struct Rectangle {
 
     // Methods carry no `func` keyword and no receiver parameter; `this` is the
     // current value, and it is a copy, so a method cannot modify the caller.
-    area() -> int {
+    area(): int {
         return this.width * this.height
     }
 
-    grown(by: int) -> Rectangle {
+    grown(by: int): Rectangle {
         return Rectangle { width: this.width + by, height: this.height + by }
     }
 }

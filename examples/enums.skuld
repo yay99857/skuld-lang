@@ -1,0 +1,42 @@
+enum Status {
+    Pending,
+    Active,
+    Cancelled
+}
+
+enum Command {
+    Quit,
+    Echo(string),
+    Move(int)
+}
+
+func handle(cmd: Command) {
+    match cmd {
+        Command.Quit: {
+            print("Quitting")
+        }
+        Command.Echo(msg): {
+            print("Echo: ${msg}")
+        }
+        Command.Move(steps): {
+            print("Moving ${steps} steps")
+        }
+    }
+}
+
+func status_name(s: Status): string {
+    match s {
+        Status.Active: return "Active"
+        _: return "Inactive"
+    }
+}
+
+func main() {
+    let s = Status.Active
+    print(status_name(s))
+    print(status_name(Status.Pending))
+
+    handle(Command.Echo("Hello Skuld!"))
+    handle(Command.Move(5))
+    handle(Command.Quit)
+}

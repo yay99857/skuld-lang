@@ -9,8 +9,13 @@ pub struct StructId(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ArrayId(pub usize);
 
+/// Index into the checked program's option table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OptionId(pub usize);
+
+/// Index into the checked program's enum table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EnumId(pub usize);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OptionInfo {
@@ -22,6 +27,24 @@ pub struct ArrayInfo {
     pub element: Type,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumInfo {
+    pub name: String,
+    pub variants: Vec<VariantInfo>,
+}
+
+impl EnumInfo {
+    pub fn find_variant(&self, name: &str) -> Option<usize> {
+        self.variants.iter().position(|v| v.name == name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantInfo {
+    pub name: String,
+    pub payload: Option<Type>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
     Int,
@@ -31,6 +54,8 @@ pub enum Type {
     Void,
     /// A declared struct or class; its table entry determines value/reference semantics.
     Struct(StructId),
+    /// A user-declared discriminated union / enum.
+    Enum(EnumId),
     /// A reference-counted heap array.
     Array(ArrayId),
     /// An inline discriminated optional value.
@@ -55,6 +80,7 @@ impl fmt::Display for Type {
             Self::Void => "void",
             // Only the checker knows struct names; it renders them itself.
             Self::Struct(_) => "<struct>",
+            Self::Enum(_) => "<enum>",
             Self::Array(_) => "<array>",
             Self::Option(_) => "<option>",
             Self::Weak(_) => "<weak>",

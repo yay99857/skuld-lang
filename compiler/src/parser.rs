@@ -202,11 +202,22 @@ impl Parser<'_> {
     fn program(mut self) -> ParseOutput {
         let mut functions = Vec::new();
         let mut structs = Vec::new();
+        let mut enums = Vec::new();
         while !self.at(&TokenKind::Eof) {
             let start = self.position;
             if self.at(&TokenKind::Struct) || self.at(&TokenKind::Class) {
                 match self.struct_declaration() {
                     Ok(declaration) => structs.push(declaration),
+                    Err(diagnostic) => {
+                        self.diagnostics.push(diagnostic);
+                        self.recover_declaration(start);
+                    }
+                }
+                continue;
+            }
+            if self.at(&TokenKind::Enum) {
+                match self.enum_declaration() {
+                    Ok(declaration) => enums.push(declaration),
                     Err(diagnostic) => {
                         self.diagnostics.push(diagnostic);
                         self.recover_declaration(start);
@@ -229,6 +240,7 @@ impl Parser<'_> {
         }
         let program = self.diagnostics.is_empty().then_some(Program {
             structs,
+            enums,
             functions,
             span: Span::new(0, self.source.len()),
         });
@@ -243,10 +255,51 @@ impl Parser<'_> {
         }
         while !self.at(&TokenKind::Function)
             && !self.at(&TokenKind::Struct)
+            && !self.at(&TokenKind::Class)
+            && !self.at(&TokenKind::Enum)
             && !self.at(&TokenKind::Eof)
         {
             self.bump();
         }
+    }
+    fn enum_declaration(&mut self) -> Parsed<EnumDecl> {
+        let start = self.expect(&TokenKind::Enum, "`enum`")?.span.start;
+        let name = self.name("an enum name")?;
+        self.expect(&TokenKind::LeftBrace, "`{` to begin the enum body")?;
+        let mut variants = Vec::new();
+        while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
+            let variant_name = self.name("a variant name")?;
+            let payload = if self.take(&TokenKind::LeftParen).is_some() {
+                let ty = self.type_ref()?;
+                self.expect(&TokenKind::RightParen, "`)` after payload type")?;
+                Some(ty)
+            } else {
+                None
+            };
+            let span = Span::new(variant_name.span.start, self.previous_end());
+            variants.push(VariantDecl {
+                name: variant_name,
+                payload,
+                span,
+            });
+            let has_comma = self.take(&TokenKind::Comma).is_some();
+            if !has_comma
+                && !self.at(&TokenKind::RightBrace)
+                && !self.at(&TokenKind::Eof)
+                && !self.newline_before()
+            {
+                return Err(self.expected("a newline, `,` or `}` after the variant"));
+            }
+        }
+        let end = self
+            .expect(&TokenKind::RightBrace, "`}` to close the enum body")?
+            .span
+            .end;
+        Ok(EnumDecl {
+            name,
+            variants,
+            span: Span::new(start, end),
+        })
     }
     /// One field per line, matching the statement-boundary rule elsewhere.
     fn struct_declaration(&mut self) -> Parsed<StructDecl> {
@@ -298,11 +351,12 @@ impl Parser<'_> {
     /// The name and `(` are already known; methods carry no `func` keyword.
     fn method(&mut self, name: Name, start: usize) -> Parsed<FunctionDecl> {
         let parameters = self.parameter_list()?;
-        let return_type = if self.take(&TokenKind::Arrow).is_some() {
-            Some(self.type_ref()?)
-        } else {
-            None
-        };
+        let return_type =
+            if self.take(&TokenKind::Colon).is_some() || self.take(&TokenKind::Arrow).is_some() {
+                Some(self.type_ref()?)
+            } else {
+                None
+            };
         let body = self.block()?;
         let span = Span::new(start, body.span.end);
         Ok(FunctionDecl {
@@ -339,11 +393,12 @@ impl Parser<'_> {
         let start = self.expect(&TokenKind::Function, "`func`")?.span.start;
         let name = self.name("a function name")?;
         let parameters = self.parameter_list()?;
-        let return_type = if self.take(&TokenKind::Arrow).is_some() {
-            Some(self.type_ref()?)
-        } else {
-            None
-        };
+        let return_type =
+            if self.take(&TokenKind::Colon).is_some() || self.take(&TokenKind::Arrow).is_some() {
+                Some(self.type_ref()?)
+            } else {
+                None
+            };
         let body = self.block()?;
         let span = Span::new(start, body.span.end);
         Ok(FunctionDecl {
@@ -477,7 +532,15 @@ impl Parser<'_> {
                 self.bump();
                 StatementKind::Continue
             }
-            Impl | Interface | Enum | Match | Import | For | Static | Extern => {
+            Match => return self.match_statement(),
+            For => return self.for_statement(),
+            Enum => {
+                return Err(self.error(
+                    DiagnosticCode::ExpectedDeclaration,
+                    "enums can only be declared at the top level",
+                ));
+            }
+            Impl | Interface | Import | Static | Extern => {
                 return Err(self.error(
                     DiagnosticCode::UnsupportedSyntax,
                     "this syntax is reserved for a later milestone",
@@ -505,6 +568,95 @@ impl Parser<'_> {
         Ok(Statement {
             kind: StatementKind::While { condition, body },
             span: Span::new(start, self.previous_end()),
+        })
+    }
+    fn match_statement(&mut self) -> Parsed<Statement> {
+        let start = self.expect(&TokenKind::Match, "`match`")?.span.start;
+        let value = self.with_struct_literals(false, |parser| parser.expression())?;
+        self.expect(&TokenKind::LeftBrace, "`{` to begin match arms")?;
+        let mut arms = Vec::new();
+        while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
+            let arm_start = self.current().span.start;
+            let pattern = if matches!(&self.current().kind, TokenKind::Identifier(name) if name == "_")
+            {
+                let token = self.bump();
+                MatchPattern::Wildcard(token.span)
+            } else {
+                let first = self.name("a pattern or `_`")?;
+                let (enum_name, variant_name) = if self.take(&TokenKind::Dot).is_some() {
+                    let variant = self.name("a variant name")?;
+                    (Some(first), variant)
+                } else {
+                    (None, first)
+                };
+                let binding = if self.take(&TokenKind::LeftParen).is_some() {
+                    let binding = self.name("a variable name for the pattern payload")?;
+                    self.expect(&TokenKind::RightParen, "`)` after pattern binding")?;
+                    Some(binding)
+                } else {
+                    None
+                };
+                let span = Span::new(arm_start, self.previous_end());
+                MatchPattern::Variant {
+                    enum_name,
+                    variant_name,
+                    binding,
+                    span,
+                }
+            };
+            if self.take(&TokenKind::Colon).is_none() && self.take(&TokenKind::Arrow).is_none() {
+                return Err(self.expected("`:` or `->` after match pattern"));
+            }
+            let body = if self.at(&TokenKind::LeftBrace) {
+                self.block()?
+            } else {
+                let stmt = self.statement()?;
+                let span = stmt.span;
+                Block {
+                    statements: vec![stmt],
+                    span,
+                }
+            };
+            self.take(&TokenKind::Comma);
+            let arm_span = Span::new(arm_start, body.span.end);
+            arms.push(MatchArm {
+                pattern,
+                body,
+                span: arm_span,
+            });
+        }
+        let end = self
+            .expect(&TokenKind::RightBrace, "`}` to close match arms")?
+            .span
+            .end;
+        Ok(Statement {
+            kind: StatementKind::Match { value, arms },
+            span: Span::new(start, end),
+        })
+    }
+    fn for_statement(&mut self) -> Parsed<Statement> {
+        let start = self.expect(&TokenKind::For, "`for`")?.span.start;
+        let variable = self.name("a loop variable name")?;
+        self.expect(&TokenKind::In, "`in` after the loop variable")?;
+        let first = self.with_struct_literals(false, |parser| parser.expression())?;
+        let iterable = if self.take(&TokenKind::DotDot).is_some() {
+            let second = self.with_struct_literals(false, |parser| parser.expression())?;
+            ForIterable::Range {
+                start: first,
+                end: second,
+            }
+        } else {
+            ForIterable::Expr(first)
+        };
+        let body = self.block()?;
+        let span = Span::new(start, body.span.end);
+        Ok(Statement {
+            kind: StatementKind::For {
+                variable,
+                iterable,
+                body,
+            },
+            span,
         })
     }
     /// The lexer already split the text; only the expressions are parsed here.
@@ -565,18 +717,29 @@ impl Parser<'_> {
     fn if_statement(&mut self) -> Parsed<Statement> {
         let start = self.expect(&TokenKind::If, "`if`")?.span.start;
         let binding = if self.take(&TokenKind::Let).is_some() {
-            let constructor = self.name("`Some` in an if-let pattern")?;
-            if constructor.text != "Some" {
-                return Err(Diagnostic {
-                    code: DiagnosticCode::ExpectedSyntax,
-                    span: constructor.span,
-                    message: "if let requires a `Some(name)` pattern".into(),
-                    help: None,
-                });
-            }
-            self.expect(&TokenKind::LeftParen, "`(` after `Some`")?;
-            let name = self.name("a binding name")?;
-            self.expect(&TokenKind::RightParen, "`)` after the binding")?;
+            let name = if matches!(&self.current().kind, TokenKind::Identifier(name) if name == "Some")
+                && self
+                    .tokens
+                    .get(self.position + 1)
+                    .is_some_and(|t| t.kind == TokenKind::LeftParen)
+            {
+                self.bump();
+                self.expect(&TokenKind::LeftParen, "`(` after `Some`")?;
+                let name = self.name("a binding name")?;
+                self.expect(&TokenKind::RightParen, "`)` after the binding")?;
+                name
+            } else {
+                let name = self.name("a binding name")?;
+                if name.text == "None" || name.text == "null" {
+                    return Err(Diagnostic {
+                        code: DiagnosticCode::ExpectedSyntax,
+                        span: name.span,
+                        message: "cannot bind to `null` or `None` in an if-let pattern".into(),
+                        help: None,
+                    });
+                }
+                name
+            };
             self.expect(&TokenKind::Equal, "`=` after the pattern")?;
             Some(name)
         } else {

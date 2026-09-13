@@ -1,0 +1,4 @@
+func shrink(values: []int) -> int { values.remove(0)
+return 2 }
+func main() { let x = [1]
+x[0] += shrink(x) }

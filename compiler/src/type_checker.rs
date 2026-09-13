@@ -4,7 +4,9 @@ use crate::{
     diagnostic::{Diagnostic, DiagnosticCode},
     resolver::{Builtin, Resolution, SymbolId, SymbolKind},
     span::Span,
-    types::{ArrayId, ArrayInfo, OptionId, OptionInfo, StructId, Type},
+    types::{
+        ArrayId, ArrayInfo, EnumId, EnumInfo, OptionId, OptionInfo, StructId, Type, VariantInfo,
+    },
 };
 use std::collections::BTreeMap;
 
@@ -25,10 +27,16 @@ pub struct TypedProgram {
     pub(crate) signatures: BTreeMap<SymbolId, Signature>,
     pub(crate) entry: SymbolId,
     pub(crate) structs: Vec<StructInfo>,
+    pub(crate) enums: Vec<EnumInfo>,
+    pub(crate) enum_names: BTreeMap<String, EnumId>,
     pub(crate) arrays: Vec<ArrayInfo>,
     pub(crate) options: Vec<OptionInfo>,
+    pub(crate) implicit_wraps: BTreeMap<(usize, usize), Type>,
 }
 impl TypedProgram {
+    pub fn enums(&self) -> &[EnumInfo] {
+        &self.enums
+    }
     pub fn options(&self) -> &[OptionInfo] {
         &self.options
     }
@@ -62,12 +70,40 @@ pub(crate) fn type_check(
         loops: Vec::new(),
         structs: Vec::new(),
         struct_names: BTreeMap::new(),
+        enums: Vec::new(),
+        enum_names: BTreeMap::new(),
         arrays: Vec::new(),
         options: Vec::new(),
         option_types: BTreeMap::new(),
         array_types: BTreeMap::new(),
         expected_context: None,
+        implicit_wraps: BTreeMap::new(),
     };
+    for declaration in &syntax.enums {
+        let id = EnumId(checker.enums.len());
+        if declaration.name.text == "Option" {
+            checker.error(
+                DiagnosticCode::DuplicateDeclaration,
+                declaration.name.span,
+                "`Option` is a builtin type and cannot be redeclared",
+            );
+        }
+        if checker
+            .enum_names
+            .insert(declaration.name.text.clone(), id)
+            .is_some()
+        {
+            checker.error(
+                DiagnosticCode::DuplicateDeclaration,
+                declaration.name.span,
+                format!("type `{}` is already declared", declaration.name.text),
+            );
+        }
+        checker.enums.push(EnumInfo {
+            name: declaration.name.text.clone(),
+            variants: Vec::new(),
+        });
+    }
     // Structs are collected before signatures so functions may use them, and
     // before field types so a struct can refer to one declared later.
     for declaration in &syntax.structs {
@@ -79,15 +115,16 @@ pub(crate) fn type_check(
                 "`Option` is a builtin type and cannot be redeclared",
             );
         }
-        if checker
-            .struct_names
-            .insert(declaration.name.text.clone(), id)
-            .is_some()
+        if checker.enum_names.contains_key(&declaration.name.text)
+            || checker
+                .struct_names
+                .insert(declaration.name.text.clone(), id)
+                .is_some()
         {
             checker.error(
                 DiagnosticCode::DuplicateDeclaration,
                 declaration.name.span,
-                format!("struct `{}` is already declared", declaration.name.text),
+                format!("type `{}` is already declared", declaration.name.text),
             );
         }
         checker.structs.push(StructInfo {
@@ -142,6 +179,48 @@ pub(crate) fn type_check(
                 declaration.name.span,
                 format!(
                     "struct `{}` contains itself by value; a value type has no indirection, so it would have no size",
+                    declaration.name.text
+                ),
+            );
+        }
+    }
+    for (index, declaration) in syntax.enums.iter().enumerate() {
+        let mut variants: Vec<VariantInfo> = Vec::new();
+        for variant in &declaration.variants {
+            let payload = variant
+                .payload
+                .as_ref()
+                .map(|ty| checker.type_ref(ty, false));
+            if variants.iter().any(|v| v.name == variant.name.text) {
+                checker.error(
+                    DiagnosticCode::DuplicateDeclaration,
+                    variant.name.span,
+                    format!(
+                        "variant `{}` is already declared in enum `{}`",
+                        variant.name.text, declaration.name.text
+                    ),
+                );
+                continue;
+            }
+            variants.push(VariantInfo {
+                name: variant.name.text.clone(),
+                payload,
+            });
+        }
+        checker.enums[index].variants = variants;
+    }
+    for index in 0..checker.enums.len() {
+        if checker.enum_contains_by_value(
+            EnumId(index),
+            EnumId(index),
+            &mut vec![false; checker.enums.len()],
+        ) {
+            let declaration = &syntax.enums[index];
+            checker.error(
+                DiagnosticCode::InvalidValueType,
+                declaration.name.span,
+                format!(
+                    "enum `{}` contains itself by value; a value type has no indirection, so it would have no size",
                     declaration.name.text
                 ),
             );
@@ -297,11 +376,14 @@ pub(crate) fn type_check(
     }
     let Checker {
         structs,
+        enums,
+        enum_names,
         arrays,
         options,
         expressions,
         symbol_types,
         signatures,
+        implicit_wraps,
         ..
     } = checker;
     // A missing entry always produces a diagnostic above.
@@ -310,8 +392,11 @@ pub(crate) fn type_check(
         syntax,
         resolution,
         structs,
+        enums,
+        enum_names,
         arrays,
         options,
+        implicit_wraps,
         expressions,
         symbol_types,
         signatures,
@@ -333,12 +418,15 @@ struct Checker<'a> {
     structs: Vec<StructInfo>,
     /// Struct name to table index, for resolving type names and constructions.
     struct_names: BTreeMap<String, StructId>,
+    enums: Vec<EnumInfo>,
+    enum_names: BTreeMap<String, EnumId>,
     /// Interned array types; `Type::Array` indexes this.
     arrays: Vec<ArrayInfo>,
     options: Vec<OptionInfo>,
     option_types: BTreeMap<Type, OptionId>,
     array_types: BTreeMap<Type, ArrayId>,
     expected_context: Option<Type>,
+    implicit_wraps: BTreeMap<(usize, usize), Type>,
 }
 
 #[derive(Debug, Clone)]
@@ -394,6 +482,7 @@ impl Checker<'_> {
     fn type_name(&self, ty: Type) -> String {
         match ty {
             Type::Struct(id) => self.structs[id.0].name.clone(),
+            Type::Enum(id) => self.enums[id.0].name.clone(),
             Type::Array(id) => format!("[]{}", self.type_name(self.arrays[id.0].element)),
             Type::Option(id) => format!("Option<{}>", self.type_name(self.options[id.0].element)),
             Type::Weak(id) => format!("weak {}", self.structs[id.0].name),
@@ -454,6 +543,9 @@ impl Checker<'_> {
                     other if self.struct_names.contains_key(other) => {
                         Type::Struct(self.struct_names[other])
                     }
+                    other if self.enum_names.contains_key(other) => {
+                        Type::Enum(self.enum_names[other])
+                    }
                     _ => {
                         self.error(
                             DiagnosticCode::UnknownType,
@@ -491,18 +583,29 @@ impl Checker<'_> {
             }
         }
     }
-    fn expect_type(&mut self, expected: Type, found: Type, span: Span) {
-        if expected != Type::Error && found != Type::Error && expected != found {
-            self.error(
-                DiagnosticCode::TypeMismatch,
-                span,
-                format!(
-                    "expected `{}`, found `{}`",
-                    self.type_name(expected),
-                    self.type_name(found)
-                ),
-            );
+    fn expect_type(&mut self, expected: Type, found: Type, span: Span) -> bool {
+        if expected == Type::Error || found == Type::Error {
+            return false;
         }
+        if expected == found {
+            return true;
+        }
+        if let Type::Option(id) = expected
+            && self.options[id.0].element == found
+        {
+            self.implicit_wraps.insert((span.start, span.end), expected);
+            return true;
+        }
+        self.error(
+            DiagnosticCode::TypeMismatch,
+            span,
+            format!(
+                "expected `{}`, found `{}`",
+                self.type_name(expected),
+                self.type_name(found)
+            ),
+        );
+        false
     }
     fn block(&mut self, block: &Block) -> bool {
         let mut returns = false;
@@ -638,6 +741,163 @@ impl Checker<'_> {
                 }
                 false
             }
+            StatementKind::Match { value, arms } => {
+                let target_ty = self.expression(value);
+                if target_ty == Type::Error {
+                    for arm in arms {
+                        self.block(&arm.body);
+                    }
+                    return false;
+                }
+                let Type::Enum(enum_id) = target_ty else {
+                    self.error(
+                        DiagnosticCode::TypeMismatch,
+                        value.span,
+                        format!(
+                            "match expects an enum value, found `{}`",
+                            self.type_name(target_ty)
+                        ),
+                    );
+                    for arm in arms {
+                        self.block(&arm.body);
+                    }
+                    return false;
+                };
+
+                let enum_info = self.enums[enum_id.0].clone();
+                let mut covered = vec![false; enum_info.variants.len()];
+                let mut has_wildcard = false;
+                let mut all_arms_return = !arms.is_empty();
+
+                for arm in arms {
+                    match &arm.pattern {
+                        MatchPattern::Wildcard(_) => {
+                            has_wildcard = true;
+                        }
+                        MatchPattern::Variant {
+                            enum_name,
+                            variant_name,
+                            binding,
+                            span: _,
+                        } => {
+                            if let Some(enum_name) = enum_name
+                                && enum_name.text != enum_info.name
+                            {
+                                self.error(
+                                    DiagnosticCode::TypeMismatch,
+                                    enum_name.span,
+                                    format!(
+                                        "pattern belongs to enum `{}`, not `{}`",
+                                        enum_name.text, enum_info.name
+                                    ),
+                                );
+                            }
+                            if let Some(variant_index) = enum_info.find_variant(&variant_name.text)
+                            {
+                                covered[variant_index] = true;
+                                let expected_payload = enum_info.variants[variant_index].payload;
+                                match (expected_payload, binding) {
+                                    (Some(payload_ty), Some(binding_name)) => {
+                                        let sym_id = self.declaration(binding_name);
+                                        self.symbol_types[sym_id.0] = payload_ty;
+                                    }
+                                    (Some(_), None) => {
+                                        self.error(
+                                            DiagnosticCode::ArgumentCount,
+                                            variant_name.span,
+                                            format!(
+                                                "variant `{}` has a payload; pattern must bind it with `(name)`",
+                                                variant_name.text
+                                            ),
+                                        );
+                                    }
+                                    (None, Some(binding_name)) => {
+                                        self.error(
+                                            DiagnosticCode::ArgumentCount,
+                                            binding_name.span,
+                                            format!(
+                                                "variant `{}` does not have a payload",
+                                                variant_name.text
+                                            ),
+                                        );
+                                    }
+                                    (None, None) => {}
+                                }
+                            } else {
+                                self.error(
+                                    DiagnosticCode::UnknownName,
+                                    variant_name.span,
+                                    format!(
+                                        "enum `{}` has no variant `{}`",
+                                        enum_info.name, variant_name.text
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    let returns = self.block(&arm.body);
+                    all_arms_return &= returns;
+                }
+
+                if !has_wildcard {
+                    for (i, is_covered) in covered.iter().enumerate() {
+                        if !is_covered {
+                            self.error(
+                                DiagnosticCode::NonExhaustiveMatch,
+                                statement.span,
+                                format!(
+                                    "non-exhaustive match: variant `{}` is not covered",
+                                    enum_info.variants[i].name
+                                ),
+                            );
+                        }
+                    }
+                }
+
+                all_arms_return && (has_wildcard || covered.iter().all(|&c| c))
+            }
+            StatementKind::For {
+                variable,
+                iterable,
+                body,
+            } => {
+                let elem_ty = match iterable {
+                    ForIterable::Range { start, end } => {
+                        let previous = self.expected_context;
+                        self.expected_context = Some(Type::Int);
+                        let start_ty = self.expression(start);
+                        let end_ty = self.expression(end);
+                        self.expected_context = previous;
+                        self.expect_type(Type::Int, start_ty, start.span);
+                        self.expect_type(Type::Int, end_ty, end.span);
+                        Type::Int
+                    }
+                    ForIterable::Expr(collection) => {
+                        let collection_ty = self.expression(collection);
+                        match collection_ty {
+                            Type::Array(id) => self.arrays[id.0].element,
+                            Type::Error => Type::Error,
+                            other => {
+                                self.error(
+                                    DiagnosticCode::TypeMismatch,
+                                    collection.span,
+                                    format!(
+                                        "expected array or range, found `{}`",
+                                        self.type_name(other)
+                                    ),
+                                );
+                                Type::Error
+                            }
+                        }
+                    }
+                };
+                let id = self.resolution.declarations[&variable.span.start];
+                self.symbol_types[id.0] = elem_ty;
+                self.loops.push(false);
+                self.block(body);
+                self.loops.pop();
+                false
+            }
         }
     }
     fn construction(&mut self, name: &Name, fields: &[FieldInit], new: bool) -> Type {
@@ -770,17 +1030,30 @@ impl Checker<'_> {
                 let id = self.reference(name);
                 match self.resolution.symbols[id.0].kind {
                     SymbolKind::Variable(_) | SymbolKind::Parameter => self.symbol_types[id.0],
-                    SymbolKind::Builtin(Builtin::None) => match expected {
-                        Some(ty @ Type::Option(_)) => ty,
-                        _ => {
-                            self.error(
+                    SymbolKind::Builtin(Builtin::None) => {
+                        match expected {
+                            Some(ty @ Type::Option(_)) => ty,
+                            _ => {
+                                self.error(
                                 DiagnosticCode::UnknownType,
                                 expr.span,
-                                "None requires an expected Option type; add a type annotation",
+                                format!("{} requires an expected Option type; add a type annotation", name.text),
                             );
-                            Type::Error
+                                Type::Error
+                            }
                         }
-                    },
+                    }
+                    SymbolKind::Enum => {
+                        self.error(
+                            DiagnosticCode::UnsupportedFeature,
+                            expr.span,
+                            format!(
+                                "`{}` is an enum type and cannot be used as a value",
+                                name.text
+                            ),
+                        );
+                        Type::Error
+                    }
                     _ => {
                         self.error(DiagnosticCode::UnsupportedFeature, expr.span, "functions can only be used as direct call targets; function values are not supported");
                         Type::Error
@@ -897,48 +1170,80 @@ impl Checker<'_> {
                 self.call(callee, arguments, expr.span, expected)
             }
             ExprKind::Member { object, member } => {
-                let object_type = self.expression(object);
-                match object_type {
-                    Type::Struct(id) => match self.structs[id.0].field(&member.text) {
-                        Some((_, field)) => field.ty,
-                        None => {
-                            let is_method = self.structs[id.0]
-                                .methods
-                                .iter()
-                                .any(|method| method.name == member.text);
-                            let mut diagnostic = Diagnostic {
-                                code: DiagnosticCode::UnknownName,
-                                span: member.span,
-                                message: if is_method {
-                                    format!("`{}` is a method, not a field", member.text)
-                                } else {
-                                    format!(
-                                        "`{}` has no field `{}`",
-                                        self.structs[id.0].name, member.text
-                                    )
-                                },
-                                help: None,
-                            };
-                            if is_method {
-                                diagnostic.help =
-                                    Some("call it with `()`; methods are not values".into());
-                            }
-                            self.diagnostics.push(diagnostic);
+                if let ExprKind::Identifier(enum_ident) = &object.kind
+                    && let Some(&enum_id) = self.enum_names.get(&enum_ident.text)
+                {
+                    let enum_info = &self.enums[enum_id.0];
+                    if let Some(variant_index) = enum_info.find_variant(&member.text) {
+                        let variant = &enum_info.variants[variant_index];
+                        if variant.payload.is_some() {
+                            self.error(
+                                DiagnosticCode::ArgumentCount,
+                                member.span,
+                                format!(
+                                    "variant `{}` expects a payload; call it with `(...)`",
+                                    member.text
+                                ),
+                            );
                             Type::Error
+                        } else {
+                            Type::Enum(enum_id)
                         }
-                    },
-                    // A failed subexpression already reported the reason.
-                    Type::Error => Type::Error,
-                    other => {
+                    } else {
                         self.error(
-                            DiagnosticCode::UnsupportedFeature,
+                            DiagnosticCode::UnknownName,
                             member.span,
                             format!(
-                                "`{}` has no fields; only structs support field access",
-                                self.type_name(other)
+                                "enum `{}` has no variant `{}`",
+                                enum_ident.text, member.text
                             ),
                         );
                         Type::Error
+                    }
+                } else {
+                    let object_type = self.expression(object);
+                    match object_type {
+                        Type::Struct(id) => match self.structs[id.0].field(&member.text) {
+                            Some((_, field)) => field.ty,
+                            None => {
+                                let is_method = self.structs[id.0]
+                                    .methods
+                                    .iter()
+                                    .any(|method| method.name == member.text);
+                                let mut diagnostic = Diagnostic {
+                                    code: DiagnosticCode::UnknownName,
+                                    span: member.span,
+                                    message: if is_method {
+                                        format!("`{}` is a method, not a field", member.text)
+                                    } else {
+                                        format!(
+                                            "`{}` has no field `{}`",
+                                            self.structs[id.0].name, member.text
+                                        )
+                                    },
+                                    help: None,
+                                };
+                                if is_method {
+                                    diagnostic.help =
+                                        Some("call it with `()`; methods are not values".into());
+                                }
+                                self.diagnostics.push(diagnostic);
+                                Type::Error
+                            }
+                        },
+                        // A failed subexpression already reported the reason.
+                        Type::Error => Type::Error,
+                        other => {
+                            self.error(
+                                DiagnosticCode::UnsupportedFeature,
+                                member.span,
+                                format!(
+                                    "`{}` has no fields; only structs support field access",
+                                    self.type_name(other)
+                                ),
+                            );
+                            Type::Error
+                        }
                     }
                 }
             }
@@ -1005,8 +1310,7 @@ impl Checker<'_> {
                         } else {
                             match elem_ty {
                                 Some(expected) => {
-                                    self.expect_type(expected, found, elem.span);
-                                    if expected != found {
+                                    if !self.expect_type(expected, found, elem.span) {
                                         has_error = true;
                                     }
                                 }
@@ -1091,8 +1395,7 @@ impl Checker<'_> {
         if left == Type::Error || right == Type::Error {
             return Type::Error;
         }
-        if left != right {
-            self.expect_type(left, right, span);
+        if left != right && !self.expect_type(left, right, span) {
             return Type::Error;
         }
         use BinaryOp::*;
@@ -1127,6 +1430,44 @@ impl Checker<'_> {
         span: Span,
     ) -> Type {
         let receiver = self.expression(object);
+        if let Type::Array(id) = receiver {
+            let element = self.arrays[id.0].element;
+            let parameters = match member.text.as_str() {
+                "push" => Some(vec![element]),
+                "insert" => Some(vec![Type::Int, element]),
+                "pop" => Some(vec![]),
+                "remove" => Some(vec![Type::Int]),
+                _ => None,
+            };
+            if let Some(parameters) = parameters {
+                if arguments.len() != parameters.len() {
+                    self.error(
+                        DiagnosticCode::ArgumentCount,
+                        span,
+                        format!(
+                            "method `{}` expects {} arguments, found {}",
+                            member.text,
+                            parameters.len(),
+                            arguments.len()
+                        ),
+                    );
+                }
+                let previous = self.expected_context;
+                for (index, argument) in arguments.iter().enumerate() {
+                    self.expected_context = parameters.get(index).copied();
+                    let found = self.expression(argument);
+                    if let Some(expected) = parameters.get(index) {
+                        self.expect_type(*expected, found, argument.span);
+                    }
+                }
+                self.expected_context = previous;
+                return if matches!(member.text.as_str(), "pop" | "remove") {
+                    self.option_type(element)
+                } else {
+                    Type::Void
+                };
+            }
+        }
         let builtin = match (receiver, member.text.as_str()) {
             (Type::Array(_), "len") => Some(Type::Int),
             (Type::Weak(_), "alive") => Some(Type::Bool),
@@ -1225,6 +1566,64 @@ impl Checker<'_> {
             direct = inner;
         }
         if let ExprKind::Member { object, member } = &direct.kind {
+            if let ExprKind::Identifier(enum_ident) = &object.kind
+                && let Some(&enum_id) = self.enum_names.get(&enum_ident.text)
+            {
+                let enum_info = &self.enums[enum_id.0];
+                return if let Some(variant_index) = enum_info.find_variant(&member.text) {
+                    let variant = &enum_info.variants[variant_index];
+                    match variant.payload {
+                        None => {
+                            self.error(
+                                DiagnosticCode::ArgumentCount,
+                                span,
+                                format!("variant `{}` does not take arguments", member.text),
+                            );
+                            for arg in arguments {
+                                self.expression(arg);
+                            }
+                            Type::Error
+                        }
+                        Some(expected_payload) => {
+                            if arguments.len() != 1 {
+                                self.error(
+                                    DiagnosticCode::ArgumentCount,
+                                    span,
+                                    format!(
+                                        "variant `{}` expects 1 argument, found {}",
+                                        member.text,
+                                        arguments.len()
+                                    ),
+                                );
+                                for arg in arguments {
+                                    self.expression(arg);
+                                }
+                                Type::Error
+                            } else {
+                                let previous = self.expected_context;
+                                self.expected_context = Some(expected_payload);
+                                let found = self.expression(&arguments[0]);
+                                self.expected_context = previous;
+                                self.expect_type(expected_payload, found, arguments[0].span);
+                                Type::Enum(enum_id)
+                            }
+                        }
+                    }
+                } else {
+                    self.error(
+                        DiagnosticCode::UnknownName,
+                        member.span,
+                        format!(
+                            "enum `{}` has no variant `{}`",
+                            enum_ident.text, member.text
+                        ),
+                    );
+                    for arg in arguments {
+                        self.expression(arg);
+                    }
+                    Type::Error
+                };
+            }
             return self.method_call(object, member, arguments, span);
         }
         let id = if let ExprKind::Identifier(name) = &direct.kind {
@@ -1268,10 +1667,15 @@ impl Checker<'_> {
                 for argument in arguments {
                     self.expression(argument);
                 }
+                let name = if let ExprKind::Identifier(name) = &direct.kind {
+                    name.text.as_str()
+                } else {
+                    "None"
+                };
                 self.error(
                     DiagnosticCode::NotCallable,
                     callee.span,
-                    "None is a value; use None without parentheses",
+                    format!("{name} is a value; use {name} without parentheses"),
                 );
                 Type::Error
             }
@@ -1365,12 +1769,66 @@ impl Checker<'_> {
             while let Type::Option(id) = ty {
                 ty = self.options[id.0].element;
             }
-            let Type::Struct(id) = ty else {
-                return false;
+            match ty {
+                Type::Struct(id) if !self.structs[id.0].reference => {
+                    id == target || self.contains_by_value(id, target, seen)
+                }
+                Type::Enum(id) => self.enum_contains_struct_by_value(id, target),
+                _ => false,
+            }
+        })
+    }
+    fn enum_contains_struct_by_value(&self, from: EnumId, target: StructId) -> bool {
+        self.enums[from.0].variants.iter().any(|v| {
+            let mut ty = match v.payload {
+                Some(ty) => ty,
+                None => return false,
             };
-            // A reference field stops the chain: it is a pointer.
-            !self.structs[id.0].reference
-                && (id == target || self.contains_by_value(id, target, seen))
+            while let Type::Option(id) = ty {
+                ty = self.options[id.0].element;
+            }
+            match ty {
+                Type::Struct(id) if !self.structs[id.0].reference => id == target,
+                Type::Enum(id) => self.enum_contains_struct_by_value(id, target),
+                _ => false,
+            }
+        })
+    }
+    fn enum_contains_by_value(&self, from: EnumId, target: EnumId, seen: &mut Vec<bool>) -> bool {
+        if seen[from.0] {
+            return false;
+        }
+        seen[from.0] = true;
+        self.enums[from.0].variants.iter().any(|v| {
+            let mut ty = match v.payload {
+                Some(ty) => ty,
+                None => return false,
+            };
+            while let Type::Option(id) = ty {
+                ty = self.options[id.0].element;
+            }
+            match ty {
+                Type::Enum(id) => id == target || self.enum_contains_by_value(id, target, seen),
+                Type::Struct(id) if !self.structs[id.0].reference => {
+                    self.struct_contains_enum_by_value(id, target)
+                }
+                _ => false,
+            }
+        })
+    }
+    fn struct_contains_enum_by_value(&self, from: StructId, target: EnumId) -> bool {
+        self.structs[from.0].fields.iter().any(|field| {
+            let mut ty = field.ty;
+            while let Type::Option(id) = ty {
+                ty = self.options[id.0].element;
+            }
+            match ty {
+                Type::Enum(id) => id == target,
+                Type::Struct(id) if !self.structs[id.0].reference => {
+                    self.struct_contains_enum_by_value(id, target)
+                }
+                _ => false,
+            }
         })
     }
     /// True when the assignment writes into an object reached by reference.

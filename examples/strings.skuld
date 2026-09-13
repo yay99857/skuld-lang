@@ -2,12 +2,12 @@ struct Person {
     name: string
     city: string
 
-    greeting() -> string {
+    greeting(): string {
         return "Hi, I am " + this.name + " from " + this.city + "."
     }
 }
 
-func repeated(text: string, times: int) -> string {
+func repeated(text: string, times: int): string {
     var result = ""
     var count = 0
     while count < times {

@@ -54,15 +54,15 @@ Function declarations use `func`, replacing the earlier `fn` and `function` spel
 The builtin is `print`, replacing `println`; neither old spelling is an alias.
 The old words are ordinary identifiers and can be explicitly declared by users.
 
-Keywords: `func let var return if else while loop break continue new weak class struct
-impl`.
-Reserved future keywords: `interface enum match import for in static extern`.
+Keywords: `func let var return if else while loop for in break continue new weak class struct
+impl enum match`.
+Reserved future keywords: `interface import static extern`.
 `true` and `false` produce boolean literal tokens. Type names, `print`, `Some`
 and `None` are identifiers. `Option<T>` is builtin type syntax, not user-defined
 generics. In a type annotation, `Option<int>=None` separates the closing `>`
 from assignment even though the lexer otherwise recognizes `>=` as one operator. Recognizing a keyword does not implement its syntax or semantics.
 
-Delimiters: `( ) { } [ ] , . : ->`.
+Delimiters: `( ) { } [ ] , . .. : ->`.
 Operators: `+ - * / % = == != < > <= >= ! && || += -= *= /=`.
 Operators use longest matching; a sign is separate from a number.
 
@@ -167,10 +167,21 @@ condition is re-evaluated before every iteration, including after `continue`.
 `loop { }` repeats until a `break` leaves it. `break` and `continue` bind to
 the innermost enclosing loop; outside any loop they are `E0111`.
 
+`for variable in start..end { }` iterates over the half-open range `[start, end)` of integers.
+`start` and `end` are evaluated once before iteration begins; if `start >= end`, the body runs 0 times.
+
+`for variable in array { }` iterates over each element of an array by value. If the array holds managed
+values (strings, arrays, classes), each element is safely retained on entry to the iteration and
+released on iteration exit (including upon `break`, `continue` or `return`).
+
+The loop variable is an immutable binding scoped strictly to the loop body. Like `while`, `for` loops
+may execute 0 times, so they do not satisfy a non-void return type. `break` and `continue` inside `for`
+bind to the innermost enclosing loop.
+
 A `loop` that no `break` can leave never falls through, so it satisfies a
 non-void return type and any code after it is unreachable. Adding a `break`
 restores the fall-through path and the return requirement returns with it. A
-`while` never satisfies a return type, because its condition may be false on
+`while` or `for` never satisfies a return type, because its condition or collection may be empty on
 entry.
 
 ## Statement boundaries and parser API — Implemented
@@ -611,14 +622,64 @@ across unrelated expressions is promised.
 
 `values[index]` requires an `int`. Reads and writes check both bounds, including
 negative indexes, and trap with `array index out of bounds` on failure.
-`values.len() -> int` returns the length and takes no arguments. Indexing binds
+`values.len(): int` returns the length and takes no arguments. Indexing binds
 with calls and member access and continues across newlines. Array elements
 and index expressions evaluate left to right; compound writes snapshot the old
 element before evaluating the RHS.
 
-Growth, slicing, array equality, sorting, callbacks and `for` iteration remain
+Dynamic array mutation and growth:
+- `values.push(element: T)` appends an element, growing geometric capacity.
+- `values.insert(index: int, element: T)` inserts at `0 <= index <= len()`, shifting later elements. Traps on invalid index.
+- `values.pop(): Option<T>` removes and returns the last element, or `null` if empty.
+- `values.remove(index: int): Option<T>` removes and returns element at index, shifting elements left, or `null` if out of bounds.
+
+Slicing, array equality, sorting, callbacks and `for` iteration remain
 planned. Strong cycles through classes and arrays still require explicit
 breaking or weak class links; arrays themselves cannot be weakened yet.
+
+## Enums and pattern matching — Implemented
+
+Enums are user-declared sum types with optional per-variant payloads:
+
+```skuld
+enum Status {
+    Pending,
+    Active(int),
+    Cancelled
+}
+```
+
+- Enum declarations define a new type in the type namespace.
+- Variants may be unit variants (`Status.Pending`) or payload variants (`Status.Active(42)`).
+- Variant constructors live in the enum's member namespace: `Status.Pending` constructs a unit variant, and `Status.Active(value)` constructs a payload variant.
+- Variants can be separated by commas, newlines, or both. Duplicate variant names are rejected (`E0202`).
+- Direct recursive enum variants by value (such as `enum List { Cons(List), Nil }`) are rejected as value cycles (`E0103`); indirect recursion via arrays (`[]List`) or classes is supported.
+- Enums have value semantics. Managed payloads (strings, arrays, classes) are automatically reference-counted with retain and release in C codegen.
+- Enum values implicitly wrap into `Option<Enum>` where expected.
+
+Pattern matching is performed using the `match` statement:
+
+```skuld
+match status {
+    Status.Pending: return 0
+    Status.Active(code): {
+        print(code)
+        return code
+    }
+    _: {
+        return -1
+    }
+}
+```
+
+- Target expression must be an enum type (`E0102` if not).
+- Arm patterns support variant patterns (`Status.Pending`, `Status.Active(code)`) and the wildcard pattern (`_`).
+- Arm separator accepts `:` or `->`.
+- Arms can have a single statement or a block `{ ... }`.
+- Variant payload bindings introduce an immutable local variable scoped to that arm's body.
+- Exhaustiveness is strictly checked: every variant must be covered, or a wildcard `_` must be present (`E0113`).
+- If every arm returns (or diverges), the `match` statement satisfies the function's return contract.
+- Inside loops, `break` and `continue` inside match arms naturally bind to the enclosing loop.
 
 ## Demonstration proposals — Experimental
 
@@ -667,8 +728,8 @@ no experimental compiler features are enabled. The full native pipeline, functio
 variables, conditional execution and classes with methods/interpolation
 (Demos 0–3) are **Implemented**.
 
-Loops, structs, classes, interpolation, weak class references, arrays, Option
-and reference-counted runtime behavior are **Implemented**. Interfaces, enums,
+Loops (`while`, `loop`, `for`), structs, classes, interpolation, weak class references, arrays, Option,
+enums, pattern matching and reference-counted runtime behavior are **Implemented**. Interfaces,
 Result, modules and the remaining capabilities above are **Planned**. No generics, macros, async/await, threads, channels,
 reflection, decorators, annotations, package registry, compiler plugins,
 compile-time execution, operator overloading or user-defined conversions will

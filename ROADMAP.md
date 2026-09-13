@@ -11,13 +11,7 @@ an HTTP request and decodes a JSON response. That target is deliberately **not**
 reachable within these five milestones; they build the foundations it needs.
 The naming below is local to this document.
 
-## In flight — array growth
-
-`push`, `insert`, `pop` and `remove` on `[]T`, with their `tests/pass`,
-`tests/fail` and `tests/trap` fixtures. This work exists in the tree and is not
-yet part of the completed status in `AGENTS.md`. Close it before opening M1.
-
-## M1 — Enums and `match`
+## M1 — Enums and `match` — Implemented
 
 User-declared sum types with payloads, and exhaustive `match`.
 
@@ -31,48 +25,33 @@ enum JsonValue {
 }
 
 match value {
-    JsonValue.Text(s) -> print(s)
-    JsonValue.Number(n) -> print("${n}")
-    _ -> print("other")
+    JsonValue.Text(s): print(s)
+    JsonValue.Number(n): print("${n}")
+    _: print("other")
 }
 ```
 
-First because it is the largest single unlock: `Result`, `JsonValue` and any
-future state machine depend on it. Builtin `Option` already carries an inline
-tag/payload representation with conditional retain/release of managed payloads;
-M1 generalizes that machinery rather than duplicating it.
+Implemented with declaration in a type namespace, unit and payload variant
+construction, exhaustive match checking with arm payload bindings, and
+managed reference-counting under leak and sanitizers. Direct value recursive
+variants are rejected with `E0103`; indirect recursion via arrays or classes
+is supported. Matches accept `:` and `->`, statements or blocks, and bindings
+scope to each arm. Break and continue inside match arms naturally bind to
+enclosing loops.
 
-- **In scope:** declaration, a type namespace alongside structs, variant
-  construction, exhaustiveness checking, immutable payload bindings per arm,
-  correct reference counting per variant.
-- **Out of scope:** guards, nested patterns, or-patterns, explicit
-  discriminants.
-- **Open risk:** recursive variants such as `Items([]JsonValue)` force an
-  indirect representation. Decide early between automatic boxing of recursive
-  variants and requiring the user to go through a class or array.
-- **Validation:** non-exhaustive `match` fixtures in `tests/fail`; payload
-  reference counting in `tests/pass` under the address, leak and UB checks.
-
-## M2 — `for` and iteration
+## M2 — `for` and iteration — Implemented
 
 ```skuld
 for i in 0..len(bytes) { ... }
 for item in items { ... }
 ```
 
-Small, and every later milestone consists of writing scanners and parsers.
-It also defers the callback question honestly: `for` covers most of what
-`numbers.sort((a, b) => a - b)` in `test.skuld` is reaching for, without fixing
-a lambda syntax the user has explicitly marked for revision.
-
-- **In scope:** half-open ranges `a..b`, iteration over `[]T` by value, the
-  existing `break` and `continue`.
-- **Out of scope:** a generic iterator protocol, lambdas, `map`/`filter`,
-  `sort`.
-- **Open risk:** the temptation to introduce an `Iterator` interface. With no
-  interfaces and no generics, a `for` specialized to arrays and ranges in the
-  checker is the honest construct; a generic protocol would be generics by
-  accident.
+Implemented with half-open integer ranges `a..b` and iteration over arrays
+`[]T` by value. Range endpoints and collections evaluate once before iteration;
+if `start >= end` or the collection is empty, the loop executes 0 times.
+Loop variables are immutable bindings scoped to the body. Managed array elements
+are retained and released cleanly on every iteration and exit path (`break`,
+`continue`, `return`). `break` and `continue` naturally bind to the loop.
 
 ## M3 — `Result<T, E>` and propagation
 

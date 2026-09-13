@@ -235,7 +235,7 @@ fn invalid_sources_produce_specific_diagnostics() {
             "begin a block",
         ),
         (
-            "func f() { for i in xs {} }",
+            "func f() { import math }",
             DiagnosticCode::UnsupportedSyntax,
             "later milestone",
         ),
@@ -580,4 +580,52 @@ fn option_syntax_errors_and_nesting_are_diagnosed() {
             .iter()
             .any(|d| d.code == DiagnosticCode::SyntaxLimit)
     );
+}
+
+#[test]
+fn colon_return_and_direct_if_let_parse() {
+    let source = "struct Calc { compute(x: int): int { return x } }\nfunc add(a: int, b: int): int { return a + b }\nfunc main() { if let ans = None {} }";
+    let result = parse(source);
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let program = result.program.expect("parsed");
+    assert_eq!(program.functions.len(), 2);
+    assert_eq!(program.structs.len(), 1);
+}
+
+#[test]
+fn enum_declarations_and_match_statements_parse() {
+    let source = "enum Status {\n    Pending,\n    Active(int),\n    Cancelled\n}\nfunc main() {\n    match s {\n        Status.Pending: return\n        Status.Active(code): { print(code) }\n        _: {}\n    }\n}";
+    let result = parse(source);
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let program = result.program.expect("parsed");
+    assert_eq!(program.enums.len(), 1);
+    assert_eq!(program.enums[0].name.text, "Status");
+    assert_eq!(program.enums[0].variants.len(), 3);
+    assert_eq!(program.enums[0].variants[1].name.text, "Active");
+    assert!(program.enums[0].variants[1].payload.is_some());
+}
+
+#[test]
+fn for_loop_statements_parse() {
+    let source = "func main() {\n    for i in 0..10 {\n        print(i)\n    }\n    for item in items {\n        print(item)\n    }\n}";
+    let result = parse(source);
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let program = result.program.expect("parsed");
+    assert_eq!(program.functions.len(), 1);
+    let body = &program.functions[0].body;
+    assert_eq!(body.statements.len(), 2);
+    assert!(matches!(
+        body.statements[0].kind,
+        StatementKind::For {
+            iterable: ForIterable::Range { .. },
+            ..
+        }
+    ));
+    assert!(matches!(
+        body.statements[1].kind,
+        StatementKind::For {
+            iterable: ForIterable::Expr(_),
+            ..
+        }
+    ));
 }

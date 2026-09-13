@@ -1,0 +1,21 @@
+func consume(values: []string) -> Option<string> { return values.pop() }
+func main() {
+    let values: []string = []
+    var i = 0
+    while i < 10 {
+        i += 1
+        values.push("text" + "!")
+        if i == 1 { continue }
+        if let Some(text) = consume(values) {
+            if i == 4 { break }
+            print(text)
+        }
+    }
+    print(values.len())
+    let flags: []bool = []
+    flags.push(true)
+    print(flags.pop().is_some())
+    let floats = [1.5]
+    floats.insert(0, 2.5)
+    if let Some(n) = floats.remove(1) { print(n) }
+}

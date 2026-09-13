@@ -1,0 +1,5 @@
+struct Cell { value: int }
+func shrink(cells: []Cell) -> int { cells.pop()
+return 2 }
+func main() { let x = [Cell { value: 1 }]
+x[0].value = shrink(x) }

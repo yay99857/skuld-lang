@@ -7,6 +7,7 @@ pub fn emit_c(program: &Program) -> String {
         indent: 0,
         next_temp: 0,
         structs: program.structs.clone(),
+        enums: program.enums.clone(),
         arrays: program.arrays.clone(),
         options: program.options.clone(),
     };
@@ -20,10 +21,11 @@ pub fn emit_c(program: &Program) -> String {
             emitter.line(&format!("typedef struct skuld_s{index} skuld_s{index};"));
         }
     }
-    // Inline structs and Options must be complete before embedding them.
+    // Inline structs, enums and Options must be complete before embedding them.
     let types: Vec<_> = (0..program.structs.len())
         .map(|i| Type::Struct(crate::types::StructId(i)))
         .chain((0..program.options.len()).map(|i| Type::Option(crate::types::OptionId(i))))
+        .chain((0..program.enums.len()).map(|i| Type::Enum(crate::types::EnumId(i))))
         .collect();
     let mut order = Vec::new();
     while order.len() < types.len() {
@@ -35,6 +37,7 @@ pub fn emit_c(program: &Program) -> String {
             let complete = |field: Type| match field {
                 Type::Struct(id) => program.structs[id.0].reference || order.contains(&field),
                 Type::Option(_) => order.contains(&field),
+                Type::Enum(_) => order.contains(&field),
                 _ => true,
             };
             let ready = match ty {
@@ -43,6 +46,10 @@ pub fn emit_c(program: &Program) -> String {
                     .iter()
                     .all(|field| complete(field.ty)),
                 Type::Option(id) => complete(program.options[id.0].element),
+                Type::Enum(id) => program.enums[id.0]
+                    .variants
+                    .iter()
+                    .all(|v| v.payload.is_none_or(complete)),
                 _ => unreachable!(),
             };
             if ready {
@@ -61,6 +68,36 @@ pub fn emit_c(program: &Program) -> String {
                     emitter.c_type(program.options[id.0].element),
                     id.0
                 ));
+                continue;
+            }
+            Type::Enum(id) => {
+                let declaration = &program.enums[id.0];
+                emitter.line("");
+                emitter.line(&format!(
+                    "/* enum {}: source id {} */",
+                    declaration.name, id.0
+                ));
+                emitter.line("typedef struct {");
+                emitter.indent += 1;
+                emitter.line("int64_t tag;");
+                let has_payload = declaration.variants.iter().any(|v| v.payload.is_some());
+                if has_payload {
+                    emitter.line("union {");
+                    emitter.indent += 1;
+                    for (v_index, variant) in declaration.variants.iter().enumerate() {
+                        if let Some(payload_ty) = variant.payload {
+                            emitter.line(&format!(
+                                "{} v{v_index}; /* {} */",
+                                emitter.c_type(payload_ty),
+                                variant.name
+                            ));
+                        }
+                    }
+                    emitter.indent -= 1;
+                    emitter.line("} payload;");
+                }
+                emitter.indent -= 1;
+                emitter.line(&format!("}} skuld_e{};", id.0));
                 continue;
             }
             Type::Struct(id) => id.0,
@@ -105,7 +142,7 @@ pub fn emit_c(program: &Program) -> String {
     // Complete array layouts after value types; arrays themselves are pointers.
     for (index, array) in program.arrays.iter().enumerate() {
         emitter.line(&format!(
-            "struct skuld_a{index} {{ skuld_object header; size_t len; {} data[]; }};",
+            "struct skuld_a{index} {{ skuld_object header; size_t len; size_t capacity; {} *data; }};",
             emitter.c_type(array.element)
         ));
     }
@@ -113,6 +150,7 @@ pub fn emit_c(program: &Program) -> String {
         .map(|i| Type::Struct(crate::types::StructId(i)))
         .chain((0..program.arrays.len()).map(|i| Type::Array(crate::types::ArrayId(i))))
         .chain((0..program.options.len()).map(|i| Type::Option(crate::types::OptionId(i))))
+        .chain((0..program.enums.len()).map(|i| Type::Enum(crate::types::EnumId(i))))
         .filter(|ty| emitter.managed(*ty))
         .collect();
     // Prototypes permit forward references and mutually referring classes.
@@ -201,6 +239,7 @@ struct Emitter {
     next_temp: usize,
     /// Needed to decide which types own a reference and must be released.
     structs: Vec<StructInfo>,
+    enums: Vec<crate::types::EnumInfo>,
     arrays: Vec<crate::types::ArrayInfo>,
     options: Vec<crate::types::OptionInfo>,
 }
@@ -213,6 +252,7 @@ fn type_name(structs: &[StructInfo], ty: Type) -> String {
         Type::Void => "void".into(),
         Type::Weak(_) => "skuld_weak".into(),
         Type::Option(id) => format!("skuld_o{}", id.0),
+        Type::Enum(id) => format!("skuld_e{}", id.0),
         Type::Array(id) => format!("skuld_a{} *", id.0),
         // A class value is a pointer to a shared object; a struct is the
         // object itself, and C assignment copies it, which is value semantics.
@@ -263,12 +303,81 @@ impl Emitter {
             Type::Struct(id) => format!("skuld_s{}", id.0),
             Type::Array(id) => format!("skuld_a{}", id.0),
             Type::Option(id) => format!("skuld_o{}", id.0),
+            Type::Enum(id) => format!("skuld_e{}", id.0),
             _ => unreachable!("aggregate type"),
         }
+    }
+    fn enum_helpers(&mut self, id: crate::types::EnumId) {
+        let name = format!("skuld_e{}", id.0);
+        let managed_variants: Vec<(usize, Type)> = self.enums[id.0]
+            .variants
+            .iter()
+            .enumerate()
+            .filter_map(|(i, v)| v.payload.filter(|ty| self.managed(*ty)).map(|ty| (i, ty)))
+            .collect();
+        self.line(&format!(
+            "static inline {name} {name}_retain({name} value) {{"
+        ));
+        self.indent += 1;
+        if !managed_variants.is_empty() {
+            self.line("switch (value.tag) {");
+            self.indent += 1;
+            for &(index, payload) in &managed_variants {
+                self.line(&format!("case {index}:"));
+                self.indent += 1;
+                let retained = self.retained(payload, &format!("value.payload.v{index}"));
+                self.line(&format!("value.payload.v{index} = {retained};"));
+                self.line("break;");
+                self.indent -= 1;
+            }
+            self.line("default: break;");
+            self.indent -= 1;
+            self.line("}");
+        }
+        self.line("return value;");
+        self.indent -= 1;
+        self.line("}");
+
+        self.line(&format!(
+            "static inline void {name}_release({name} *slot) {{"
+        ));
+        self.indent += 1;
+        if !managed_variants.is_empty() {
+            self.line("switch (slot->tag) {");
+            self.indent += 1;
+            for &(index, payload) in &managed_variants {
+                let release_fn = self.release_function(payload).unwrap();
+                self.line(&format!("case {index}:"));
+                self.indent += 1;
+                self.line(&format!("{release_fn}(&slot->payload.v{index});"));
+                self.line("break;");
+                self.indent -= 1;
+            }
+            self.line("default: break;");
+            self.indent -= 1;
+            self.line("}");
+        }
+        self.line("slot->tag = -1;");
+        self.indent -= 1;
+        self.line("}");
+
+        self.line(&format!(
+            "static inline void {name}_assign({name} *slot, {name} value) {{"
+        ));
+        self.indent += 1;
+        self.line(&format!("{name} previous = *slot;"));
+        self.line(&format!("*slot = {name}_retain(value);"));
+        self.line(&format!("{name}_release(&previous);"));
+        self.indent -= 1;
+        self.line("}");
     }
     fn aggregate_helpers(&mut self, ty: Type) {
         if let Type::Option(id) = ty {
             self.option_helpers(id);
+            return;
+        }
+        if let Type::Enum(id) = ty {
+            self.enum_helpers(id);
             return;
         }
         let name = self.c_type(ty);
@@ -307,6 +416,9 @@ impl Emitter {
                 self.line(&format!(
                     "for (size_t i = 0; i < value->len; ++i) {release}(&value->data[i]);"
                 ));
+            }
+            if matches!(ty, Type::Array(_)) {
+                self.line("free(value->data);");
             }
             self.indent -= 1;
             self.line("}");
@@ -356,22 +468,95 @@ impl Emitter {
     }
     fn allocate(&mut self, ty: Type, count: usize, byte: usize) -> String {
         let prefix = self.aggregate_prefix(ty);
-        let element = match ty {
-            Type::Array(id) => format!("sizeof({})", self.c_type(self.arrays[id.0].element)),
-            _ => "0".into(),
-        };
         let name = self.store(
             ty,
-            &format!("skuld_allocate(sizeof({prefix}), {count}, {element}, {byte})"),
+            &format!("skuld_allocate(sizeof({prefix}), 0, 0, {byte})"),
             true,
         );
         self.line(&format!(
             "skuld_object_init(&{name}->header, {prefix}_destroy);"
         ));
-        if matches!(ty, Type::Array(_)) {
+        if let Type::Array(id) = ty {
+            self.line(&format!(
+                "{name}->len = 0; {name}->capacity = 0; {name}->data = NULL;"
+            ));
+            self.line(&format!("{name}->data = skuld_array_reserve({name}->data, &{name}->capacity, {count}, sizeof({}), {byte});", self.c_type(self.arrays[id.0].element)));
             self.line(&format!("{name}->len = {count};"));
         }
         name
+    }
+    fn array_call(
+        &mut self,
+        object: &Expr,
+        method: ArrayMethod,
+        arguments: &[Expr],
+        expr: &Expr,
+    ) -> String {
+        let Type::Array(id) = object.ty else {
+            unreachable!("checked array method")
+        };
+        let element = self.arrays[id.0].element;
+        let array = self.expression(object);
+        let arguments: Vec<_> = arguments.iter().map(|arg| self.expression(arg)).collect();
+        let byte = expr.span.start;
+        match method {
+            ArrayMethod::Push | ArrayMethod::Insert => {
+                let index = if matches!(method, ArrayMethod::Insert) {
+                    self.temporary(
+                        Type::Int,
+                        &format!(
+                            "(int64_t)skuld_insert_index({}, {array}->len, {byte})",
+                            arguments[0]
+                        ),
+                    )
+                } else {
+                    self.temporary(Type::Int, &format!("(int64_t){array}->len"))
+                };
+                self.line(&format!("{array}->data = skuld_array_reserve({array}->data, &{array}->capacity, skuld_array_next_length({array}->len, {byte}), sizeof({}), {byte});", self.c_type(element)));
+                self.line(&format!("if ((size_t){index} < {array}->len) memmove(&{array}->data[{index} + 1], &{array}->data[{index}], ({array}->len - (size_t){index}) * sizeof({}));", self.c_type(element)));
+                let value = &arguments[if matches!(method, ArrayMethod::Insert) {
+                    1
+                } else {
+                    0
+                }];
+                self.line(&format!(
+                    "{array}->data[{index}] = {};",
+                    self.retained(element, value)
+                ));
+                self.line(&format!("{array}->len += 1;"));
+                String::new()
+            }
+            ArrayMethod::Pop | ArrayMethod::Remove => {
+                let result = self.store(expr.ty, &format!("({}){{0}}", self.c_type(expr.ty)), true);
+                let (condition, index) = if matches!(method, ArrayMethod::Pop) {
+                    (format!("{array}->len != 0"), format!("{array}->len - 1"))
+                } else {
+                    (
+                        format!(
+                            "{} >= 0 && (uint64_t){} < {array}->len",
+                            arguments[0], arguments[0]
+                        ),
+                        arguments[0].clone(),
+                    )
+                };
+                self.line(&format!("if ({condition}) {{"));
+                self.indent += 1;
+                let index = self.temporary(Type::Int, &format!("(int64_t)({index})"));
+                // Move ownership out; the removed slot no longer owns it.
+                self.line(&format!(
+                    "{result}.some = true; {result}.value = {array}->data[{index}];"
+                ));
+                self.line(&format!("{array}->len -= 1;"));
+                self.line(&format!("if ((size_t){index} < {array}->len) memmove(&{array}->data[{index}], &{array}->data[{index} + 1], ({array}->len - (size_t){index}) * sizeof({}));", self.c_type(element)));
+                self.line(&format!(
+                    "memset(&{array}->data[{array}->len], 0, sizeof({}));",
+                    self.c_type(element)
+                ));
+                self.indent -= 1;
+                self.line("}");
+                result
+            }
+        }
     }
     fn index_place(&mut self, object: &Expr, index: &Expr) -> String {
         let value = self.expression(object);
@@ -383,7 +568,12 @@ impl Emitter {
                 index.span.start
             ),
         );
-        format!("{value}->data[{checked}]")
+        // Re-read storage and recheck bounds whenever the place is used: an
+        // assignment RHS can grow, shrink or reorder this shared array.
+        format!(
+            "{value}->data[skuld_index({checked}, {value}->len, {})]",
+            index.span.start
+        )
     }
     fn place(&mut self, place: &Place) -> String {
         match place {
@@ -413,6 +603,10 @@ impl Emitter {
         match ty {
             Type::String | Type::Array(_) | Type::Weak(_) => true,
             Type::Option(id) => self.managed(self.options[id.0].element),
+            Type::Enum(id) => self.enums[id.0]
+                .variants
+                .iter()
+                .any(|v| v.payload.is_some_and(|p| self.managed(p))),
             // A class always owns a reference; a struct owns one only if a
             // field does.
             Type::Struct(id) => {
@@ -432,6 +626,7 @@ impl Emitter {
             Type::Weak(_) => format!("skuld_weak_retain({value})"),
             Type::Array(id) => format!("skuld_a{}_retain({value})", id.0),
             Type::Struct(id) if self.managed(ty) => format!("skuld_s{}_retain({value})", id.0),
+            Type::Enum(id) if self.managed(ty) => format!("skuld_e{}_retain({value})", id.0),
             _ => value.into(),
         }
     }
@@ -442,6 +637,7 @@ impl Emitter {
             Type::Weak(_) => Some("skuld_weak_release".into()),
             Type::Array(id) => Some(format!("skuld_a{}_release", id.0)),
             Type::Struct(id) if self.managed(ty) => Some(format!("skuld_s{}_release", id.0)),
+            Type::Enum(id) if self.managed(ty) => Some(format!("skuld_e{}_release", id.0)),
             _ => None,
         }
     }
@@ -460,6 +656,7 @@ impl Emitter {
             Type::Weak(_) => Some("skuld_weak_assign".into()),
             Type::Array(id) => Some(format!("skuld_a{}_assign", id.0)),
             Type::Struct(id) if self.managed(ty) => Some(format!("skuld_s{}_assign", id.0)),
+            Type::Enum(id) if self.managed(ty) => Some(format!("skuld_e{}_assign", id.0)),
             _ => None,
         }
     }
@@ -615,9 +812,127 @@ impl Emitter {
             }
             // C binds these to the innermost enclosing loop, which is exactly
             // how they are checked. In a while, `continue` reaches the emitted
-            // condition test at the top of the loop.
             StatementKind::Break => self.line("break;"),
             StatementKind::Continue => self.line("continue;"),
+            StatementKind::Match { value, arms } => {
+                let Type::Enum(id) = value.ty else {
+                    unreachable!("checked match")
+                };
+                let enum_info = self.enums[id.0].clone();
+                let target = self.expression(value);
+                let mut first = true;
+                for arm in arms {
+                    match &arm.pattern {
+                        MatchPattern::Variant {
+                            variant_index,
+                            binding,
+                        } => {
+                            let cond = if first {
+                                first = false;
+                                format!("if ({target}.tag == {variant_index}) {{")
+                            } else {
+                                format!("else if ({target}.tag == {variant_index}) {{")
+                            };
+                            self.line(&cond);
+                            self.indent += 1;
+                            if let Some(binding_id) = binding {
+                                let payload_ty = enum_info.variants[*variant_index]
+                                    .payload
+                                    .expect("checked variant payload");
+                                self.line(&format!(
+                                    "{}{} skuld_v{} = {};",
+                                    self.cleanup(payload_ty),
+                                    self.c_type(payload_ty),
+                                    binding_id.0,
+                                    self.retained(
+                                        payload_ty,
+                                        &format!("{target}.payload.v{variant_index}")
+                                    )
+                                ));
+                                self.line(&format!("(void)skuld_v{};", binding_id.0));
+                            }
+                            self.block_contents(&arm.body);
+                            self.indent -= 1;
+                            self.line("}");
+                        }
+                        MatchPattern::Wildcard => {
+                            let cond = if first {
+                                first = false;
+                                "if (true) {".to_string()
+                            } else {
+                                "else {".to_string()
+                            };
+                            self.line(&cond);
+                            self.indent += 1;
+                            self.block_contents(&arm.body);
+                            self.indent -= 1;
+                            self.line("}");
+                        }
+                    }
+                }
+            }
+            StatementKind::For {
+                variable,
+                iterable,
+                body,
+            } => {
+                self.line("{");
+                self.indent += 1;
+                match iterable {
+                    ForIterable::Range { start, end } => {
+                        let start_val = self.expression(start);
+                        let end_val = self.expression(end);
+                        let start_temp = self.next_temp;
+                        self.next_temp += 1;
+                        let end_temp = self.next_temp;
+                        self.next_temp += 1;
+                        self.line(&format!("int64_t skuld_t{start_temp} = {start_val};"));
+                        self.line(&format!("int64_t skuld_t{end_temp} = {end_val};"));
+                        self.line(&format!(
+                            "for (int64_t skuld_v{} = skuld_t{start_temp}; skuld_v{} < skuld_t{end_temp}; skuld_v{}++) {{",
+                            variable.0, variable.0, variable.0
+                        ));
+                        self.indent += 1;
+                        self.line(&format!("(void)skuld_v{};", variable.0));
+                        self.block_contents(body);
+                        self.indent -= 1;
+                        self.line("}");
+                    }
+                    ForIterable::Array(collection) => {
+                        let arr_val = self.expression(collection);
+                        let arr_temp = self.next_temp;
+                        self.next_temp += 1;
+                        let arr_c_ty = self.c_type(collection.ty);
+                        self.line(&format!("{arr_c_ty} skuld_t{arr_temp} = {arr_val};"));
+                        let idx_temp = self.next_temp;
+                        self.next_temp += 1;
+                        self.line(&format!(
+                            "for (int64_t skuld_t{idx_temp} = 0; skuld_t{idx_temp} < skuld_t{arr_temp}->len; skuld_t{idx_temp}++) {{"
+                        ));
+                        self.indent += 1;
+                        let Type::Array(array_id) = collection.ty else {
+                            unreachable!("checked array for loop")
+                        };
+                        let elem_ty = self.arrays[array_id.0].element;
+                        let cleanup = self.cleanup(elem_ty);
+                        let elem_c_ty = self.c_type(elem_ty);
+                        let retained_elem = self.retained(
+                            elem_ty,
+                            &format!("skuld_t{arr_temp}->data[skuld_t{idx_temp}]"),
+                        );
+                        self.line(&format!(
+                            "{cleanup}{elem_c_ty} skuld_v{} = {retained_elem};",
+                            variable.0
+                        ));
+                        self.line(&format!("(void)skuld_v{};", variable.0));
+                        self.block_contents(body);
+                        self.indent -= 1;
+                        self.line("}");
+                    }
+                }
+                self.indent -= 1;
+                self.line("}");
+            }
         }
     }
     fn expression(&mut self, expr: &Expr) -> String {
@@ -694,6 +1009,11 @@ impl Emitter {
                 let place = self.index_place(object, index);
                 self.temporary(expr.ty, &place)
             }
+            ExprKind::ArrayCall {
+                object,
+                method,
+                arguments,
+            } => self.array_call(object, *method, arguments, expr),
             ExprKind::ArrayLen(object) => {
                 let value = self.expression(object);
                 self.temporary(Type::Int, &format!("(int64_t){value}->len"))
@@ -726,6 +1046,22 @@ impl Emitter {
             }
             ExprKind::None => {
                 self.store(expr.ty, &format!("({}){{0}}", self.c_type(expr.ty)), true)
+            }
+            ExprKind::EnumVariant {
+                variant_index,
+                payload,
+            } => {
+                let c_ty = self.c_type(expr.ty);
+                let value = if let Some(payload_expr) = payload {
+                    let rendered = self.expression(payload_expr);
+                    let retained = self.retained(payload_expr.ty, &rendered);
+                    format!(
+                        "({c_ty}){{.tag = {variant_index}, .payload = {{.v{variant_index} = {retained}}}}}"
+                    )
+                } else {
+                    format!("({c_ty}){{.tag = {variant_index}}}")
+                };
+                self.store(expr.ty, &value, true)
             }
             ExprKind::IsSome(value) | ExprKind::IsNone(value) => {
                 let value = self.expression(value);

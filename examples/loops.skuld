@@ -1,4 +1,4 @@
-func sum_to(limit: int) -> int {
+func sum_to(limit: int): int {
     var total = 0
     var value = 1
     while value <= limit {
@@ -8,7 +8,7 @@ func sum_to(limit: int) -> int {
     return total
 }
 
-func first_multiple(of: int, above: int) -> int {
+func first_multiple(of: int, above: int): int {
     var candidate = above
     loop {
         candidate += 1

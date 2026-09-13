@@ -22,6 +22,7 @@ pub enum SymbolKind {
     Function,
     Parameter,
     Variable(Mutability),
+    Enum,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Symbol {
@@ -73,7 +74,11 @@ pub fn resolve(program: &Program) -> ResolveOutput {
     resolver.insert("print", SymbolKind::Builtin(Builtin::Print), None);
     resolver.insert("Some", SymbolKind::Builtin(Builtin::Some), None);
     resolver.insert("None", SymbolKind::Builtin(Builtin::None), None);
+    resolver.insert("null", SymbolKind::Builtin(Builtin::None), None);
     resolver.enter(program.span);
+    for declaration in &program.enums {
+        resolver.declare(&declaration.name, SymbolKind::Enum);
+    }
     for function in &program.functions {
         resolver.declare(&function.name, SymbolKind::Function);
     }
@@ -257,6 +262,40 @@ impl Resolver {
             StatementKind::Loop { body } => self.block(body),
             // Jumps bind to the innermost loop; they introduce no names.
             StatementKind::Break | StatementKind::Continue => {}
+            StatementKind::Match { value, arms } => {
+                self.expression(value);
+                for arm in arms {
+                    self.enter(arm.body.span);
+                    if let MatchPattern::Variant {
+                        binding: Some(binding),
+                        ..
+                    } = &arm.pattern
+                    {
+                        self.declare(binding, SymbolKind::Variable(Mutability::Immutable));
+                    }
+                    self.statements(&arm.body);
+                    self.leave();
+                }
+            }
+            StatementKind::For {
+                variable,
+                iterable,
+                body,
+            } => {
+                match iterable {
+                    ForIterable::Range { start, end } => {
+                        self.expression(start);
+                        self.expression(end);
+                    }
+                    ForIterable::Expr(collection) => {
+                        self.expression(collection);
+                    }
+                }
+                self.enter(body.span);
+                self.declare(variable, SymbolKind::Variable(Mutability::Immutable));
+                self.statements(body);
+                self.leave();
+            }
         }
     }
     fn expression(&mut self, expr: &Expr) {

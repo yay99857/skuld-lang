@@ -174,6 +174,8 @@ cargo run -p skuld-cli -- run examples/classes.skuld
 cargo run -p skuld-cli -- run examples/weak.skuld
 cargo run -p skuld-cli -- run examples/arrays.skuld
 cargo run -p skuld-cli -- run examples/options.skuld
+cargo run -p skuld-cli -- run examples/enums.skuld
+cargo run -p skuld-cli -- run examples/for_loops.skuld
 ```
 
 `Option<T>`, `Some(value)` and `None` represent optional values without null.
@@ -181,12 +183,20 @@ Use `if let Some(value) = expression { ... } else { ... }` to access a payload;
 `is_some()` and `is_none()` query presence. Options have value semantics and
 an inline representation, with reference counting for managed payloads.
 
-This closes the Option and safe weak-promotion milestone as well as classes,
-weak references and initial arrays. Array growth and iteration, Result,
+`enum` declares a sum type with unit and payload variants (`enum Status { Active, Inactive(int) }`).
+`match` statements provide exhaustive pattern matching (`match val { Status.Active: ..., Status.Inactive(code): { ... }, _: ... }`)
+with arm bindings and reference-counted managed variant payloads.
+
+`for` loops iterate over half-open integer ranges `a..b` and arrays `[]T` by value
+(`for i in 0..10 { ... }`, `for item in items { ... }`). Loop variables are immutable and
+scoped to the body; managed array elements retain and release per iteration. `break` and `continue`
+are supported.
+
+This closes the M2 (`for` and iteration) milestone as well as M1 (Enums and `match`), Option, classes,
+weak references and arrays. Result (M3), bytes and string slices (M4),
 modules, a standard library, the official
 formatter, broader tooling, portability and eventual self-hosting remain ahead;
-the next implementation milestone has not been selected. `ROADMAP.md` proposes
-an ordering for those milestones and records the design questions they depend
-on; everything in it is Planned.
+`ROADMAP.md` proposes an ordering for those milestones and records the design
+questions they depend on.
 Status is reported as completed milestones, not as a completion percentage, and
 implies neither production readiness nor measured Go/Rust performance.

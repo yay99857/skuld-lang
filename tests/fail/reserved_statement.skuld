@@ -1,5 +1,3 @@
 func main() {
-    for item in items {
-        print(item)
-    }
+    static x = 1
 }

@@ -102,17 +102,26 @@ accurate; documenting a future feature is not a request to implement it.
   empty `weak()`. `upgrade()` returns an owning `Option<Class>` without trapping
   on expiration; `alive()` checks liveness and `get()` retains or traps.
   Weak references do not keep managed fields alive. No normal null value exists.
-- Builtin `Option<T>` uses inline tag/payload value semantics. `Some(value)` and
-  contextually typed `None` construct values; `is_some()`/`is_none()` query them.
-  `if let Some(name) = value` binds an immutable payload only in its then scope.
-  Managed payloads retain/release only when present. General generics, patterns,
-  enums and Result remain future work.
-- Arrays use `[]T`, literals, checked int indexes and `len()`. Length is fixed;
-  references share element mutations even through `let`. Managed elements are
-  retained and released. Growth, sorting, callbacks and `for` remain future work.
-- Completed: classes, weak references, initial arrays, Option and safe weak
-  promotion. The next milestone
-  has not been selected; do not infer authorization for further features.
+- Builtin `Option<T>` uses inline tag/payload value semantics. Contextual `null` (and
+  `None`) represents absent values; values wrap implicitly into expected Options.
+  `if let name = value` (and `if let Some(name)`) binds an immutable payload in its then scope.
+  Managed payloads retain/release only when present. General generics, interfaces
+  and Result remain future work.
+- Arrays use `[]T`, literals, checked int indexes, `len()`, `push()`, `insert()`,
+  `pop()` and `remove()`. Capacity grows geometrically; references share element
+  mutations even through `let`. Managed elements are retained and released. Slicing,
+  sorting and callbacks remain future work.
+- Enums are user-declared sum types with unit and payload variants: `enum Name { Variant, Variant(Type) }`.
+  Pattern matching uses `match value { Pattern: stmt, Pattern: { ... }, _: ... }` with exhaustiveness
+  checking, immutable payload arm bindings, and C codegen retaining/releasing managed variant payloads.
+- `for` loops iterate over half-open integer ranges `a..b` and arrays `[]T` by value:
+  `for i in 0..10 { ... }` and `for item in items { ... }`. Loop variables are immutable
+  and scoped to the body. Managed array elements retain and release per iteration.
+  `break` and `continue` naturally bind to the loop.
+- Completed: classes, weak references, dynamic arrays (push, insert, pop, remove),
+  colon return type syntax, Option with null, safe weak promotion, M1 (Enums and match),
+  and M2 (`for` and iteration). The next milestone is M3 (`Result<T, E>` and propagation);
+  do not infer authorization for further features without explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
   and string slices → `extern "C"` FFI, with modules and networking beyond it.
   It is a plan, not a selection: every entry is Planned, and starting one still

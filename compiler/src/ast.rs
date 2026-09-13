@@ -4,7 +4,22 @@ use crate::span::Span;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
     pub structs: Vec<StructDecl>,
+    pub enums: Vec<EnumDecl>,
     pub functions: Vec<FunctionDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumDecl {
+    pub name: Name,
+    pub variants: Vec<VariantDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariantDecl {
+    pub name: Name,
+    pub payload: Option<TypeRef>,
     pub span: Span,
 }
 
@@ -120,6 +135,39 @@ pub enum StatementKind {
     },
     Break,
     Continue,
+    Match {
+        value: Expr,
+        arms: Vec<MatchArm>,
+    },
+    For {
+        variable: Name,
+        iterable: ForIterable,
+        body: Block,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ForIterable {
+    Range { start: Expr, end: Expr },
+    Expr(Expr),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchArm {
+    pub pattern: MatchPattern,
+    pub body: Block,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MatchPattern {
+    Variant {
+        enum_name: Option<Name>,
+        variant_name: Name,
+        binding: Option<Name>,
+        span: Span,
+    },
+    Wildcard(Span),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

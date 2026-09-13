@@ -1,0 +1,30 @@
+func main() {
+    print("--- Counting 0 to 4 ---")
+    for i in 0..5 {
+        print(i)
+    }
+
+    print("--- Iterating array ---")
+    let languages = ["Skuld", "Go", "Rust"]
+    for lang in languages {
+        print(lang)
+    }
+
+    print("--- Break and continue ---")
+    for n in 1..10 {
+        if n % 2 == 0 {
+            continue
+        }
+        if n > 7 {
+            break
+        }
+        print(n)
+    }
+
+    print("--- Nested loop (multiplication) ---")
+    for i in 1..4 {
+        for j in 1..4 {
+            print("${i} * ${j} = ${i * j}")
+        }
+    }
+}

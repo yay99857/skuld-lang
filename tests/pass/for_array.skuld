@@ -1,0 +1,40 @@
+class Hero {
+    name: string
+    level: int
+}
+
+func main() {
+    let numbers = [10, 20, 30]
+    var sum = 0
+    for n in numbers {
+        sum += n
+    }
+    print(sum)
+
+    let words = ["alpha", "beta", "gamma"]
+    for w in words {
+        if w == "beta" {
+            continue
+        }
+        print(w)
+    }
+
+    let heroes = [new Hero(name: "Aragorn", level: 20), new Hero(name: "Legolas", level: 19)]
+    for h in heroes {
+        print("${h.name} lvl ${h.level}")
+    }
+
+    // Direct temporary array literal
+    for fruit in ["apple", "banana", "orange"] {
+        if fruit == "banana" {
+            break
+        }
+        print(fruit)
+    }
+
+    // Empty array
+    let empty: []string = []
+    for s in empty {
+        print("never")
+    }
+}

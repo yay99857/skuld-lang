@@ -62,6 +62,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
     }
     h::Program {
         structs: typed.structs.clone(),
+        enums: typed.enums.clone(),
         arrays: typed.arrays.clone(),
         options: typed.options.clone(),
         functions,
@@ -160,6 +161,65 @@ fn statement(source: &ast::Statement, typed: &TypedProgram) -> h::Statement {
         },
         ast::StatementKind::Break => h::StatementKind::Break,
         ast::StatementKind::Continue => h::StatementKind::Continue,
+        ast::StatementKind::Match { value, arms } => {
+            let lowered_value = expression(value, typed);
+            let Type::Enum(enum_id) = lowered_value.ty else {
+                unreachable!("checked match target must be enum");
+            };
+            let lowered_arms = arms
+                .iter()
+                .map(|arm| {
+                    let pattern = match &arm.pattern {
+                        ast::MatchPattern::Wildcard(_) => h::MatchPattern::Wildcard,
+                        ast::MatchPattern::Variant {
+                            variant_name,
+                            binding,
+                            ..
+                        } => {
+                            let variant_index = typed.enums[enum_id.0]
+                                .find_variant(&variant_name.text)
+                                .expect("checked variant");
+                            let binding_id = binding
+                                .as_ref()
+                                .map(|name| typed.resolution.declarations[&name.span.start]);
+                            h::MatchPattern::Variant {
+                                variant_index,
+                                binding: binding_id,
+                            }
+                        }
+                    };
+                    h::MatchArm {
+                        pattern,
+                        body: block(&arm.body, typed),
+                    }
+                })
+                .collect();
+            h::StatementKind::Match {
+                value: lowered_value,
+                arms: lowered_arms,
+            }
+        }
+        ast::StatementKind::For {
+            variable,
+            iterable,
+            body,
+        } => {
+            let symbol_id = typed.resolution.declarations[&variable.span.start];
+            let lowered_iterable = match iterable {
+                ast::ForIterable::Range { start, end } => h::ForIterable::Range {
+                    start: expression(start, typed),
+                    end: expression(end, typed),
+                },
+                ast::ForIterable::Expr(collection) => {
+                    h::ForIterable::Array(expression(collection, typed))
+                }
+            };
+            h::StatementKind::For {
+                variable: symbol_id,
+                iterable: lowered_iterable,
+                body: block(body, typed),
+            }
+        }
     };
     h::Statement {
         kind,
@@ -213,17 +273,29 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
             h::ExprKind::StructLiteral { id, fields: values }
         }
         ast::ExprKind::Member { object, member } => {
-            let Some(Type::Struct(id)) = typed.expression_type(object.span) else {
-                unreachable!("internal compiler bug: unchecked field access")
-            };
-            let index = typed.structs[id.0]
-                .fields
-                .iter()
-                .position(|field| field.name == member.text)
-                .expect("internal compiler bug: checked access to a missing field");
-            h::ExprKind::Field {
-                object: Box::new(expression(object, typed)),
-                index,
+            if let ast::ExprKind::Identifier(enum_ident) = &object.kind
+                && let Some(&enum_id) = typed.enum_names.get(&enum_ident.text)
+            {
+                let variant_index = typed.enums[enum_id.0]
+                    .find_variant(&member.text)
+                    .expect("checked variant");
+                h::ExprKind::EnumVariant {
+                    variant_index,
+                    payload: None,
+                }
+            } else {
+                let Some(Type::Struct(id)) = typed.expression_type(object.span) else {
+                    unreachable!("internal compiler bug: unchecked field access")
+                };
+                let index = typed.structs[id.0]
+                    .fields
+                    .iter()
+                    .position(|field| field.name == member.text)
+                    .expect("internal compiler bug: checked access to a missing field");
+                h::ExprKind::Field {
+                    object: Box::new(expression(object, typed)),
+                    index,
+                }
             }
         }
         ast::ExprKind::Literal(literal) => match literal {
@@ -293,7 +365,41 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
         },
         ast::ExprKind::Call { callee, arguments } => {
             if let ast::ExprKind::Member { object, member } = &strip_groups(callee).kind {
+                if let ast::ExprKind::Identifier(enum_ident) = &object.kind
+                    && let Some(&enum_id) = typed.enum_names.get(&enum_ident.text)
+                {
+                    let variant_index = typed.enums[enum_id.0]
+                        .find_variant(&member.text)
+                        .expect("checked enum variant");
+                    let payload = Some(Box::new(expression(&arguments[0], typed)));
+                    return wrap_expression(
+                        h::ExprKind::EnumVariant {
+                            variant_index,
+                            payload,
+                        },
+                        source,
+                        typed,
+                    );
+                }
                 let object_type = typed.expression_type(object.span);
+                let array_method = match (object_type, member.text.as_str()) {
+                    (Some(Type::Array(_)), "push") => Some(h::ArrayMethod::Push),
+                    (Some(Type::Array(_)), "insert") => Some(h::ArrayMethod::Insert),
+                    (Some(Type::Array(_)), "pop") => Some(h::ArrayMethod::Pop),
+                    (Some(Type::Array(_)), "remove") => Some(h::ArrayMethod::Remove),
+                    _ => None,
+                };
+                if let Some(method) = array_method {
+                    return h::Expr {
+                        kind: h::ExprKind::ArrayCall {
+                            object: Box::new(expression(object, typed)),
+                            method,
+                            arguments: arguments.iter().map(|arg| expression(arg, typed)).collect(),
+                        },
+                        ty: typed.expressions[&(source.span.start, source.span.end)],
+                        span: source.span,
+                    };
+                }
                 let special = match (object_type, member.text.as_str()) {
                     (Some(Type::Weak(_)), "upgrade") => Some(h::ExprKind::WeakUpgrade(Box::new(
                         expression(object, typed),
@@ -365,10 +471,25 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
             }
         }
     };
-    h::Expr {
+    wrap_expression(kind, source, typed)
+}
+fn wrap_expression(kind: h::ExprKind, source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
+    let lowered = h::Expr {
         kind,
         ty: typed.expressions[&(source.span.start, source.span.end)],
         span: source.span,
+    };
+    if let Some(target_type) = typed
+        .implicit_wraps
+        .get(&(source.span.start, source.span.end))
+    {
+        h::Expr {
+            kind: h::ExprKind::Some(Box::new(lowered)),
+            ty: *target_type,
+            span: source.span,
+        }
+    } else {
+        lowered
     }
 }
 fn binary(op: ast::BinaryOp) -> h::BinaryOp {

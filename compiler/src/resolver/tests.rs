@@ -200,3 +200,19 @@ fn methods_bind_this_and_do_not_leak_as_bare_names() {
             .any(|d| d.code == DiagnosticCode::UnknownName)
     );
 }
+
+#[test]
+fn match_arm_bindings_resolve_in_arm_scope() {
+    let result = output(
+        "enum E { V(int) }\nfunc main() {\n    let e = E.V(10)\n    match e {\n        E.V(val): { print(val) }\n    }\n}",
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+}
+
+#[test]
+fn for_loop_variable_scoped_to_body() {
+    let result =
+        output("func main() {\n    for i in 0..5 {\n        print(i)\n    }\n    print(i)\n}");
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].code, DiagnosticCode::UnknownName);
+}

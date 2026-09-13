@@ -172,3 +172,37 @@ static inline size_t skuld_index(int64_t index, size_t length, size_t byte) {
     if (index < 0 || (uint64_t)index >= length) skuld_fail("array index out of bounds", byte);
     return (size_t)index;
 }
+
+/* Shared array identity stays fixed; only its separate element buffer moves.
+ * Capacity grows geometrically. All lengths remain representable as Skuld int. */
+static inline size_t skuld_array_next_length(size_t length, size_t byte) {
+    if (length == SIZE_MAX || (uint64_t)length >= INT64_MAX)
+        skuld_fail("array length overflow", byte);
+    return length + 1;
+}
+static inline void *skuld_array_reserve(void *data, size_t *capacity,
+                                       size_t needed, size_t element, size_t byte) {
+    if ((uint64_t)needed > INT64_MAX) skuld_fail("array length overflow", byte);
+    if (needed <= *capacity) return data;
+    size_t next = *capacity == 0 ? 4 : *capacity;
+    while (next < needed) {
+        if (next > SIZE_MAX / 2 || (uint64_t)next > INT64_MAX / 2) {
+            next = needed;
+            break;
+        }
+        next *= 2;
+    }
+    size_t bytes;
+    if (__builtin_mul_overflow(next, element, &bytes))
+        skuld_fail("allocation size overflow", byte);
+    /* Empty value structs can have size zero in the current clang backend. */
+    void *grown = realloc(data, bytes == 0 ? 1 : bytes);
+    if (grown == NULL) skuld_fail("out of memory", byte);
+    *capacity = next;
+    return grown;
+}
+static inline size_t skuld_insert_index(int64_t index, size_t length, size_t byte) {
+    if (index < 0 || (uint64_t)index > length)
+        skuld_fail("array insertion index out of bounds", byte);
+    return (size_t)index;
+}

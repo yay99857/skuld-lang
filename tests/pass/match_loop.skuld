@@ -1,0 +1,30 @@
+enum Step {
+    Skip,
+    Stop,
+    Normal(int)
+}
+
+func main() {
+    var i = 0
+    while i < 10 {
+        i += 1
+        var step = Step.Normal(i)
+        if i == 2 {
+            step = Step.Skip
+        }
+        if i == 5 {
+            step = Step.Stop
+        }
+        match step {
+            Step.Skip: {
+                continue
+            }
+            Step.Stop: {
+                break
+            }
+            Step.Normal(n): {
+                print(n)
+            }
+        }
+    }
+}

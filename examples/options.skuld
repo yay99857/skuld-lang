@@ -1,12 +1,12 @@
 class User { name: string }
 
-func find_answer(found: bool) -> Option<int> {
-    if found { return Some(42) }
-    return None
+func find_answer(found: bool): Option<int> {
+    if found { return 42 }
+    return null
 }
 
 func main() {
-    if let Some(answer) = find_answer(true) {
+    if let answer = find_answer(true) {
         print(answer)
     } else {
         print("No answer")
@@ -16,12 +16,12 @@ func main() {
     {
         let user = new User(name: "Ada")
         observer = weak(user)
-        if let Some(retained) = observer.upgrade() {
+        if let retained = observer.upgrade() {
             print(retained.name)
         }
     }
 
-    if let Some(retained) = observer.upgrade() {
+    if let retained = observer.upgrade() {
         print(retained.name)
     } else {
         print("User has expired")

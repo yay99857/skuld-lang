@@ -513,7 +513,53 @@ fn option_constructor_identity_comes_from_resolution() {
         DiagnosticCode::NotCallable,
     );
     fails(
-        "func main() { let None = 1\nlet x: Option<int> = None }",
+        "func main() { let None = \"shadowed\"\nlet x: Option<int> = None }",
         DiagnosticCode::TypeMismatch,
+    );
+}
+
+#[test]
+fn option_null_implicit_wrap_and_direct_if_let() {
+    valid(
+        "func find(ok: bool): Option<int> {\n    if ok { return 42 }\n    return null\n}\nfunc main() {\n    let opt: Option<int> = 10\n    let empty: Option<int> = null\n    if let val = find(true) { print(val) }\n}",
+    );
+    fails("func main() { let x = null }", DiagnosticCode::UnknownType);
+    fails("func main() { null() }", DiagnosticCode::NotCallable);
+}
+
+#[test]
+fn enum_and_match_type_checking() {
+    valid(
+        "enum Color { Red, Green, Blue }\nfunc main() {\n    let c = Color.Red\n    match c {\n        Color.Red: { print(1) }\n        Color.Green: { print(2) }\n        Color.Blue: { print(3) }\n    }\n}",
+    );
+    valid(
+        "enum Result { Ok(int), Err(string) }\nfunc eval(r: Result) -> int {\n    match r {\n        Result.Ok(val): return val\n        Result.Err(msg): return 0\n    }\n}\nfunc main() {}",
+    );
+    fails(
+        "enum E { A, B }\nfunc main() {\n    let e = E.A\n    match e {\n        E.A: {}\n    }\n}",
+        DiagnosticCode::NonExhaustiveMatch,
+    );
+    fails(
+        "enum List { Cons(List), Nil }\nfunc main() {}",
+        DiagnosticCode::InvalidValueType,
+    );
+}
+
+#[test]
+fn for_loop_type_checking() {
+    valid(
+        "func main() {\n    for i in 0..10 {\n        print(i)\n    }\n    for item in [\"a\", \"b\"] {\n        print(item)\n    }\n}",
+    );
+    fails(
+        "func main() {\n    for i in 1.5..3.5 {}\n}",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "func main() {\n    for x in 42 {}\n}",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "func main() {\n    for i in 0..5 {\n        i = 1\n    }\n}",
+        DiagnosticCode::ImmutableAssignment,
     );
 }

@@ -1,4 +1,4 @@
-func sum(values: []int) -> int {
+func sum(values: []int): int {
     var total = 0
     var index = 0
     while index < values.len() {
@@ -13,6 +13,20 @@ func main() {
     let alias = numbers
     alias[0] = 10
     print(sum(numbers)) // 30
+
+    // Dynamic array growth: push and pop
+    numbers.push(100)
+    print(numbers.len()) // 6
+    if let last = numbers.pop() {
+        print(last) // 100
+    }
+
+    // Insertion and removal
+    numbers.insert(0, 99)
+    print(numbers[0]) // 99
+    if let removed = numbers.remove(0) {
+        print(removed) // 99
+    }
 
     let rows: [][]string = [[], ["hello" + "!"]]
     rows[0] = ["Skuld"]

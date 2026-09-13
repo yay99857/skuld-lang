@@ -1,0 +1,24 @@
+func append(values: []int, value: int) { values.push(value) }
+func main() {
+    let values: []int = []
+    let alias = values
+    var i = 0
+    while i < 1000 { append(values, i)
+        i += 1 }
+    print(alias.len())
+    print(alias[999])
+    values.insert(0, -1)
+    alias.insert(500, 42)
+    values.insert(values.len(), 1000)
+    print(values[0])
+    print(values[500])
+    if let Some(n) = alias.pop() { print(n) }
+    if let Some(n) = alias.remove(0) { print(n) }
+    print(values[0])
+    print(values.len())
+    print(values.remove(-1).is_none())
+    print(values.remove(values.len()).is_none())
+    let empty: []int = []
+    print(empty.pop().is_none())
+    print(empty.remove(0).is_none())
+}

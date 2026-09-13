@@ -1,0 +1,36 @@
+struct Cell { value: int }
+func grow(values: []int) -> int {
+    var i = 0
+    while i < 100 { values.push(i)
+        i += 1 }
+    return 5
+}
+func grow_cells(cells: []Cell) -> int {
+    var i = 0
+    while i < 100 { cells.push(Cell { value: i })
+        i += 1 }
+    return 9
+}
+func remove_front(values: []int) -> int { values.remove(0)
+    return 10 }
+func mark(value: int) -> int { print(value)
+    return value }
+func main() {
+    let values = [1]
+    values[0] += grow(values)
+    print(values[0])
+    let cells = [Cell { value: 1 }]
+    cells[0].value = grow_cells(cells)
+    print(cells[0].value)
+    let shifted = [2, 3]
+    shifted[0] += remove_front(shifted)
+    print(shifted[0])
+    values.insert(mark(1), mark(8))
+    print(values[1])
+    let strings = ["a" + "b"]
+    strings.push(strings[0])
+    strings.insert(0, strings[1])
+    strings[1] = "changed"
+    print(strings[0])
+    print(strings[2])
+}

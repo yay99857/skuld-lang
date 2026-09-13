@@ -327,3 +327,25 @@ fn interpolation_splits_text_from_expressions() {
     // A lone `$` is ordinary text.
     assert_eq!(kinds("\"5$\""), vec![String("5$".into()), Eof]);
 }
+
+#[test]
+fn dot_dot_range_tokens() {
+    use TokenKind::*;
+    assert_eq!(kinds(".."), vec![DotDot, Eof]);
+    assert_eq!(kinds("0..10"), vec![Integer(0), DotDot, Integer(10), Eof]);
+    assert_eq!(
+        kinds("for i in 0..len(bytes)"),
+        vec![
+            For,
+            Identifier("i".into()),
+            In,
+            Integer(0),
+            DotDot,
+            Identifier("len".into()),
+            LeftParen,
+            Identifier("bytes".into()),
+            RightParen,
+            Eof
+        ]
+    );
+}
