@@ -53,10 +53,29 @@ end
 
 register()
 
--- Startup order is not ours to control: the providers may load after this file,
--- and a lazy one loads when something first asks it to draw. Look again at both
--- of those moments, until there is nobody left to tell.
+-- Startup order is not ours to control: a provider is usually lazy, and loads
+-- the first time something asks it to draw — which is after this file and after
+-- `VimEnter`. Look again at every moment one can have appeared, until there is
+-- nobody left to tell.
 local group = vim.api.nvim_create_augroup("SkuldIcon", { clear = true })
+
+-- `LazyLoad` is lazy.nvim announcing a plugin it has just loaded *and*
+-- configured, which is the exact moment a provider becomes ours to extend:
+-- setting it up before its own `setup()` would only be overwritten.
+vim.api.nvim_create_autocmd("User", {
+  group = group,
+  pattern = { "LazyLoad", "VeryLazy" },
+  callback = function(event)
+    if event.match == "LazyLoad" then
+      local plugin = event.data
+      if plugin ~= "mini.icons" and plugin ~= "nvim-web-devicons" then
+        return
+      end
+    end
+    register()
+  end,
+})
+
 vim.api.nvim_create_autocmd({ "VimEnter", "FileType" }, {
   group = group,
   pattern = "*",
