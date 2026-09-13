@@ -15,6 +15,7 @@ use crate::rpc::{self, ReadError};
 use crate::signature;
 use crate::symbols::{self, Symbol};
 use crate::text::{Positions, path_to_uri, uri_to_path};
+use crate::tokens;
 use skuld_compiler::module::{Errors, FileId, ModuleLoader};
 use skuld_compiler::resolver::SymbolId;
 use skuld_compiler::span::Span;
@@ -149,6 +150,12 @@ impl Server {
             (Some("textDocument/inlayHint"), Some(id)) => {
                 let hints = self.inlay_hints(message);
                 respond(output, id.clone(), hints);
+                None
+            }
+
+            (Some("textDocument/semanticTokens/full"), Some(id)) => {
+                let tokens = self.semantic_tokens(message);
+                respond(output, id.clone(), tokens);
                 None
             }
 
@@ -720,6 +727,53 @@ impl Server {
         )
     }
 
+    /// Answer `textDocument/semanticTokens/full` with every name the checker
+    /// can classify.
+    ///
+    /// The editor's own highlighting stays underneath: keywords, literals and
+    /// comments are the lexer's shape and a client layers these over them.
+    /// What is added is the part a syntax file can only guess — that `User` is
+    /// a class, `count` a binding that cannot be assigned again, `len` a
+    /// method of the language rather than a name in this file.
+    fn semantic_tokens(&self, message: &Json) -> Json {
+        let empty = Json::object([("data", Json::Array(Vec::new()))]);
+        let Some(path) = document_path(message) else {
+            return empty;
+        };
+        let (Some(source), Some(typed)) = (self.open.get(&path), self.checked.get(&path)) else {
+            return empty;
+        };
+        let positions = Positions::new(source.clone());
+        let mut data = Vec::new();
+        let mut line = 0;
+        let mut character = 0;
+        for token in tokens::tokens(source, typed) {
+            let start = positions.position(token.start);
+            let end = positions.position(token.end);
+            // A name never holds a newline, so a token that appears to span
+            // lines is a span that no longer matches the text.
+            if end.line != start.line || end.character < start.character {
+                continue;
+            }
+            let delta_line = start.line.saturating_sub(line);
+            let delta_start = if delta_line == 0 {
+                start.character.saturating_sub(character)
+            } else {
+                start.character
+            };
+            data.extend([
+                Json::number(delta_line as f64),
+                Json::number(delta_start as f64),
+                Json::number((end.character - start.character) as f64),
+                Json::number(f64::from(token.kind)),
+                Json::number(f64::from(token.modifiers)),
+            ]);
+            line = start.line;
+            character = start.character;
+        }
+        Json::object([("data", Json::Array(data))])
+    }
+
     /// Answer `textDocument/documentSymbol` with the outline of the file.
     ///
     /// The outline comes from the syntax, so it is the one answer that needs
@@ -1132,6 +1186,36 @@ fn initialize_result() -> Json {
             // No `resolveProvider`: a hint is a short string the server
             // already had, and there is nothing to fill in on a second call.
             ("inlayHintProvider", Json::Bool(true)),
+            (
+                "semanticTokensProvider",
+                Json::object([
+                    (
+                        "legend",
+                        Json::object([
+                            (
+                                "tokenTypes",
+                                Json::Array(
+                                    tokens::TYPES.iter().copied().map(Json::string).collect(),
+                                ),
+                            ),
+                            (
+                                "tokenModifiers",
+                                Json::Array(
+                                    tokens::MODIFIERS
+                                        .iter()
+                                        .copied()
+                                        .map(Json::string)
+                                        .collect(),
+                                ),
+                            ),
+                        ]),
+                    ),
+                    // The whole document each time. A delta would mean keeping
+                    // the previous stream per document to diff against, which
+                    // is state to go stale for a file this size.
+                    ("full", Json::Bool(true)),
+                ]),
+            ),
             ("documentSymbolProvider", Json::Bool(true)),
             // Whole-document only: the formatter reads a program, not a
             // fragment, so there is no honest answer for a range.

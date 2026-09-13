@@ -1318,3 +1318,59 @@ fn signature_help_outside_a_call_is_null() {
     ]);
     assert_eq!(result_of(&out, 2), &Json::Null);
 }
+
+#[test]
+fn the_server_advertises_and_answers_semantic_tokens() {
+    let path = "/tmp/skuld-lsp-test/tokens.skuld";
+    let source = "func main() {\n    let count = 1\n    print(count)\n}\n";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        document_request(2, "textDocument/semanticTokens/full", path),
+    ]);
+    let legend = out[0]
+        .path(&["result", "capabilities", "semanticTokensProvider", "legend"])
+        .expect("a legend");
+    assert_eq!(
+        legend
+            .get("tokenTypes")
+            .and_then(Json::as_array)
+            .map(|types| types.len()),
+        Some(tokens::TYPES.len())
+    );
+    let data: Vec<i64> = result_of(&out, 2)
+        .get("data")
+        .and_then(Json::as_array)
+        .expect("a token stream")
+        .iter()
+        .filter_map(Json::as_i64)
+        .collect();
+    assert_eq!(data.len() % 5, 0, "five numbers per token");
+    // Five numbers per token, each position relative to the one before:
+    // delta line, delta column, length, type, modifier bits.
+    #[rustfmt::skip]
+    let expected: Vec<i64> = vec![
+        // `main`: line 0, column 5, a function being declared.
+        0, 5, 4, 5, 0b001,
+        // `count`: one line down, column 8, a binding declared and readonly.
+        1, 8, 5, 9, 0b011,
+        // `print`: one line down again, column 4, the language's own.
+        1, 4, 5, 5, 0b100,
+        // `count`: same line, six columns on, a readonly binding.
+        0, 6, 5, 9, 0b010,
+    ];
+    assert_eq!(data, expected);
+}
+
+#[test]
+fn a_document_that_never_checked_has_no_semantic_tokens() {
+    let path = "/tmp/skuld-lsp-test/tokens-broken.skuld";
+    let (out, _) = converse(&[
+        did_open(path, "func main( {\n"),
+        document_request(2, "textDocument/semanticTokens/full", path),
+    ]);
+    assert_eq!(
+        result_of(&out, 2).get("data"),
+        Some(&Json::Array(Vec::new()))
+    );
+}

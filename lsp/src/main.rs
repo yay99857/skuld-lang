@@ -14,6 +14,7 @@ mod server;
 mod signature;
 mod symbols;
 mod text;
+mod tokens;
 
 use std::io::{self, BufReader};
 
