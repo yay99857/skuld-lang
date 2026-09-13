@@ -106,7 +106,8 @@ fields and methods nested inside it; formatting (`vim.lsp.buf.format()`,
 document highlights, which mark the other uses of the name the cursor rests on;
 signature help while a call is being written, with the argument you are on
 picked out; inlay hints (`vim.lsp.inlay_hint.enable(true)`), which write the
-inferred type of a binding that does not declare one; and semantic tokens,
+inferred type of a binding that does not declare one, on by default here
+since a hint nobody turned on is a feature nobody has; and semantic tokens,
 which recolour names from the checker over the syntax file underneath — a class
 is not a struct, a `let` is not a `var`, and a method of the language is not a
 name from this file.

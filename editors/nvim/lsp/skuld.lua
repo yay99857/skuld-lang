@@ -26,4 +26,13 @@ return {
   root_dir = function(bufnr, done)
     done(vim.fs.dirname(vim.api.nvim_buf_get_name(bufnr)))
   end,
+  -- Inlay hints are off until something turns them on, and a server that has
+  -- them and never shows them reads as a server that does not have them. Turn
+  -- them off again for a buffer with
+  -- `vim.lsp.inlay_hint.enable(false, { bufnr = 0 })`.
+  on_attach = function(client, bufnr)
+    if client:supports_method("textDocument/inlayHint") then
+      vim.lsp.inlay_hint.enable(true, { bufnr = bufnr })
+    end
+  end,
 }
