@@ -1,0 +1,127 @@
+// Reading and writing a whole file, over the libc calls the FFI can reach.
+//
+// The API is by path, not by handle: `read_file` and `write_file` open,
+// finish and close in one call. That is a decision, not a simplification.
+// A handle exposed to Skuld would need a lifetime rule — who closes it, and
+// what happens to one that is dropped — and Skuld has no destructors a user
+// can write. A path-shaped API needs none of that, and a file transformed
+// whole is what a command-line tool does anyway.
+//
+// There is no `errno` here either, for the reason `std/net` records: reading
+// it means reading through a pointer, which the foreign boundary does not do.
+// A failure therefore says which step failed and on which path, never why.
+
+import "std/cstring"
+
+unsafe extern "C" {
+    func open(path: *u8, flags: i32, mode: u32) -> i32
+    func read(handle: i32, buffer: *u8, count: u64) -> i64
+    func write(handle: i32, buffer: *u8, count: u64) -> i64
+    func close(handle: i32) -> i32
+}
+
+// The flags this module uses, spelled out rather than imported from a header
+// the compiler never reads. They are the Linux values.
+func read_only() -> i32 {
+    return 0
+}
+
+// O_WRONLY | O_CREAT | O_TRUNC
+func write_only() -> i32 {
+    return 577
+}
+
+// 0644, as an octal constant would be written in C.
+func user_readable() -> u32 {
+    return 420
+}
+
+pub enum FsError {
+    // The path contained a NUL, so it could not become a C string.
+    Path(string)
+    OpenFailed(string)
+    ReadFailed(string)
+    WriteFailed(string)
+    // The bytes read are not the UTF-8 `read_text` promised.
+    NotText(string)
+}
+
+pub func describe(error: FsError) -> string {
+    match error {
+        FsError.Path(path): return "`${path}` is not a usable path"
+        FsError.OpenFailed(path): return "could not open `${path}`"
+        FsError.ReadFailed(path): return "could not read `${path}`"
+        FsError.WriteFailed(path): return "could not write `${path}`"
+        FsError.NotText(path): return "`${path}` is not valid UTF-8"
+    }
+}
+
+// Every byte of a file, read in blocks until the end.
+pub func read_file(path: string) -> Result<[]u8, FsError> {
+    let handle = open_path(path, read_only(), 0)?
+    var all: []u8 = []
+    var block: []u8 = []
+    var index = 0
+    while index < 4096 {
+        block.push(0)
+        index += 1
+    }
+    loop {
+        let got = read(i32(handle), ptr(block), u64(4096))
+        if got < 0 {
+            let ignored = close(i32(handle))
+            return Err(FsError.ReadFailed(path))
+        }
+        if got == 0 {
+            break
+        }
+        for byte in block[0..int(got)] {
+            all.push(byte)
+        }
+    }
+    let ignored = close(i32(handle))
+    return Ok(all)
+}
+
+// The same, decoded as UTF-8, which is what a text tool wants.
+pub func read_text(path: string) -> Result<string, FsError> {
+    let bytes = read_file(path)?
+    let text = bytes_to_string(bytes) else message {
+        return Err(FsError.NotText(path))
+    }
+    return Ok(text)
+}
+
+// Replace a file with these bytes, creating it if it is not there.
+pub func write_file(path: string, bytes: []u8) -> Result<int, FsError> {
+    let handle = open_path(path, write_only(), user_readable())?
+    var written = 0
+    while written < bytes.len() {
+        let rest = bytes[written..bytes.len()]
+        let wrote = write(i32(handle), ptr(rest), u64(rest.len()))
+        if wrote <= 0 {
+            let ignored = close(i32(handle))
+            return Err(FsError.WriteFailed(path))
+        }
+        written += int(wrote)
+    }
+    let ignored = close(i32(handle))
+    return Ok(written)
+}
+
+pub func write_text(path: string, text: string) -> Result<int, FsError> {
+    return write_file(path, text.bytes())
+}
+
+// Opening is the one step both halves share, and the only one that needs the
+// path as a C string.
+func open_path(path: string, flags: i32, mode: u32) -> Result<int, FsError> {
+    let terminated = cstring.to_c(path) else problem {
+        return Err(FsError.Path(path))
+    }
+    let handle = open(ptr(terminated), flags, mode)
+    if handle < 0 {
+        return Err(FsError.OpenFailed(path))
+    }
+    return Ok(int(handle))
+}

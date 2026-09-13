@@ -27,6 +27,10 @@ const MODULES: &[(&str, &[(&str, &str)])] = &[
         )],
     ),
     (
+        "std/fs",
+        &[("std/fs/fs.skuld", include_str!("../../std/fs/fs.skuld"))],
+    ),
+    (
         "std/http",
         &[(
             "std/http/client.skuld",
