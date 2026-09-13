@@ -81,6 +81,12 @@ struct Formatter<'a> {
     output: String,
     indent_level: usize,
     needs_indent: bool,
+    /// How far into the source the output has already accounted for. A blank
+    /// line is preserved by measuring the distance from the last thing
+    /// emitted, so this has to be the end of that thing — code or comment —
+    /// and not the end of the previous comment alone, or every comment that
+    /// follows a run of code inherits the gap before it.
+    covered: usize,
 }
 
 enum Decl<'a> {
@@ -114,6 +120,7 @@ impl<'a> Formatter<'a> {
             output: String::new(),
             indent_level: 0,
             needs_indent: true,
+            covered: 0,
         }
     }
 
@@ -146,13 +153,15 @@ impl<'a> Formatter<'a> {
         self.indent_level -= 1;
     }
 
-    /// Emit any comments whose start position is before `pos`.
-    fn emit_comments_before(&mut self, pos: usize) {
-        let mut last_end = if self.comment_idx > 0 {
+    /// Emit any comments whose start position is before `pos`, and answer
+    /// where the last of them ended.
+    fn emit_comments_before(&mut self, pos: usize) -> Option<usize> {
+        let mut last_end = self.covered.max(if self.comment_idx > 0 {
             self.comments[self.comment_idx - 1].span.end
         } else {
             0
-        };
+        });
+        let mut emitted = None;
 
         while self.comment_idx < self.comments.len() {
             let comment_start = self.comments[self.comment_idx].span.start;
@@ -177,8 +186,11 @@ impl<'a> Formatter<'a> {
             let text = self.comments[self.comment_idx].text.clone();
             self.push_line(&text);
             last_end = comment_end;
+            emitted = Some(comment_end);
             self.comment_idx += 1;
         }
+        self.covered = self.covered.max(pos);
+        emitted
     }
 
     /// Emit a trailing comment on the same line, then a newline.
@@ -199,9 +211,11 @@ impl<'a> Formatter<'a> {
                 self.push(" ");
                 let text = self.comments[self.comment_idx].text.clone();
                 self.push(&text);
+                self.covered = self.comments[self.comment_idx].span.end;
                 self.comment_idx += 1;
             }
         }
+        self.covered = self.covered.max(line_end_pos);
         self.push("\n");
     }
 
@@ -233,18 +247,27 @@ impl<'a> Formatter<'a> {
         let mut first = true;
 
         for decl in &decls {
-            self.emit_comments_before(decl.span().start);
-
             let is_import = matches!(decl, Decl::Import(_));
 
             // One blank line between declarations, but consecutive imports
-            // stay together.
+            // stay together. It goes in before the comments, not after them:
+            // a comment written above a declaration documents it, and a blank
+            // line inserted between the two would say the opposite.
             if !first && !(last_was_import && is_import) && !self.output.ends_with("\n\n") {
                 if self.output.ends_with('\n') {
                     self.push("\n");
                 } else {
                     self.push("\n\n");
                 }
+            }
+
+            // A comment that the source separated from the declaration by a
+            // blank line belongs to neither, so the separation is kept.
+            if let Some(end) = self.emit_comments_before(decl.span().start)
+                && self.source[end..decl.span().start].matches('\n').count() >= 2
+                && !self.output.ends_with("\n\n")
+            {
+                self.push("\n");
             }
 
             match decl {

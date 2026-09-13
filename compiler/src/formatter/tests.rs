@@ -211,3 +211,34 @@ fn interface_methods_no_func() {
     );
     assert!(!output.contains("func render"), "no func prefix: {output}");
 }
+
+#[test]
+fn a_comment_stays_with_the_declaration_it_documents() {
+    // The blank line that separates two declarations belongs before the
+    // second one's comment, not between the comment and what it describes.
+    let input = "func a() {}\n\n// What b does.\nfunc b() {}\n";
+    assert_eq!(fmt(input), "func a() {}\n\n// What b does.\nfunc b() {}\n");
+}
+
+#[test]
+fn a_comment_the_source_kept_apart_stays_apart() {
+    // A comment with a blank line on both sides documents neither neighbour,
+    // and formatting must not attach it to the one that follows.
+    let input = "func a() {}\n\n// A note about nothing in particular.\n\nfunc b() {}\n";
+    assert_eq!(
+        fmt(input),
+        "func a() {}\n\n// A note about nothing in particular.\n\nfunc b() {}\n"
+    );
+}
+
+#[test]
+fn a_comment_after_a_run_of_code_does_not_inherit_an_earlier_gap() {
+    // The distance is measured from the last thing emitted. Measuring it from
+    // the previous comment instead put a blank line in front of every comment
+    // that followed a few lines of code.
+    let input = "enum E {\n    // The first.\n    A\n    B\n    C\n    // The last.\n    D\n}\n";
+    assert_eq!(
+        fmt(input),
+        "enum E {\n    // The first.\n    A,\n    B,\n    C,\n    // The last.\n    D,\n}\n"
+    );
+}
