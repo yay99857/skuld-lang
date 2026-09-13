@@ -382,8 +382,10 @@ M11 (the official formatter, `skuld fmt`), M12 (LSP refactoring), M13 (local
 CLI applications and `skuld test`), M14 (field defaults), M15 (a string-keyed
 map), M16 (host names and system error reasons), M17 (verified HTTPS) and M18
 (measured performance on two native targets) are implemented too. The LSP provides
-diagnostics, completion, hover, definition, find-references, rename, the
-document outline and formatting through `skuld fmt`'s own formatter, and
+diagnostics, completion, hover, definition, find-references, rename, document
+highlights, the document outline, formatting through `skuld fmt`'s own
+formatter, signature help, inlay hints for inferred binding types and semantic
+tokens, and
 `examples/jsontool.skuld` is a multi-module native tool with its own test suite.
 
 No implementation milestone is active, and the sequence [ROADMAP.md](ROADMAP.md)

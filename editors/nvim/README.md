@@ -101,14 +101,32 @@ qualified name into the module that declared it, opening a file you never had
 open; find-references (`grr`) and rename (`grn`), which reach every file the
 editor has open and refuse a rename that would change which declaration a name
 reaches; the outline (`gO`, and any breadcrumb or symbol picker), with a class's
-fields and methods nested inside it; and formatting (`vim.lsp.buf.format()`,
-`gq` where `formatexpr` is set), which runs the same formatter `skuld fmt` does.
+fields and methods nested inside it; formatting (`vim.lsp.buf.format()`,
+`gq` where `formatexpr` is set), which runs the same formatter `skuld fmt` does;
+document highlights, which mark the other uses of the name the cursor rests on;
+signature help while a call is being written, with the argument you are on
+picked out; inlay hints (`vim.lsp.inlay_hint.enable(true)`), which write the
+inferred type of a binding that does not declare one; and semantic tokens,
+which recolour names from the checker over the syntax file underneath — a class
+is not a struct, a `let` is not a `var`, and a method of the language is not a
+name from this file.
 
-Formatting and the outline both answer quietly when they cannot. A file that
-does not parse formats to no change rather than an error dialog, since the
-diagnostic already says where the problem is; its outline falls back to the
-last text that parsed, so it does not empty itself while a declaration is being
-typed.
+Several of these answer quietly when they cannot. A file that does not parse
+formats to no change rather than an error dialog, since the diagnostic already
+says where the problem is; its outline falls back to the last text that parsed,
+so it does not empty itself while a declaration is being typed. Inlay hints and
+semantic tokens come from the last check that succeeded, so they go a moment
+stale while a line is broken rather than disappearing, and a file that has
+never checked has neither.
+
+Signature help is the one that has to work on text that does not parse at all,
+since a call is asked about while it is half-written. It finds the call by
+reading the text — the innermost unclosed `(` before the cursor, and the commas
+since — and looks the name up in the last good check. A cursor inside an array
+literal or a lambda body is not in an argument list any more, and gets nothing
+rather than the enclosing call's signature. Parameter names are those of the
+declaration; a prelude binding such as `print` and a builtin method such as
+`push` were never declared in a file, so theirs read as types.
 
 A prelude binding such as `print` has a hover but no definition: it belongs to
 the language, and there is nowhere to send you.

@@ -465,9 +465,10 @@ Not sequenced with the milestones above and not blocking any of them.
   the resolver, and the escape set is the exact one the lexer accepts, so an
   invalid escape is shown as the error `E0004` would report. It carries no
   semantic knowledge; a capitalised name reads as a type by convention only.
-- **Language server — implemented: diagnostics, completion, hover, definition.** `lsp/` is the `skuld-lsp`
-  binary: LSP over stdio, reporting the diagnostics the checker produces and
-  nothing else. The protocol is written in the crate rather than taken from a
+- **Language server — implemented.** Diagnostics, completion, hover, definition,
+  references, rename, document highlights, the outline, formatting, signature
+  help, inlay hints and semantic tokens. `lsp/` is the `skuld-lsp`
+  binary: LSP over stdio, speaking the protocol and asking the compiler. The protocol is written in the crate rather than taken from a
   dependency, so the workspace still has none — the same choice rust-analyzer,
   clangd and gopls each made, and `tower-lsp` was declined for bringing an
   async runtime a synchronous server has no use for.
@@ -507,6 +508,33 @@ Not sequenced with the milestones above and not blocking any of them.
     The prelude has a hover and no definition: it belongs to the language.
 - **References and rename — implemented, as M12 below.** They read the use
   table the other way round, and the safety they need is described there.
+  - **A highlight is that table narrowed to one document**, and widened in what
+    it accepts: a prelude binding and an import qualifier are highlighted
+    although neither can be renamed. No `kind` is sent, because the table
+    records where a name is written and not whether it reads or assigns.
+- **The outline and formatting — implemented.** The outline comes from the
+  syntax alone, sorted by span because the AST keeps each kind of declaration
+  in a list of its own, and falls back to the last text that parsed.
+  Formatting is `skuld fmt`'s formatter over the whole document; a file that
+  does not parse or is already formatted is answered with no edits rather than
+  an error, since the caller is usually format-on-save. Range formatting is not
+  offered: the formatter reads a program, not a fragment.
+- **Signature help — implemented.** The call is found over the text, not the
+  syntax tree, for completion's reason: a signature is wanted exactly while the
+  call is half-written. Parameter names come from the declaration, which is the
+  only place they are written; a prelude binding and a builtin method have
+  theirs recovered from the line that describes them. A construction lists the
+  fields and marks none active, since it names them.
+- **Inlay hints — implemented.** The inferred type of a binding that writes
+  none, which in Skuld is the only type a reader cannot see: signatures are
+  always explicit. Whether an annotation is written is read from the text after
+  the name, sound because a `:` follows a binding only in `let name: Type`.
+- **Semantic tokens — implemented.** Names only, layered over the editor's own
+  highlighting rather than replacing it, which is what the syntax file cannot
+  do: a class against a struct, a `let` against a `var`, a method of the
+  language against a name from this file. A name the check cannot place is left
+  out rather than guessed at. Full document each time; a delta would mean
+  keeping the previous stream per document to diff against.
 - **Still planned.** `LANGUAGE.md` names `test`, `doc` and `new` as future
   commands; `fmt` arrived with M11.
 

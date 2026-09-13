@@ -349,7 +349,9 @@ accurate; documenting a future feature is not a request to implement it.
   would still compile is refused. A buffer that has changed since it last
   checked is refused, since its recorded offsets describe a text that is gone.
   The server writes nothing: a workspace edit is the client's to apply.
-- The server also answers `textDocument/documentSymbol` and
+- The server also answers `textDocument/documentHighlight`,
+  `textDocument/signatureHelp`, `textDocument/inlayHint`,
+  `textDocument/semanticTokens/full`, `textDocument/documentSymbol` and
   `textDocument/formatting`. The outline is drawn from the syntax alone, so it
   needs no check at all, and it falls back to the last text that parsed rather
   than emptying itself mid-declaration; its entries are sorted by span, since
@@ -358,6 +360,29 @@ accurate; documenting a future feature is not a request to implement it.
   document only — the formatter reads a program, not a fragment — and a file
   that does not parse or is already formatted is answered with no edits rather
   than an error, because the caller is usually format-on-save.
+- A highlight is `references` narrowed to the document and widened in what it
+  accepts: a prelude binding and an import qualifier are highlighted although
+  neither can be renamed. It carries no `kind`, since the resolver records
+  where a name is written and not whether that writing reads or assigns.
+- Signature help finds the call over the text rather than the syntax tree,
+  because a call is asked about exactly while it is half-written: the innermost
+  unclosed `(` before the cursor and the top-level commas since it, skipping
+  strings, characters and comments, and treating a `[` or `{` still open as
+  having left the argument list. Parameter names come from the declaration as
+  written — the checker's signature keeps types alone — and a prelude binding
+  or a builtin method, neither of which was declared in a file, has its
+  parameters recovered from the one line that describes it. A construction
+  lists the fields and marks none active, since `new User(...)` names them.
+- An inlay hint is the inferred type of a binding that writes none. Whether a
+  type is written is decided by reading the text after the name, which is sound
+  because a `:` follows a binding only in `let name: Type`; taking the names
+  from the resolver's table rather than a walk is what makes a binding inside a
+  lambda ordinary. A hint whose type is `Void` or `Error` is not drawn.
+- Semantic tokens classify names only. Keywords, literals and comments stay
+  with the editor's own highlighting, which a client layers underneath, and a
+  name the check cannot place is left out rather than guessed at. The stream is
+  the whole document each time: a delta would mean keeping the previous stream
+  per document to diff against, which is state to go stale.
 - Files, the process and tests arrived with M13. `std/fs` reads and writes a
   whole file **by path**: a handle would need a lifetime rule and Skuld has no
   destructor a user can write, so there is no `open`, no close and no streaming
