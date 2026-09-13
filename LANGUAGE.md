@@ -527,20 +527,20 @@ Use a weak parent link with a strong child link to avoid ownership cycles; see
 
 ## Optional values — Implemented
 
-`Option<T>` is a builtin value type representing `Some(value)` or `None`.
+`Option<T>` is a builtin value type representing a present value or `null` (also `None`).
 `T` can be any non-void implemented value type, including another Option,
 a struct, a class, an array or a weak reference. This milestone introduces
-neither general generics nor user-defined enums, and there is no normal null.
+neither general generics nor user-defined enums.
 
 ```skuld
-func answer(found: bool) -> Option<int> {
-    if found { return Some(42) }
-    return None
+func answer(found: bool): Option<int> {
+    if found { return 42 }
+    return null
 }
 
 func main() {
-    let missing: Option<int> = None
-    if let Some(value) = answer(true) {
+    let missing: Option<int> = null
+    if let value = answer(true) {
         print(value)
     } else {
         print("No answer")
@@ -549,24 +549,24 @@ func main() {
 }
 ```
 
-`Some(value)` requires exactly one non-void value and infers its payload type.
-`None` needs an expected Option type from an annotation, assignment, parameter,
+Values wrap implicitly into an expected `Option<T>` (e.g. `return 42` or
+`let x: Option<int> = 42`), while `Some(value)` remains supported.
+`null` (and `None`) needs an expected Option type from an annotation, assignment, parameter,
 field, return type or enclosing array/Some expression. For example,
-`let nested: Option<Option<int>> = Some(None)` is valid, while unannotated
-`let nested = Some(None)` cannot infer the inner payload. No implicit wrapping,
-unwrapping, truthiness or numeric conversions are provided. `None()` is invalid.
-`Option` cannot be redeclared as a struct/class type; `Some` and `None` remain
+`let nested: Option<Option<int>> = Some(null)` is valid, while unannotated
+`let nested = null` cannot infer the payload. No implicit unwrapping,
+truthiness or numeric conversions are provided. `null()` is invalid.
+`Option` cannot be redeclared as a struct/class type; `null`, `Some` and `None` remain
 shadowable prelude value bindings like `print`.
 
-`if let Some(name) = expression { ... } else { ... }` evaluates the expression
+`if let name = expression { ... } else { ... }` (and `if let Some(name)`) evaluates the expression
 once. The successful branch receives an immutable copy of the payload, retaining
 any owned references. That name exists only in that branch. The `else` branch
 is optional and can contain another `if`/`if let`; both branches must guarantee
 a return for the statement to satisfy a non-void function's return requirement.
-Only the `Some(name)` pattern is supported; general patterns and `match` remain
-planned. There is no direct payload field or unchecked Option extraction API.
+General patterns and `match` remain planned. There is no direct payload field or unchecked Option extraction API.
 
-`is_some() -> bool` and `is_none() -> bool` query the tag and take no arguments.
+`is_some(): bool` and `is_none(): bool` query the tag and take no arguments.
 Use `if let` to obtain the payload. Options do not support equality, printing or
 interpolation as a whole; extract and use their payload instead.
 
@@ -654,6 +654,11 @@ Enums are sum types, e.g.
 Future FFI: `extern "C" { func puts(text: *char) -> int }`.
 Future commands: `new`, `fmt`, `test`, `doc`. LLVM/Cranelift and eventual
 self-hosting remain long-term possibilities.
+
+`ROADMAP.md` proposes the order in which these capabilities would arrive —
+enums and `match`, then `for`, then `Result` and `?`, then bytes and string
+slices, then the FFI — together with the design questions each one depends on.
+That ordering is a plan, not a commitment, and none of it is implemented.
 
 ## Unsupported features and experimental status
 

@@ -185,6 +185,8 @@ This closes the Option and safe weak-promotion milestone as well as classes,
 weak references and initial arrays. Array growth and iteration, Result,
 modules, a standard library, the official
 formatter, broader tooling, portability and eventual self-hosting remain ahead;
-the next implementation milestone has not been selected.
+the next implementation milestone has not been selected. `ROADMAP.md` proposes
+an ordering for those milestones and records the design questions they depend
+on; everything in it is Planned.
 Status is reported as completed milestones, not as a completion percentage, and
 implies neither production readiness nor measured Go/Rust performance.

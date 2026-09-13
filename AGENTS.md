@@ -3,7 +3,8 @@
 These instructions apply to the entire repository. Follow the user's current
 task and keep changes within its milestone. Read `LANGUAGE.md` for the living
 specification and `README.md` for usage and current capabilities before changing
-language behavior. Keep their Implemented / Planned / Experimental distinctions
+language behavior. `ROADMAP.md` records the proposed ordering of future
+milestones. Keep their Implemented / Planned / Experimental distinctions
 accurate; documenting a future feature is not a request to implement it.
 
 ## User syntax reference
@@ -112,6 +113,13 @@ accurate; documenting a future feature is not a request to implement it.
 - Completed: classes, weak references, initial arrays, Option and safe weak
   promotion. The next milestone
   has not been selected; do not infer authorization for further features.
+- `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
+  and string slices → `extern "C"` FFI, with modules and networking beyond it.
+  It is a plan, not a selection: every entry is Planned, and starting one still
+  requires an explicit decision recorded here. Its open design questions
+  (builtin `Result` versus generics, slice retention, recursive enum variants,
+  callback syntax, JSON object representation) are unresolved; do not settle
+  them unilaterally while implementing something else.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built
@@ -163,6 +171,16 @@ execution, operator overloading, user-defined conversions, LLVM or Cranelift
 before Demo 3. Interfaces, enums, Result, FFI and the official
 formatter remain future work unless explicitly included in the active task.
 Do not build a standard library or memory-management runtime ahead of need.
+
+The milestones proposed in `ROADMAP.md` do not relax any of the above.
+Enums, `match`, `for`, `Result`, `?`, sized integers, `[]u8`, string slices,
+`extern "C"`, modules, `import`, HTTP and JSON are all Planned and each needs
+its own authorization. In particular, `ROADMAP.md` leaves open whether `Result`
+arrives as a builtin or through general generics; generics remain excluded
+until that question is decided explicitly, and a roadmap entry mentioning
+`Result` is not permission to introduce them. Nothing in that document
+authorizes a standard library, a networking runtime or process execution from
+the compiler library.
 
 ## Diagnostics and validation
 
