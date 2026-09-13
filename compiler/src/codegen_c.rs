@@ -1477,8 +1477,15 @@ impl Emitter {
                     value.len()
                 )
             }
-            ExprKind::Local(id) => {
+            ExprKind::Local { id, settled } => {
                 let name = self.local_name(*id);
+                // A binding nothing can reassign outlives the expression that
+                // reads it, so the read borrows it: no retain, no release, no
+                // temporary. Everything that stores the value retains it
+                // itself, which is where ownership was always decided.
+                if *settled {
+                    return name;
+                }
                 self.temporary(expr.ty, &name)
             }
             ExprKind::Lambda { index } => {

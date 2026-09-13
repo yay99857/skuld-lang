@@ -1,0 +1,60 @@
+// Reading a binding does not take a reference of its own — the binding is the
+// reference — and this is the fixture that has to stay true for that to be
+// safe. Every case here uses a value while something else is letting go of it.
+
+class Box {
+    value: string
+}
+
+// The array holds the only reference and the inner block drops it for good.
+// The parameter survives because the caller's own binding does.
+func drop_then_use(box: Box, boxes: []Box) {
+    if true {
+        let removed = boxes.remove(0)
+    }
+    print(box.value)
+}
+
+func longest(left: string, right: string) -> string {
+    if left.len() >= right.len() {
+        return left
+    }
+    return right
+}
+
+// A value returned from a borrowed parameter is retained on the way out, so it
+// outlives the collection it came from.
+func take_first(texts: []string) -> string {
+    let first = texts[0]
+    let removed = texts.remove(0)
+    return first
+}
+
+func main() {
+    var boxes: []Box = []
+    boxes.push(new Box(value: "alive"))
+    drop_then_use(boxes[0], boxes)
+
+    var texts: []string = []
+    texts.push("held" + "-together")
+    print(take_first(texts))
+    print(texts.len())
+
+    // A local that outlives the array it was read from.
+    var more: []Box = []
+    more.push(new Box(value: "kept"))
+    let item = more[0]
+    let removed = more.remove(0)
+    print(item.value)
+
+    // Two borrows in one expression, one of which is a fresh value.
+    let name = "skuld"
+    print(longest(name, name + "-lang"))
+
+    // A field read through `this` while the object is also in an array.
+    var boxed: []Box = []
+    boxed.push(new Box(value: "field"))
+    let kept = boxed[0]
+    boxed.pop()
+    print(kept.value)
+}

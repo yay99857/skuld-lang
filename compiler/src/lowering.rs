@@ -539,7 +539,13 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     cx.function_values.borrow_mut().push((id, ty));
                     h::ExprKind::FunctionValue { id, ty }
                 }
-                _ => h::ExprKind::Local(id),
+                // A `var` can be assigned to, and an assignment is an
+                // expression, so only an immutable binding is safe to read in
+                // place.
+                kind => h::ExprKind::Local {
+                    id,
+                    settled: !matches!(kind, SymbolKind::Variable(ast::Mutability::Mutable)),
+                },
             }
         }
         ast::ExprKind::Group(inner) => expression(inner, cx).kind,
@@ -901,6 +907,8 @@ mod tests {
         else {
             panic!("builtin")
         };
-        assert!(matches!(arguments[0].kind, h::ExprKind::Local(symbol) if symbol == *id));
+        assert!(
+            matches!(arguments[0].kind, h::ExprKind::Local { id: symbol, .. } if symbol == *id)
+        );
     }
 }

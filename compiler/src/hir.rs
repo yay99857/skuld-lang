@@ -174,7 +174,14 @@ pub(crate) enum ExprKind {
     Float(f64),
     Bool(bool),
     String(String),
-    Local(SymbolId),
+    /// Reading a local or a parameter. `settled` marks a binding nothing can
+    /// reassign — a `let`, a parameter, `this` — which is what lets the
+    /// backend read it where it lives instead of taking a counted copy of it
+    /// for the length of one expression.
+    Local {
+        id: SymbolId,
+        settled: bool,
+    },
     Unary {
         op: UnaryOp,
         op_span: Span,
