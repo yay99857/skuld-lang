@@ -23,8 +23,8 @@ The existing `func`, `->`, immutable `let` and mutable `var` remain unchanged.
 
 The user's [test.skuld](test.skuld) contains evolving syntax demonstrations.
 Classes are implemented with methods such as `hello()`, implicit `this`,
-reference semantics and `new User(...)` construction; initialization,
-global-statement and sorting questions are documented separately.
+reference semantics and `new User(...)` construction; initialization and
+global-statement proposals are documented separately; sorting ships with M8.
 
 The priorities are simplicity, strong static typing, useful diagnostics and
 native performance targeting the Go/Rust range. Performance is a goal to
@@ -76,6 +76,9 @@ Program stdin/stdout/stderr are inherited and its exit status is propagated
 (Unix signals map to 128 + signal). No persistent build artifacts are produced.
 `build` performs the same checks and clang invocation but keeps the executable
 instead of running it; a rejected program leaves no executable behind.
+`fmt` formats a source file in place according to the official style,
+preserving all comments and literal representations. `fmt --check` checks
+whether a file conforms without modifying it, returning exit code 1 on drift.
 
 Debugging and inspecting generated code:
 
@@ -93,8 +96,8 @@ a full type check. `emit-c` does run every compiler stage through C generation.
 The debug AST and resolution output are not stable serialization formats.
 `build` compiles to a native executable and keeps only that artifact: in the
 working directory under the source file's stem, or wherever `-o <path>` names.
-A build never overwrites its own source. `new`, `fmt`, `test` and `doc` remain
-future CLI commands.
+A build never overwrites its own source. `fmt` formats source files; `new`,
+`test` and `doc` remain future CLI commands.
 
 A program that declares foreign functions from a library other than libc names
 it on the command line; `build` and `run` forward `-l` and `-L` to clang and
@@ -158,7 +161,7 @@ field, a return type or a payload. With reference counting and no cycle
 collector, a managed object able to reach a closure that captured it would be a
 cycle nothing frees; the rule removes the reachability, and in exchange a
 function value never allocates, retains or releases. Captures are copies of
-immutable bindings. Storing a callback for later waits for interfaces.
+immutable bindings. Storable class interfaces support handlers kept for later; closures remain non-escaping.
 
 The library ships inside the compiler behind a reserved `std` prefix, and
 reaches as far as fetching a document and decoding it:
@@ -214,8 +217,8 @@ func main() {
 
 ## Architecture and verification
 
-One Cargo workspace contains the `skuld-compiler` library and `skuld-cli` binary
-package, without external Rust dependencies. Recursive descent and Pratt parsing
+One Cargo workspace contains the `skuld-compiler` library, `skuld-cli` binary
+package and `skuld-lsp` language server, without external Rust dependencies. Recursive descent and Pratt parsing
 remain separate from resolution and checking. The type checker builds semantic
 tables; a distinct lowering pass creates typed HIR. C generation reads only HIR.
 External process invocation belongs to the CLI, never the compiler library, and
@@ -263,7 +266,8 @@ heap-based and reference counted.
 links avoid ownership cycles without introducing null or a cycle collector.
 
 Arrays use `[]int` and `[1, 2, 3]`, with shared references, checked indexes and
-`len()`. Their length is fixed; growth, sorting and callbacks remain future work.
+`len()`. They support growth, insertion, removal, slicing and stable in-place sorting
+with non-escaping callbacks.
 
 ```bash
 cargo run -p skuld-cli -- run examples/classes.skuld
@@ -277,7 +281,8 @@ cargo run -p skuld-cli -- run examples/bytes.skuld
 cargo run -p skuld-cli -- run examples/ffi.skuld
 ```
 
-`Option<T>`, `Some(value)` and `None` represent optional values without null.
+`Option<T>`, `Some(value)` and `None` represent optional values; contextual
+`null` is another spelling of absence, not a standalone null value.
 Use `if let Some(value) = expression { ... } else { ... }` to access a payload;
 `is_some()` and `is_none()` query presence. Options have value semantics and
 an inline representation, with reference counting for managed payloads.
@@ -349,9 +354,15 @@ M5 (`extern "C"` FFI and linking), M4
 `tests/pass/json_parser.skuld`), M3 (`Result<T, E>` and propagation), M2 (`for`
 and iteration) and M1 (Enums and `match`), alongside
 Option, classes, weak references and arrays.
-Function values and callbacks, interfaces, sockets, the official
-formatter, broader tooling, portability and eventual self-hosting remain ahead;
-`ROADMAP.md` proposes an ordering for those milestones and records the design
-questions they depend on.
+M8 (function values and stable sorting), M9 (blocking TCP, HTTP and JSON)
+and M10 (class interfaces) are also implemented, as is `let ... else`.
+The LSP provides diagnostics, completion, hover and definition.
+
+No implementation milestone is active. [ROADMAP.md](ROADMAP.md#next-sequence--planned-not-selected)
+proposes M11–M18: formatting, LSP refactoring, local CLI applications and tests,
+construction defaults, maps, host-name resolution, verified HTTPS, and measured
+performance/portability. M11 is the recommended next step; each milestone still
+requires explicit selection and its open design decisions. General generics and
+self-hosting remain separate candidates.
 Status is reported as completed milestones, not as a completion percentage, and
 implies neither production readiness nor measured Go/Rust performance.

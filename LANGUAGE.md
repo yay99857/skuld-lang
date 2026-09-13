@@ -20,7 +20,7 @@ The existing `func`, `->`, immutable `let` and mutable `var` syntax is retained.
 TypeScript/JavaScript source, type-system and runtime compatibility are not goals.
 Native compilation initially through C and clang. Composition instead of
 inheritance. No normal `null` value and no exceptions as the primary error model.
-An official `skuld fmt` will eventually be the authority on style.
+The official `skuld fmt` is implemented and is the authority on style.
 
 ## Project priorities — Design commitments
 
@@ -1351,16 +1351,15 @@ Enums are sum types, e.g.
 propagation are implemented above, as are the sized integers, `[]u8`,
 string slicing and the `extern "C"` boundary.
 
-Future commands: `new`, `fmt`, `test`, `doc`. LLVM/Cranelift and eventual
+Future commands: `new`, `test`, `doc` (`fmt` is implemented). LLVM/Cranelift and eventual
 self-hosting remain long-term possibilities.
 
-`ROADMAP.md` proposes the order in which these capabilities would arrive —
-enums and `match`, then `for`, then `Result` and `?`, then bytes and string
-slices, then the FFI, then modules — together with the design questions each one
-depends on.
-Everything up to and including the standard library has landed. Function
-values, callbacks, interfaces and everything after them are a plan, not a
-commitment, and none of it is implemented.
+`ROADMAP.md` records M1–M11 as implemented, including function values,
+callbacks, interfaces, blocking TCP/HTTP with JSON, and the official formatter
+`skuld fmt`. Its proposed M12–M18 sequence covers editor refactoring, local CLI
+applications and tests, construction defaults, maps, name resolution, HTTPS,
+and measured performance/portability. These proposals do not settle their syntax
+or authorize implementation. No implementation milestone is active.
 
 ## Unsupported features and experimental status
 
@@ -1373,8 +1372,9 @@ Loops (`while`, `loop`, `for`), structs, classes, interpolation, weak class refe
 `Result` with `?`, enums, pattern matching, the sized integers, `[]u8`, string indexing and slicing,
 foreign `extern "C"` declarations with raw pointers, modules with `import` and
 `pub`, the embedded standard library,
-and reference-counted runtime behavior are **Implemented**. Interfaces and the
-remaining capabilities above are **Planned**. No generics, macros, async/await, threads, channels,
+function values, stable sorting, interfaces, `let ... else`,
+and reference-counted runtime behavior are **Implemented**. The future
+capabilities listed in the roadmap are **Planned**. No generics, macros, async/await, threads, channels,
 reflection, decorators, annotations, package registry, compiler plugins,
 compile-time execution, operator overloading or user-defined conversions will
 be implemented before Demo 3. Inheritance is excluded from the core design.

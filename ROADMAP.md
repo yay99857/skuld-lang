@@ -1,16 +1,37 @@
-# Skuld roadmap — Planned
+# Skuld roadmap
 
-This document records the **proposed** sequence for the milestones after the
-current one. Nothing here is implemented, and recording a milestone here is not
-authorization to start it: `AGENTS.md` remains the authority on which milestone
-is active, and the user selects it explicitly. Read `LANGUAGE.md` for what the
-language actually does today and `README.md` for what currently runs.
+This document records completed milestones and a **proposed** next sequence.
+M1–M11 are implemented. No implementation milestone is active. The current
+request authorizes planning, not starting any of the milestones below; each
+still needs explicit selection and any open design decisions recorded in
+`AGENTS.md`. See `LANGUAGE.md` for semantics and `README.md` for usage.
 
-The long-range target that motivates this ordering is a program that performs
-an HTTP request and decodes a JSON response. M1–M5 build the language
-foundations it needs without reaching it; M6–M9 turn what remains into a library
-problem and finally spend that budget. The naming below is local to this
-document.
+The original target — fetching an HTTP document by IPv4 address and decoding
+JSON — is reached. The next proposed target is a small native command-line
+application that reads local input, transforms JSON, has its own tests, and
+can later fetch input over HTTPS by host name. Tooling and measured reliability
+come before expanding the type system or changing the backend.
+
+## Current baseline
+
+- **Implemented:** M1–M11, including non-escaping lambdas, stable array sorting,
+  storable class interfaces, modules, the embedded library, blocking HTTP, and
+  the official formatter (`skuld fmt` with `--check`).
+  `let ... else` also unwraps Option/Result without nesting the success path.
+- **Tooling implemented:** highlighting, the official formatter `skuld fmt`, and
+  a third workspace crate, `lsp/`, with diagnostics, completion, hover and definition.
+- **Current limits:** required named fields at construction; no user-defined
+  constructors or field defaults; no maps or general generics; no file/argument
+  standard library; no language test command. Network
+  access has no host-name resolution, errno detail or TLS. Linux x86_64 is the
+  currently tested native target; Go/Rust-level performance remains unmeasured.
+- **Syntax reference:** `test.skuld` remains an untouched design sketch.
+  Its global statements and incomplete `new User()` are unsupported, and its
+  `=>` sorting callback was superseded by M8's `(a, b): int { ... }` form.
+  No proposed milestone adds `undefined` or implicit zero values.
+
+The assessment above follows source, fixtures and documentation; this planning
+change does not constitute a fresh execution of the test suite.
 
 ## M1 — Enums and `match` — Implemented
 
@@ -43,7 +64,7 @@ enclosing loops.
 ## M2 — `for` and iteration — Implemented
 
 ```skuld
-for i in 0..len(bytes) { ... }
+for i in 0..bytes.len() { ... }
 for item in items { ... }
 ```
 
@@ -484,13 +505,179 @@ Not sequenced with the milestones above and not blocking any of them.
   particular has been deferred since the beginning and can land whenever the
   syntax stops moving.
 
-## Beyond M9
+## Next sequence — Planned, not selected
 
-Nothing here is planned in the sense the sections above are. The recurring
-candidates are a real map type, generics (question 1 below), LLVM or Cranelift
-as an alternative backend, portability beyond the current target, and eventual
-self-hosting. Each would need its own design pass and its own explicit
-authorization.
+The numbers express a recommended order, not a requirement to implement every
+entry. M11 and M12 improve daily use without new language semantics. M13 is the
+first application milestone. M14 and M15 address language ergonomics separately;
+M16 and M17 require explicit foreign-boundary and dependency decisions.
+M18 can collect a baseline earlier, but optimizations must follow measurements.
+
+| Milestone | Deliverable | Dependency |
+| --- | --- | --- |
+| M11 | Official formatter | Implemented |
+| M12 | References and safe rename in the LSP | Existing semantic tables |
+| M13 | Local CLI applications and `skuld test` | File/process API design |
+| M14 | Field defaults and construction | Initialization design |
+| M15 | A map for real application data | Collection/type-system decision |
+| M16 | Host names and useful network errors | Foreign-boundary decision |
+| M17 | Verified HTTPS | M16 and TLS dependency policy |
+| M18 | Performance baseline and a second native target | Representative applications |
+
+## M11 — Official formatter — Implemented
+
+The tool that makes Skuld code consistent and keeps review discussions on behavior.
+
+- **Implemented:** `skuld fmt <file>` formatting in-place and `skuld fmt --check <file>`
+  reporting drift with a non-zero exit code without modifying the file. Preserves
+  all `//` comments (leading and trailing), literal values with original formatting
+  and escapes, statement boundaries, multiline expressions, and AST semantics.
+- **Decision taken — return type normalization:** function and method return
+  signatures normalize to `-> Type`. Both `:` and `->` remain fully accepted by the
+  language and parser; formatting standardizes the representation across the codebase.
+  Method signatures on interfaces and extern blocks normalize to `-> Type`.
+- **Decision taken — indentation and spacing:** 4-space indentation; binary operators
+  and assignments padded with single spaces; comma-separated lists padded after commas;
+  colons in typed parameters and field declarations padded after the colon (`name: Type`).
+- **Decision taken — match arms:** arms normalize to `Pattern: stmt` / `Pattern: { ... }`.
+  Enum variants formatted one per line with trailing commas.
+- **Decision taken — blocks and control flow:** `{` sits on the opening line; `}` on
+  its own line aligned with the parent; `} else {` stitched cleanly; empty blocks
+  compact to `{}`.
+- **Closing marker — reached:** formatting all 17 executable examples and 57 pass
+  fixtures is idempotent (`format(format(x)) == format(x)`), preserves native execution
+  output byte-for-byte under clang, check mode reports drift without writes, and invalid
+  input produces diagnostics without overwriting the file. `test.skuld` is preserved
+  untouched. Integration tests in `cli/tests/fmt.rs` and `cli/tests/cli.rs`.
+- **Out of scope, and still out:** syntax changes, import reorganization, and lint rules.
+
+## M12 — References and rename — Planned
+
+- **Purpose:** make refactoring a multi-module program reliable in the editor.
+- **Scope:** find references, prepare rename and workspace edits for declarations
+  and their resolved uses, including members and qualified imports where supported.
+  Respect open unsaved buffers, file-qualified spans and UTF-16 LSP positions.
+- **Decisions before implementation:** workspace/program-root discovery and the
+  initial set of renameable symbols. Refuse edits when semantic information is
+  stale or a rename would introduce collisions or alter name resolution.
+- **Closing marker:** rename an exported declaration across a multi-file program
+  and recheck it; shadowed names, comments and string contents remain unchanged.
+  Tests cover unsaved files, Unicode positions, collisions and invalid source.
+- **Out of scope:** incremental compilation, automatic fixes and editor-specific UI.
+
+## M13 — Local CLI applications and tests — Planned
+
+- **Purpose:** build a JSON transformation tool that can consume an actual file,
+  accept arguments, report errors and be tested as an ordinary Skuld project.
+- **Scope:** minimal file reads/writes and process arguments, an explicit process
+  exit policy, and `skuld test` with deterministic discovery and failure reporting.
+  Library entries must have callers in this application or its tests.
+- **Decisions before implementation:** file/resource lifetime and explicit close,
+  byte versus text APIs, concrete error types, argument forwarding after `--`,
+  and test discovery/assertion syntax. Keep `main` returning void unless a
+  separate decision changes it. Do not introduce annotations implicitly.
+- **Dependencies:** the current scalar/buffer FFI supports a limited file API;
+  richer OS errors or argument access may need a narrowly approved bridge.
+  Decide that boundary explicitly, or sequence the affected part after M16.
+- **Closing marker:** a multi-module Skuld CLI reads a temporary JSON file,
+  transforms it and writes output; its own tests run with `skuld test` and a
+  failing test gives a nonzero exit. Host integration tests own all temporary
+  files and also cover missing files, malformed input and cleanup on failure.
+- **Out of scope:** subprocess execution, directory traversal, package registry,
+  project generator and a general-purpose IO framework.
+
+## M14 — Field defaults and construction — Planned
+
+- **Purpose:** let classes establish useful initial state without spelling every
+  field at every call site, addressing the remaining construction sketch.
+- **Scope:** design field defaults and user-defined class initialization while
+  preserving `new Class(...)`, strong typing and fully initialized objects.
+- **Decisions before implementation:** constructor spelling, parameter matching,
+  default evaluation order, access to `this`, failure through Result, and whether
+  struct defaults belong here or later. No syntax is accepted by this roadmap.
+- **Closing marker:** executable examples cover defaulted and supplied fields;
+  missing required fields and use of an uninitialized field are diagnostics.
+  Managed defaults and any approved failing initialization release exactly once,
+  with left-to-right evaluation verified under sanitizers.
+- **Out of scope:** overloads, inheritance, global statements and zero/null defaults.
+
+## M15 — Maps with an application consumer — Planned
+
+- **Purpose:** remove repeated linear searches in application indexes; JSON object
+  lookup is a candidate consumer, not permission to change its semantics.
+- **Scope:** a small map API for insertion, lookup, replacement, removal and
+  iteration, with managed key/value cleanup and specified mutation behavior.
+- **Decision gate:** choose a concrete string-keyed library collection, a builtin
+  map, or general generics. Generics are not implicitly authorized by choosing
+  maps; if selected, split their design and implementation into a separately
+  approved milestone before implementing the collection.
+- **Other decisions:** equality/hash rules, value versus reference semantics,
+  iteration order, missing-key representation and behavior during iteration.
+  Preserve JSON field order and duplicate keys unless explicitly changed; an
+  auxiliary index can coexist with the current list representation.
+- **Closing marker:** a real CLI workload uses the collection; tests exercise
+  collisions, resizing, missing keys, replacement and managed-value cleanup.
+  Compare lookup costs against the existing array approach with equal inputs.
+- **Out of scope:** sets, arbitrary user hash implementations and a broad
+  collection hierarchy unless separately selected.
+
+## M16 — Host names and network error detail — Planned
+
+- **Purpose:** remove the IPv4-literal-only restriction and report the reason
+  a network operation failed, not just its step.
+- **Decision gate:** choose an explicit foreign-memory primitive, a narrowly
+  scoped native bridge, or a resolver in Skuld over UDP. The UDP choice does
+  not solve errno access; choose that separately. None is authorized here.
+- **Scope after that decision:** name resolution for the current blocking TCP
+  client, resolver-result cleanup and structured OS errors. Decide IPv4-only
+  versus IPv6, address fallback, timeout policy and platform coverage first.
+- **Closing marker:** a controlled local name resolves and an HTTP request to a
+  loopback server succeeds; resolution failures, connection failures and cleanup
+  are tested through deterministic fixtures or an injected resolver. No test
+  relies on public DNS or an external service.
+- **Out of scope:** TLS, servers, async IO and unrestricted FFI expansion.
+
+## M17 — HTTPS with certificate verification — Planned
+
+- **Purpose:** make the document-fetching application usable with HTTPS endpoints.
+- **Dependencies:** M16 and an explicit choice of TLS provider, supported versions,
+  linking/distribution policy and trust-store integration. No custom cryptography.
+- **Scope:** blocking HTTPS with certificate-chain and host-name verification,
+  SNI, bounded IO behavior and structured handshake/verification errors.
+- **Decisions before implementation:** connection/resource ownership, trust roots,
+  timeout behavior and whether redirects stay rejected or get a separate design.
+- **Closing marker:** local TLS integration tests with a test CA accept the
+  intended host and reject wrong names, expired and untrusted certificates;
+  early failures release sockets and TLS resources. A Skuld program fetches and
+  parses JSON over that verified connection without disabling verification.
+- **Out of scope:** HTTP/2, connection pools, async, TLS servers and public-network tests.
+
+## M18 — Measured performance and portability — Planned
+
+- **Purpose:** turn the native-performance goal into evidence and identify which
+  parts of the runtime and foreign library are platform-specific.
+- **Scope:** reproducible benchmarks for JSON, strings, array growth/sort, maps
+  if selected, interface dispatch and compilation; then bring up one explicitly
+  selected second native target. Report toolchain, optimization flags, input,
+  timings and memory/allocation metrics where measurable.
+- **Decisions before implementation:** the second target and the comparison
+  workloads. Go/Rust comparisons must do equivalent work, including validation,
+  overflow behavior and IO boundaries; report differences that cannot be aligned.
+- **Closing marker:** checked-in benchmark inputs and reproducible instructions,
+  an initial results report, and the applicable native/sanitizer/FFI tests passing
+  on the selected target with unsupported features explicitly documented.
+  Performance improvements need before/after evidence and unchanged semantics.
+- **Out of scope:** a promised speed ratio, replacing the C backend, changing
+  copy semantics without evidence, threading and a new memory-management model.
+
+## Beyond this sequence — Candidates, not selected
+
+General generics remain conditional on a concrete consumer and their own design;
+recursive enum boxing, escaping closures, interface inheritance/downcasts,
+`skuld new`, `skuld doc`, an HTTP server, async, alternative backends and
+self-hosting have no implementation authorization. Revisit them after the CLI
+application and measurements expose a need, rather than adding them to every
+milestone. No package registry, GC or borrow checker is proposed.
 
 ## Open design questions
 
@@ -505,7 +692,7 @@ above.
    slice earns its danger is a question for a benchmark, not for this document.
 3. Recursive enum variants: automatic boxing, or the user's responsibility?
 4. ~~Callback and lambda syntax?~~ Answered by M8, which the user delegated:
-   `func(a: int, b: int) -> int { ... }` as the literal and `func(int, int) -> int`
+   `(a: int, b: int): int { ... }` as the literal and `(int, int) -> int`
    as the type, with the types omissible under a known expected type. The
    sketch's `=>` is not adopted.
 5. ~~JSON objects as a list of key/value fields, or waiting for a real map

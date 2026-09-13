@@ -205,13 +205,18 @@ accurate; documenting a future feature is not a request to implement it.
   value is the object plus a method table; the allocation header already
   carries each class's destructor, so counting one needs no new runtime code.
   Inheritance between interfaces, default bodies, structs behind interfaces and
-  run-time downcasts are all out and need their own decision. No milestone is
-  active.
+  run-time downcasts are all out and need their own decision.
   M9 (sockets, HTTP and the long-range target) is complete: `std/net` is a
   blocking TCP connection over libc, `std/http` an HTTP/1.1 client on top of
   it, and `std/json` is M4's parser promoted out of its fixture. A Skuld
-  program fetches a document and decodes it. No milestone is active. Do not
-  infer authorization for further features without explicit decision.
+  program fetches a document and decodes it.
+  M11 (the official formatter) is complete: `skuld fmt <file>` formats in-place
+  and `skuld fmt --check <file>` detects drift without writing. It preserves all
+  `//` comments, exact literal representations, statement boundaries and AST
+  semantics. Return types normalize to `-> Type` while `:` remains fully accepted
+  in source. All fixtures and examples format idempotently and execute cleanly.
+  No milestone is active. Do not infer authorization for further features without
+  explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
   and string slices → `extern "C"` FFI → modules → standard library → function
   values → sockets. It is a plan, not a selection: a remaining entry is Planned,
@@ -297,6 +302,12 @@ accurate; documenting a future feature is not a request to implement it.
   an ephemeral loopback port and stops it; nothing in the suite touches the
   network, and `tests/pass` has no server at all, so the library halves are
   tested there and the socket half only in `cli/tests`.
+- The official formatter is implemented: `skuld fmt <file>` formats in place and
+  `skuld fmt --check <file>` reports drift without modifying the file. Formatting
+  preserves all line comments (`//`), literal byte choices, statement boundaries
+  and AST semantics. Top-level and method signatures normalize to `-> Type`, while
+  colon return type syntax remains accepted. Match arms normalize to `Pattern: ...`.
+  Idempotency and native output preservation are tested across all fixtures.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built
