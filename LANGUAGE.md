@@ -3,8 +3,9 @@
 Status labels: **Implemented** means available now; **Planned** describes future
 intent, not accepted/executable programs; **Experimental** denotes provisional
 choices. The complete single-file native pipeline, Demos 0–2, loops, structs,
-reference-counted strings, interpolation, classes, weak references, arrays and
-builtin Option values are implemented. Self-hosting remains planned.
+reference-counted strings, interpolation, classes, weak references, arrays,
+builtin Option values and builtin `Result<T, E>` with `?` propagation are
+implemented. Self-hosting remains planned.
 
 ## Philosophy — Planned
 
@@ -57,13 +58,17 @@ The old words are ordinary identifiers and can be explicitly declared by users.
 Keywords: `func let var return if else while loop for in break continue new weak class struct
 impl enum match`.
 Reserved future keywords: `interface import static extern`.
-`true` and `false` produce boolean literal tokens. Type names, `print`, `Some`
-and `None` are identifiers. `Option<T>` is builtin type syntax, not user-defined
-generics. In a type annotation, `Option<int>=None` separates the closing `>`
-from assignment even though the lexer otherwise recognizes `>=` as one operator. Recognizing a keyword does not implement its syntax or semantics.
+`true` and `false` produce boolean literal tokens. Type names, `print`, `Some`,
+`None`, `Ok` and `Err` are identifiers. `Option<T>` and `Result<T, E>` are
+builtin type syntax, not user-defined generics. In a type annotation,
+`Option<int>=None` and `Result<int, string>=value` separate the closing `>`
+from assignment even though the lexer otherwise recognizes `>=` as one operator.
+`>>` is two closing tokens, never a shift, so nested generic types need no
+special rule. Recognizing a keyword does not implement its syntax or semantics.
 
 Delimiters: `( ) { } [ ] , . .. : ->`.
-Operators: `+ - * / % = == != < > <= >= ! && || += -= *= /=`.
+Operators: `+ - * / % = == != < > <= >= ! ? && || += -= *= /=`.
+`?` is postfix and only valid after an expression; see error handling below.
 Operators use longest matching; a sign is separate from a number.
 
 Integers are `[0-9]+`, stored as `u64` magnitudes. Floats are
@@ -593,6 +598,72 @@ a standalone block: write `let value: Option<int> = (None)` before a following
 See [examples/options.skuld](examples/options.skuld) for optional values and safe
 weak promotion together.
 
+## Error handling — Implemented
+
+`Result<T, E>` is a builtin value type holding either a success payload of type
+`T` or an error payload of type `E`. Both must be non-void implemented value
+types. Like `Option`, it is builtin type syntax rather than user-defined
+generics; general generics remain planned.
+
+```skuld
+enum ConfigError {
+    Missing(string)
+    NotANumber(string)
+}
+
+func lookup(key: string) -> Result<string, ConfigError> {
+    if key == "port" { return Ok("8080") }
+    return Err(ConfigError.Missing(key))
+}
+
+func port() -> Result<int, ConfigError> {
+    let text = lookup("port")?
+    return Ok(to_int(text)? + 1)
+}
+```
+
+`Ok(value)` and `Err(error)` construct a `Result`. Both require an expected
+`Result` type from an annotation, assignment, parameter, field, return type or
+enclosing expression: writing one side says nothing about the other, so an
+error type is never inferred from a success value. There is no implicit
+wrapping of a bare value into a `Result`; the constructor is always written.
+`Result` cannot be redeclared as a struct, class or enum type, while `Ok` and
+`Err` are shadowable prelude value bindings like `print`, `Some` and `None`.
+Using either without arguments is an error (`E0106`), since neither is a value.
+
+A `Result` is inspected the same way an enum is:
+
+```skuld
+match lookup("host") {
+    Ok(text): print(text)
+    Err(error): print(describe(error))
+}
+if let Ok(text) = lookup("host") { print(text) }
+if let Err(error) = lookup("nope") { print(describe(error)) }
+```
+
+`Ok` and `Err` are the only two variants, so a `match` must cover both or carry
+a wildcard (`E0113`). Arm and `if let` bindings are immutable and scoped to their
+branch, retaining a managed payload for that scope. `is_ok(): bool` and
+`is_err(): bool` query the tag and take no arguments.
+
+The postfix `?` operator propagates errors. `expression?` evaluates to the
+success payload, or returns `Err(error)` from the enclosing function without
+running the rest of it. It requires an operand of type `Result` (`E0102`),
+an enclosing function returning `Result` (`E0102`), and an identical error type
+on both (`E0102`); errors are never converted. `?` binds tighter than any
+operator, so `read()? + read()?` applies it to each call. An early return through
+`?` releases the operand and everything the scope had acquired, exactly like a
+written `return`.
+
+`Result` stores a tag and an inline payload, so constructing one does not
+allocate, and a value struct cannot contain itself through a `Result`. Copying
+retains a managed payload on whichever side is active. Results support neither
+equality, printing nor interpolation as a whole; extract the payload instead.
+Automatic error conversion, backtraces and recoverable panics are out of scope.
+
+See [examples/results.skuld](examples/results.skuld).
+
 ## Arrays — Implemented
 
 ```skuld
@@ -672,7 +743,7 @@ match status {
 }
 ```
 
-- Target expression must be an enum type (`E0102` if not).
+- Target expression must be an enum or a `Result` (`E0102` if not); a `Result` matches as a two-variant enum with `Ok` and `Err`.
 - Arm patterns support variant patterns (`Status.Pending`, `Status.Active(code)`) and the wildcard pattern (`_`).
 - Arm separator accepts `:` or `->`.
 - Arms can have a single statement or a block `{ ... }`.
@@ -709,8 +780,8 @@ and receiver syntax needs alignment with the class design before it is fixed;
 the earlier `func print(self)` sketch is superseded as a class-method model.
 Enums are sum types, e.g.
 `enum Status { Online Offline Away }`.
-`Option<T>` with `Some`/`None` is implemented above. `Result<T, E>` with
-`Ok`/`Err` and future `?` propagation remains planned for errors.
+`Option<T>` with `Some`/`None` and `Result<T, E>` with `Ok`/`Err` and `?`
+propagation are implemented above.
 
 Future FFI: `extern "C" { func puts(text: *char) -> int }`.
 Future commands: `new`, `fmt`, `test`, `doc`. LLVM/Cranelift and eventual
@@ -719,7 +790,8 @@ self-hosting remain long-term possibilities.
 `ROADMAP.md` proposes the order in which these capabilities would arrive —
 enums and `match`, then `for`, then `Result` and `?`, then bytes and string
 slices, then the FFI — together with the design questions each one depends on.
-That ordering is a plan, not a commitment, and none of it is implemented.
+The first three have landed; the remainder is a plan, not a commitment, and
+none of it is implemented.
 
 ## Unsupported features and experimental status
 
@@ -729,8 +801,8 @@ variables, conditional execution and classes with methods/interpolation
 (Demos 0–3) are **Implemented**.
 
 Loops (`while`, `loop`, `for`), structs, classes, interpolation, weak class references, arrays, Option,
-enums, pattern matching and reference-counted runtime behavior are **Implemented**. Interfaces,
-Result, modules and the remaining capabilities above are **Planned**. No generics, macros, async/await, threads, channels,
+`Result` with `?`, enums, pattern matching and reference-counted runtime behavior are **Implemented**. Interfaces,
+modules and the remaining capabilities above are **Planned**. No generics, macros, async/await, threads, channels,
 reflection, decorators, annotations, package registry, compiler plugins,
 compile-time execution, operator overloading or user-defined conversions will
 be implemented before Demo 3. Inheritance is excluded from the core design.

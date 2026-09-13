@@ -53,7 +53,7 @@ Loop variables are immutable bindings scoped to the body. Managed array elements
 are retained and released cleanly on every iteration and exit path (`break`,
 `continue`, `return`). `break` and `continue` naturally bind to the loop.
 
-## M3 — `Result<T, E>` and propagation
+## M3 — `Result<T, E>` and propagation — Implemented
 
 ```skuld
 func parse(text: string) -> Result<JsonValue, JsonError> {
@@ -64,19 +64,24 @@ func parse(text: string) -> Result<JsonValue, JsonError> {
 
 The error mechanism has to exist before anything that can fail exists.
 
-- **Decision required first:** builtin `Result`, following the existing
-  `Option` precedent, or general generics. Builtin avoids two-parameter
-  generics and matches what is already there, at the cost of known debt against
-  a future generic system. General generics is a milestone of its own and
-  `AGENTS.md` defers it.
-- **In scope:** `Result<T, E>`, `Ok`/`Err`, `if let Ok(x) =`, `match`, and `?`
-  as an early return.
-- **Out of scope:** automatic error conversion across types, backtraces,
-  recoverable panics.
-- **Open risk:** `?` interacts with reference counting — an early return must
-  release everything acquired in the scope. The emitted cleanup attributes
-  should already cover this, which is exactly why a leak here would go
-  unnoticed. Needs a dedicated fixture under the leak checker.
+- **Decision taken:** builtin `Result`, following the existing `Option`
+  precedent. It avoids two-parameter generics and matches what was already
+  there, at the cost of known debt against a future generic system. General
+  generics stay a milestone of their own and `AGENTS.md` still defers them.
+- **Implemented:** `Result<T, E>`, `Ok`/`Err`, `if let Ok(x) =`,
+  `if let Err(e) =`, `match` with exhaustiveness over the two variants,
+  `is_ok()`/`is_err()`, and `?` as an early return. Both constructors require an
+  expected `Result` type, since neither payload can be inferred from the other,
+  and no bare value wraps implicitly. `?` refuses a mismatched error type rather
+  than converting it. `Ok` is tag 0 and `Err` tag 1, so a `Result` shares the
+  enum layout, matching and reference-counting code.
+- **Out of scope, and still out:** automatic error conversion across types,
+  backtraces, recoverable panics.
+- **Risk closed:** `?` emits the same cleanup attributes as a written `return`,
+  so an early return releases the operand and every local acquired before it.
+  `tests/pass/result_propagation.skuld` fails on the first `?` and on the second,
+  the latter with an array, a class and a string alive, and runs under the
+  address, leak and UB sanitizers with the rest of `tests/pass`.
 
 ## M4 — Bytes, sized integers and string slices
 
@@ -135,8 +140,9 @@ interleaved or as a milestone of their own.
 These are not settled by this document and change the shape of the milestones
 above.
 
-1. Builtin `Result` or general generics? Determines M3 and whether generics ever
-   enter the project.
+1. ~~Builtin `Result` or general generics?~~ Answered: M3 shipped `Result` as a
+   builtin. Whether general generics ever enter the project, and how they would
+   reconcile with the builtin `Option` and `Result`, remains open.
 2. Do string slices retain their owner or copy? Determines the memory profile of
    all parsing.
 3. Recursive enum variants: automatic boxing, or the user's responsibility?

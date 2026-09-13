@@ -44,3 +44,11 @@ fixture also runs with address, leak and undefined-behavior sanitizers through
 Option fixtures cover expected-type inference, managed and nested payloads,
 constructor shadowing, if-let scope/flow and safe weak promotion on live, empty
 and expired targets. Invalid Option recursion through value fields is rejected.
+
+Result fixtures cover Ok/Err construction under an expected type, exhaustive
+matching over the two variants, `if let Ok`/`if let Err`, `is_ok`/`is_err`, and
+`?` propagation. `result_propagation` deliberately fails on both the first and
+the second `?`, the latter with an array, a class and a string alive, so the
+leak checker sees an early return that has to release them. Missing context for
+a constructor, a mismatched or absent enclosing error type, a non-Result operand
+of `?`, a non-exhaustive match and a redeclared `Result` live in `fail/`.

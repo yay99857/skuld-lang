@@ -11,8 +11,8 @@ func main() {
 Skuld now checks and runs small native programs through the complete pipeline:
 lexer → parser → AST → resolver → type checker → HIR → C → clang → executable.
 Demos 0–3 work: hello, typed functions/variables, conditional flow and classes
-with methods and interpolation. Loops, structs, weak references, arrays and
-Option values work too.
+with methods and interpolation. Loops, structs, weak references, arrays,
+Option values and `Result<T, E>` with `?` propagation work too.
 
 Skuld is an independent language with its own syntax, semantics and identity.
 TypeScript is only one reference for readability, alongside Go, V and Rust;
@@ -176,6 +176,7 @@ cargo run -p skuld-cli -- run examples/arrays.skuld
 cargo run -p skuld-cli -- run examples/options.skuld
 cargo run -p skuld-cli -- run examples/enums.skuld
 cargo run -p skuld-cli -- run examples/for_loops.skuld
+cargo run -p skuld-cli -- run examples/results.skuld
 ```
 
 `Option<T>`, `Some(value)` and `None` represent optional values without null.
@@ -192,8 +193,23 @@ with arm bindings and reference-counted managed variant payloads.
 scoped to the body; managed array elements retain and release per iteration. `break` and `continue`
 are supported.
 
-This closes the M2 (`for` and iteration) milestone as well as M1 (Enums and `match`), Option, classes,
-weak references and arrays. Result (M3), bytes and string slices (M4),
+`Result<T, E>` is the builtin error type. `Ok(value)` and `Err(error)` construct
+one, and both take their type from the context, since neither side can be
+inferred from the other. `match`, `if let Ok(value) = ...`, `if let Err(e) = ...`,
+`is_ok()` and `is_err()` inspect it. The postfix `?` unwraps a success or returns
+the error unchanged from a function that returns a `Result` with the same error
+type, releasing everything the scope had acquired.
+
+```skuld
+func port() -> Result<int, ConfigError> {
+    let text = lookup("port")?
+    return Ok(to_int(text)? + 1)
+}
+```
+
+This closes the M3 (`Result<T, E>` and propagation) milestone as well as
+M2 (`for` and iteration), M1 (Enums and `match`), Option, classes,
+weak references and arrays. Bytes and string slices (M4),
 modules, a standard library, the official
 formatter, broader tooling, portability and eventual self-hosting remain ahead;
 `ROADMAP.md` proposes an ordering for those milestones and records the design

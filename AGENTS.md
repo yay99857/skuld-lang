@@ -66,7 +66,8 @@ accurate; documenting a future feature is not a request to implement it.
   are int, float, bool, string and void; functions, locals, calls, returns,
   conditionals, `while`, `loop`, `break`, `continue`, structs, classes and
   reference-counted string concatenation and interpolation execute. Weak class
-  references, homogeneous arrays and builtin Option values execute too. Parameters and `let` bindings are immutable.
+  references, homogeneous arrays, builtin Option values and builtin `Result<T, E>`
+  with `?` propagation execute too. Parameters and `let` bindings are immutable.
 - `lex`, `parse`, `resolve` inspect individual stages. `check` performs full
   static checking without clang; `emit-c` emits checked C; `run` builds and
   executes in a private temporary directory, keeping nothing; `build` keeps the
@@ -105,8 +106,17 @@ accurate; documenting a future feature is not a request to implement it.
 - Builtin `Option<T>` uses inline tag/payload value semantics. Contextual `null` (and
   `None`) represents absent values; values wrap implicitly into expected Options.
   `if let name = value` (and `if let Some(name)`) binds an immutable payload in its then scope.
-  Managed payloads retain/release only when present. General generics, interfaces
-  and Result remain future work.
+  Managed payloads retain/release only when present. General generics and
+  interfaces remain future work.
+- Builtin `Result<T, E>` uses the same inline tag/payload layout as an enum: `Ok`
+  is tag 0 and `Err` tag 1, so matching, retain and release are shared code.
+  `Ok(v)`/`Err(e)` require an expected Result type — neither side is inferred
+  from the other — and no bare value wraps implicitly. `match`, `if let Ok(x)`,
+  `if let Err(e)`, `is_ok()` and `is_err()` inspect a Result. Postfix `?` yields
+  the success payload or returns the error unchanged; it requires an enclosing
+  function returning a Result with an identical error type and never converts
+  between error types. `Result` is a reserved type name; `Ok` and `Err` are
+  shadowable prelude bindings.
 - Arrays use `[]T`, literals, checked int indexes, `len()`, `push()`, `insert()`,
   `pop()` and `remove()`. Capacity grows geometrically; references share element
   mutations even through `let`. Managed elements are retained and released. Slicing,
@@ -120,15 +130,17 @@ accurate; documenting a future feature is not a request to implement it.
   `break` and `continue` naturally bind to the loop.
 - Completed: classes, weak references, dynamic arrays (push, insert, pop, remove),
   colon return type syntax, Option with null, safe weak promotion, M1 (Enums and match),
-  and M2 (`for` and iteration). The next milestone is M3 (`Result<T, E>` and propagation);
+  M2 (`for` and iteration), and M3 (`Result<T, E>` and propagation), which the user
+  authorized as a builtin following the Option precedent rather than through general
+  generics. The next milestone would be M4 (bytes, sized integers and string slices);
   do not infer authorization for further features without explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
   and string slices → `extern "C"` FFI, with modules and networking beyond it.
-  It is a plan, not a selection: every entry is Planned, and starting one still
-  requires an explicit decision recorded here. Its open design questions
-  (builtin `Result` versus generics, slice retention, recursive enum variants,
-  callback syntax, JSON object representation) are unresolved; do not settle
-  them unilaterally while implementing something else.
+  It is a plan, not a selection: a remaining entry is Planned, and starting one
+  still requires an explicit decision recorded here. Its `Result`-versus-generics
+  question was answered in favour of a builtin; the rest (slice retention,
+  recursive enum variants, callback syntax, JSON object representation) are
+  unresolved; do not settle them unilaterally while implementing something else.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built
@@ -177,17 +189,15 @@ checking are stable.
 Do not implement generics, macros, async/await, threads, channels, reflection,
 decorators, annotations, a package registry, compiler plugins, compile-time
 execution, operator overloading, user-defined conversions, LLVM or Cranelift
-before Demo 3. Interfaces, enums, Result, FFI and the official
-formatter remain future work unless explicitly included in the active task.
+before Demo 3. Interfaces, FFI and the official formatter remain future work
+unless explicitly included in the active task.
 Do not build a standard library or memory-management runtime ahead of need.
 
 The milestones proposed in `ROADMAP.md` do not relax any of the above.
-Enums, `match`, `for`, `Result`, `?`, sized integers, `[]u8`, string slices,
-`extern "C"`, modules, `import`, HTTP and JSON are all Planned and each needs
-its own authorization. In particular, `ROADMAP.md` leaves open whether `Result`
-arrives as a builtin or through general generics; generics remain excluded
-until that question is decided explicitly, and a roadmap entry mentioning
-`Result` is not permission to introduce them. Nothing in that document
+Sized integers, `[]u8`, string slices, `extern "C"`, modules, `import`, HTTP and
+JSON are all Planned and each needs its own authorization. `Result` arrived as a
+builtin, which settles that roadmap question; general generics remain excluded
+and still need their own explicit decision. Nothing in that document
 authorizes a standard library, a networking runtime or process execution from
 the compiler library.
 
