@@ -122,8 +122,8 @@ accurate; documenting a future feature is not a request to implement it.
 - Builtin `Option<T>` uses inline tag/payload value semantics. Contextual `null` (and
   `None`) represents absent values; values wrap implicitly into expected Options.
   `if let name = value` (and `if let Some(name)`) binds an immutable payload in its then scope.
-  Managed payloads retain/release only when present. General generics and
-  interfaces remain future work.
+  Managed payloads retain/release only when present. Interfaces arrived with
+  M10; general generics remain future work.
 - Builtin `Result<T, E>` uses the same inline tag/payload layout as an enum: `Ok`
   is tag 0 and `Err` tag 1, so matching, retain and release are shared code.
   `Ok(v)`/`Err(e)` require an expected Result type — neither side is inferred
@@ -136,7 +136,8 @@ accurate; documenting a future feature is not a request to implement it.
 - Arrays use `[]T`, literals, checked int indexes, `len()`, `push()`, `insert()`,
   `pop()`, `remove()` and `[a..b]` slicing. Capacity grows geometrically; references
   share element mutations even through `let`. Managed elements are retained and
-  released. Sorting and callbacks remain future work.
+  released. Sorting and callbacks arrived with M8: `sort()` is stable, returns
+  void and takes a non-escaping comparator.
 - Sized integers are `i8 i16 i32 i64` and `u8 u16 u32 u64`; `int` is a spelling of
   `i64`, not a separate type. A literal takes the width its context expects and is
   range-checked there, defaulting to `int`; a signed minimum is written as a minus
@@ -379,8 +380,8 @@ syntax; storing a callback waits for them.
 Do not implement generics, macros, async/await, threads, channels, reflection,
 decorators, annotations, a package registry, compiler plugins, compile-time
 execution, operator overloading, user-defined conversions, LLVM or Cranelift
-before Demo 3. Interfaces and the official formatter remain future work
-unless explicitly included in the active task. The FFI arrived with M5 and
+before Demo 3. Interfaces arrived with M10 and the official formatter with
+M11; neither authorizes anything beyond itself. The FFI arrived with M5 and
 authorizes nothing beyond itself: no standard library, no sockets, no wrapper
 around a C library shipped with the compiler.
 Do not build the standard library or a memory-management runtime ahead of need:
