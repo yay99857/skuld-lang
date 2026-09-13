@@ -884,3 +884,45 @@ fn a_function_value_is_called_with_its_own_signature() {
         DiagnosticCode::NotCallable,
     );
 }
+
+#[test]
+fn the_checked_tables_are_reachable_from_outside() {
+    // A tool that offers a field, a method or a signature reads these; the
+    // language server is the first caller and must not rebuild them.
+    let typed = check(
+        "class User {\n    name: string\n\n    greet() -> string { return this.name }\n}\nfunc twice(n: int) -> int { return n * 2 }\nfunc main() { let u = new User(name: \"Ada\")\nprint(u.greet()) }",
+    )
+    .expect("checked");
+    let user = typed
+        .structs()
+        .iter()
+        .find(|s| s.name == "User")
+        .expect("the declared class");
+    assert_eq!(
+        user.fields
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>(),
+        ["name"]
+    );
+    assert_eq!(
+        user.methods
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        ["greet"]
+    );
+    // A binding's type is reachable through the symbol its use resolves to.
+    let source_of = |needle: &str| {
+        let text = "class User {\n    name: string\n\n    greet() -> string { return this.name }\n}\nfunc twice(n: int) -> int { return n * 2 }\nfunc main() { let u = new User(name: \"Ada\")\nprint(u.greet()) }";
+        text.rfind(needle).expect("occurrence")
+    };
+    let use_of_u = source_of("u.greet");
+    let symbol = typed.resolution().references[&(crate::module::FileId(0), use_of_u)];
+    assert!(matches!(typed.symbol_type(symbol), Type::Struct(_)));
+    let twice =
+        typed.resolution().declarations[&(crate::module::FileId(0), source_of("twice(n: int)"))];
+    let signature = typed.signature(twice).expect("a declared function");
+    assert_eq!(signature.parameters, vec![Type::INT]);
+    assert_eq!(signature.return_type, Type::INT);
+}

@@ -69,6 +69,22 @@ impl TypedProgram {
     pub fn resolution(&self) -> &Resolution {
         &self.resolution
     }
+    /// Declared structs and classes, in declaration order, which is also what
+    /// `Type::Struct` indexes. A tool that offers a field or a method needs
+    /// this table; nothing inside the compiler needed it exposed before.
+    pub fn structs(&self) -> &[StructInfo] {
+        &self.structs
+    }
+    /// The checked type of a resolved symbol: a local, a parameter or a
+    /// binding. A symbol that names a function has no value type, and reads
+    /// as `Type::Error` here; ask `signature` for that instead.
+    pub fn symbol_type(&self, id: SymbolId) -> Type {
+        self.symbol_types.get(id.0).copied().unwrap_or(Type::Error)
+    }
+    /// The signature of a function, method or foreign declaration.
+    pub fn signature(&self, id: SymbolId) -> Option<&Signature> {
+        self.signatures.get(&id)
+    }
     pub fn expression_type_in(&self, file: FileId, span: Span) -> Option<Type> {
         self.expressions.get(&(file, span.start, span.end)).copied()
     }
