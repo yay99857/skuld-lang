@@ -22,6 +22,8 @@ struct Lowering<'a> {
     function_values: &'a RefCell<Vec<(crate::resolver::SymbolId, crate::types::FunctionTypeId)>>,
     /// Array types the program sorts, collected the same way.
     sorts: &'a RefCell<Vec<(crate::types::ArrayId, crate::types::FunctionTypeId)>>,
+    /// (class, interface) pairs the program builds a value for.
+    vtables: &'a RefCell<Vec<(crate::types::StructId, crate::types::InterfaceId)>>,
 }
 
 impl Lowering<'_> {
@@ -65,6 +67,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
     let lambdas = RefCell::new(Vec::new());
     let function_values = RefCell::new(Vec::new());
     let sorts = RefCell::new(Vec::new());
+    let vtables = RefCell::new(Vec::new());
     let files: Vec<Lowering<'_>> = (0..typed.program.files.len())
         .map(|index| Lowering {
             typed: &typed,
@@ -72,6 +75,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
             lambdas: &lambdas,
             function_values: &function_values,
             sorts: &sorts,
+            vtables: &vtables,
         })
         .collect();
     for cx in &files {
@@ -148,12 +152,17 @@ pub fn lower(typed: TypedProgram) -> h::Program {
     let mut sorts = sorts.into_inner();
     sorts.sort();
     sorts.dedup();
+    let mut vtables = vtables.into_inner();
+    vtables.sort();
+    vtables.dedup();
     h::Program {
         externs,
         lambdas,
         function_types: typed.function_signatures.clone(),
         function_values,
         sorts,
+        vtables,
+        interfaces: typed.interfaces.clone(),
         structs: typed.structs.clone(),
         enums: typed.enums.clone(),
         arrays: typed.arrays.clone(),
@@ -660,6 +669,23 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                         span: source.span,
                     };
                 }
+                if let Some(Type::Interface(interface)) = cx.ty(object.span) {
+                    let index = cx.typed.interfaces[interface.0]
+                        .methods
+                        .iter()
+                        .position(|method| method.name == member.text)
+                        .expect("internal compiler bug: checked interface method");
+                    return h::Expr {
+                        kind: h::ExprKind::InterfaceCall {
+                            object: Box::new(expression(object, cx)),
+                            interface,
+                            index,
+                            arguments: arguments.iter().map(|e| expression(e, cx)).collect(),
+                        },
+                        ty: cx.ty(source.span).expect("checked expression"),
+                        span: source.span,
+                    };
+                }
                 let Some(Type::Struct(id)) = cx.ty(object.span) else {
                     unreachable!("internal compiler bug: unchecked method call")
                 };
@@ -755,11 +781,32 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
     wrap_expression(kind, source, cx)
 }
 fn wrap_expression(kind: h::ExprKind, source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
-    let lowered = h::Expr {
+    let mut lowered = h::Expr {
         kind,
         ty: cx.ty(source.span).expect("checked expression"),
         span: source.span,
     };
+    // A class used where an interface was expected becomes the pair of the
+    // object and that interface's table. It happens first, so that a class
+    // going into an `Option<Interface>` is widened and then wrapped.
+    if let Some(Type::Interface(interface)) = cx
+        .typed
+        .interface_wraps
+        .get(&(cx.file, source.span.start, source.span.end))
+        .copied()
+        && let Type::Struct(class) = lowered.ty
+    {
+        cx.vtables.borrow_mut().push((class, interface));
+        lowered = h::Expr {
+            kind: h::ExprKind::InterfaceValue {
+                object: Box::new(lowered),
+                class,
+                interface,
+            },
+            ty: Type::Interface(interface),
+            span: source.span,
+        };
+    }
     if let Some(target_type) =
         cx.typed
             .implicit_wraps

@@ -12,6 +12,10 @@ pub struct Program {
     /// Declaration order, which is also the emitted field layout.
     pub(crate) structs: Vec<StructInfo>,
     pub(crate) enums: Vec<crate::types::EnumInfo>,
+    pub(crate) interfaces: Vec<crate::types::InterfaceInfo>,
+    /// Every (class, interface) pair the program actually uses, so one table
+    /// is emitted per pair and none for a conformance nothing exercises.
+    pub(crate) vtables: Vec<(StructId, crate::types::InterfaceId)>,
     pub(crate) arrays: Vec<crate::types::ArrayInfo>,
     pub(crate) options: Vec<crate::types::OptionInfo>,
     pub(crate) results: Vec<crate::types::ResultInfo>,
@@ -183,6 +187,20 @@ pub(crate) enum ExprKind {
     },
     Call {
         target: CallTarget,
+        arguments: Vec<Expr>,
+    },
+    /// A class value seen through an interface it declared: the object, and
+    /// the table of methods to call on it.
+    InterfaceValue {
+        object: Box<Expr>,
+        class: StructId,
+        interface: crate::types::InterfaceId,
+    },
+    /// A call dispatched through that table.
+    InterfaceCall {
+        object: Box<Expr>,
+        interface: crate::types::InterfaceId,
+        index: usize,
         arguments: Vec<Expr>,
     },
     /// A function value built from one lambda: its code, plus a copy of what

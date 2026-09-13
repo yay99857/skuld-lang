@@ -21,6 +21,27 @@ pub struct ResultId(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EnumId(pub usize);
 
+/// Index into the checked program's interface table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InterfaceId(pub usize);
+
+/// A named abstraction over classes. It carries signatures only; the bodies
+/// belong to the classes that declare they implement it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceInfo {
+    pub name: String,
+    pub module: crate::module::ModuleId,
+    pub visibility: crate::ast::Visibility,
+    pub methods: Vec<InterfaceMethod>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceMethod {
+    pub name: String,
+    pub parameters: Vec<Type>,
+    pub return_type: Type,
+}
+
 /// Index into the checked program's function-type table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FunctionTypeId(pub usize);
@@ -229,6 +250,9 @@ pub enum Type {
     /// A function value: a parameter or a local, never stored anywhere a
     /// managed value could reach it, so it never allocates and never retains.
     Function(FunctionTypeId),
+    /// A class reference seen through an interface: the object and the table
+    /// of methods to call on it. Counted like the class it holds.
+    Interface(InterfaceId),
     /// Recovery only; never present in a successfully checked program.
     Error,
 }
@@ -263,6 +287,7 @@ impl fmt::Display for Type {
             // A signature lives in the checker's table too, which `Display`
             // cannot reach; `type_name` renders it in full.
             Self::Function(_) => "<function>",
+            Self::Interface(_) => "<interface>",
             Self::Option(_) => "<option>",
             Self::Result(_) => "<result>",
             Self::Weak(_) => "<weak>",

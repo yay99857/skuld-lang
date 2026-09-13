@@ -8,6 +8,7 @@ pub fn emit_c(program: &Program) -> String {
         next_temp: 0,
         structs: program.structs.clone(),
         enums: program.enums.clone(),
+        interfaces: program.interfaces.clone(),
         arrays: program.arrays.clone(),
         options: program.options.clone(),
         results: program.results.clone(),
@@ -43,6 +44,27 @@ pub fn emit_c(program: &Program) -> String {
             function.name,
             function.span.start,
             function.span.end
+        ));
+    }
+    // An interface value is a pair: the object, and the table of methods to
+    // call on it. The pair is declared before the aggregates, because an array
+    // or a field may hold one; the table itself stays incomplete until every
+    // type it mentions is defined.
+    for (index, _) in program.interfaces.iter().enumerate() {
+        emitter.line(&format!("struct skuld_ivt{index};"));
+        emitter.line(&format!(
+            "typedef struct {{ skuld_object *object; const struct skuld_ivt{index} *vtable; }} skuld_i{index};"
+        ));
+        // The allocation header already carries the destructor, so counting an
+        // interface value needs nothing the runtime does not already have.
+        emitter.line(&format!(
+            "static inline skuld_i{index} skuld_i{index}_retain(skuld_i{index} value) {{ if (value.object) skuld_object_retain(value.object); return value; }}"
+        ));
+        emitter.line(&format!(
+            "static inline void skuld_i{index}_release(skuld_i{index} *slot) {{ if (slot->object) skuld_object_release(slot->object); slot->object = NULL; }}"
+        ));
+        emitter.line(&format!(
+            "static inline void skuld_i{index}_assign(skuld_i{index} *slot, skuld_i{index} value) {{ skuld_i{index} previous = *slot; *slot = value; if (previous.object) skuld_object_release(previous.object); }}"
         ));
     }
     for index in 0..program.arrays.len() {
@@ -202,6 +224,28 @@ pub fn emit_c(program: &Program) -> String {
         .chain((0..program.enums.len()).map(|i| Type::Enum(crate::types::EnumId(i))))
         .filter(|ty| emitter.managed(*ty))
         .collect();
+    for (index, interface) in program.interfaces.iter().enumerate() {
+        emitter.line(&format!("struct skuld_ivt{index} {{"));
+        emitter.indent += 1;
+        for method in &interface.methods {
+            let parameters: Vec<String> = std::iter::once("skuld_object *".to_owned())
+                .chain(
+                    method
+                        .parameters
+                        .iter()
+                        .map(|ty| type_name(&program.structs, *ty)),
+                )
+                .collect();
+            emitter.line(&format!(
+                "{} (*{})({});",
+                type_name(&program.structs, method.return_type),
+                method.name,
+                parameters.join(", ")
+            ));
+        }
+        emitter.indent -= 1;
+        emitter.line("};");
+    }
     // A function value is a pair: the code to run, and the environment the
     // code reads its captures from. Both halves are needed at once, so the
     // pair is a value rather than a bare pointer.
@@ -373,6 +417,60 @@ pub fn emit_c(program: &Program) -> String {
         emitter.indent -= 1;
         emitter.line("}");
     }
+    // One table per (class, interface) pair, reached through thunks so that
+    // no call is ever made through a mismatched function pointer type.
+    for (class, interface) in &program.vtables {
+        let methods = &program.interfaces[interface.0].methods;
+        for method in methods {
+            let target = program.structs[class.0]
+                .methods
+                .iter()
+                .find(|candidate| candidate.name == method.name)
+                .expect("checked conformance");
+            let mut parameters = vec!["skuld_object *skuld_self".to_owned()];
+            let mut arguments = vec![format!("(skuld_s{} *)skuld_self", class.0)];
+            for (position, ty) in method.parameters.iter().enumerate() {
+                parameters.push(format!(
+                    "{} skuld_p{position}",
+                    type_name(&program.structs, *ty)
+                ));
+                arguments.push(format!("skuld_p{position}"));
+            }
+            emitter.line(&format!(
+                "static {} skuld_ithunk{}_{}_{}({}) {{",
+                type_name(&program.structs, method.return_type),
+                interface.0,
+                class.0,
+                method.name,
+                parameters.join(", ")
+            ));
+            emitter.indent += 1;
+            let call = format!("skuld_f{}({})", target.id.0, arguments.join(", "));
+            if method.return_type == Type::Void {
+                emitter.line(&format!("{call};"));
+            } else {
+                emitter.line(&format!("return {call};"));
+            }
+            emitter.indent -= 1;
+            emitter.line("}");
+        }
+        let entries: Vec<String> = methods
+            .iter()
+            .map(|method| {
+                format!(
+                    ".{} = skuld_ithunk{}_{}_{}",
+                    method.name, interface.0, class.0, method.name
+                )
+            })
+            .collect();
+        emitter.line(&format!(
+            "static const struct skuld_ivt{} skuld_ivtable{}_{} = {{ {} }};",
+            interface.0,
+            interface.0,
+            class.0,
+            entries.join(", ")
+        ));
+    }
     for lambda in &program.lambdas {
         emitter.line("");
         emitter.line(&format!(
@@ -479,6 +577,7 @@ struct Emitter {
     /// Needed to decide which types own a reference and must be released.
     structs: Vec<StructInfo>,
     enums: Vec<crate::types::EnumInfo>,
+    interfaces: Vec<crate::types::InterfaceInfo>,
     arrays: Vec<crate::types::ArrayInfo>,
     options: Vec<crate::types::OptionInfo>,
     results: Vec<crate::types::ResultInfo>,
@@ -510,6 +609,7 @@ fn type_name(structs: &[StructInfo], ty: Type) -> String {
         // A class value is a pointer to a shared object; a struct is the
         // object itself, and C assignment copies it, which is value semantics.
         Type::Function(id) => format!("skuld_ft{}", id.0),
+        Type::Interface(id) => format!("skuld_i{}", id.0),
         Type::Struct(id) if structs[id.0].reference => format!("skuld_s{} *", id.0),
         Type::Struct(id) => format!("skuld_s{}", id.0),
         Type::Error => unreachable!("internal compiler bug: error type in HIR"),
@@ -897,7 +997,7 @@ impl Emitter {
     /// cleanup, so they cost exactly what they did before.
     fn managed(&self, ty: Type) -> bool {
         match ty {
-            Type::String | Type::Array(_) | Type::Weak(_) => true,
+            Type::String | Type::Array(_) | Type::Weak(_) | Type::Interface(_) => true,
             Type::Option(id) => self.managed(self.options[id.0].element),
             Type::Result(id) => {
                 self.managed(self.results[id.0].ok) || self.managed(self.results[id.0].err)
@@ -924,6 +1024,7 @@ impl Emitter {
             Type::Option(id) if self.managed(ty) => format!("skuld_o{}_retain({value})", id.0),
             Type::Result(id) if self.managed(ty) => format!("skuld_r{}_retain({value})", id.0),
             Type::Weak(_) => format!("skuld_weak_retain({value})"),
+            Type::Interface(id) => format!("skuld_i{}_retain({value})", id.0),
             Type::Array(id) => format!("skuld_a{}_retain({value})", id.0),
             Type::Struct(id) if self.managed(ty) => format!("skuld_s{}_retain({value})", id.0),
             Type::Enum(id) if self.managed(ty) => format!("skuld_e{}_retain({value})", id.0),
@@ -936,6 +1037,7 @@ impl Emitter {
             Type::Option(id) if self.managed(ty) => Some(format!("skuld_o{}_release", id.0)),
             Type::Result(id) if self.managed(ty) => Some(format!("skuld_r{}_release", id.0)),
             Type::Weak(_) => Some("skuld_weak_release".into()),
+            Type::Interface(id) => Some(format!("skuld_i{}_release", id.0)),
             Type::Array(id) => Some(format!("skuld_a{}_release", id.0)),
             Type::Struct(id) if self.managed(ty) => Some(format!("skuld_s{}_release", id.0)),
             Type::Enum(id) if self.managed(ty) => Some(format!("skuld_e{}_release", id.0)),
@@ -956,6 +1058,7 @@ impl Emitter {
             Type::Option(id) if self.managed(ty) => Some(format!("skuld_o{}_assign", id.0)),
             Type::Result(id) if self.managed(ty) => Some(format!("skuld_r{}_assign", id.0)),
             Type::Weak(_) => Some("skuld_weak_assign".into()),
+            Type::Interface(id) => Some(format!("skuld_i{}_assign", id.0)),
             Type::Array(id) => Some(format!("skuld_a{}_assign", id.0)),
             Type::Struct(id) if self.managed(ty) => Some(format!("skuld_s{}_assign", id.0)),
             Type::Enum(id) if self.managed(ty) => Some(format!("skuld_e{}_assign", id.0)),
@@ -1377,6 +1480,44 @@ impl Emitter {
                         ty.0
                     ),
                 )
+            }
+            ExprKind::InterfaceValue {
+                object,
+                class,
+                interface,
+            } => {
+                let rendered = self.expression(object);
+                // The header is the first member of a class, so its address is
+                // the object's address; the table says what the methods are.
+                self.store(
+                    expr.ty,
+                    &format!(
+                        "(skuld_i{}){{ &({}) ->header, &skuld_ivtable{}_{} }}",
+                        interface.0,
+                        self.retained(object.ty, &rendered),
+                        interface.0,
+                        class.0
+                    ),
+                    true,
+                )
+            }
+            ExprKind::InterfaceCall {
+                object,
+                interface,
+                index,
+                arguments,
+            } => {
+                let receiver = self.expression(object);
+                let mut values = vec![format!("{receiver}.object")];
+                values.extend(arguments.iter().map(|argument| self.expression(argument)));
+                let name = &self.interfaces[interface.0].methods[*index].name;
+                let call = format!("{receiver}.vtable->{name}({})", values.join(", "));
+                if expr.ty == Type::Void {
+                    self.line(&format!("{call};"));
+                    String::new()
+                } else {
+                    self.store(expr.ty, &call, true)
+                }
             }
             ExprKind::FunctionValue { id, ty } => self.temporary(
                 expr.ty,

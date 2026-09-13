@@ -977,3 +977,58 @@ fn an_unwrapped_name_has_the_payload_type() {
         Some(Type::INT)
     );
 }
+
+#[test]
+fn conformance_is_declared_and_checked_method_by_method() {
+    let interface = "interface Printable { show() -> string }\n";
+    valid(&format!(
+        "{interface}class P: Printable {{ x: int\n show() -> string {{ return \"x\" }} }}\nfunc main() {{ }}"
+    ));
+    // Having the methods is not enough; saying so is what counts.
+    fails(
+        &format!(
+            "{interface}class P {{ show() -> string {{ return \"x\" }} }}\nfunc r(v: Printable) {{ print(v.show()) }}\nfunc main() {{ r(new P()) }}"
+        ),
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        &format!("{interface}class P: Printable {{ x: int }}\nfunc main() {{ }}"),
+        DiagnosticCode::MissingField,
+    );
+    fails(
+        &format!(
+            "{interface}class P: Printable {{ show() -> int {{ return 1 }} }}\nfunc main() {{ }}"
+        ),
+        DiagnosticCode::TypeMismatch,
+    );
+    // A struct has no identity to put behind an interface.
+    fails(
+        &format!(
+            "{interface}struct P: Printable {{ x: int\n show() -> string {{ return \"x\" }} }}\nfunc main() {{ }}"
+        ),
+        DiagnosticCode::InvalidValueType,
+    );
+}
+
+#[test]
+fn an_interface_value_answers_only_what_the_interface_declares() {
+    let program = "interface Printable { show() -> string }\nclass P: Printable { show() -> string { return \"x\" }\n hidden() -> int { return 1 } }\n";
+    valid(&format!(
+        "{program}func r(v: Printable) {{ print(v.show()) }}\nfunc main() {{ r(new P()) }}"
+    ));
+    fails(
+        &format!(
+            "{program}func r(v: Printable) {{ print(v.hidden()) }}\nfunc main() {{ r(new P()) }}"
+        ),
+        DiagnosticCode::NotCallable,
+    );
+}
+
+#[test]
+fn a_class_widens_into_an_expected_option_of_an_interface() {
+    // Two implicit steps compose here, and only here: seen through the
+    // interface, then wrapped.
+    valid(
+        "interface P { show() -> string }\nclass C: P { show() -> string { return \"x\" } }\nfunc main() { let v: Option<P> = new C()\n if let p = v { print(p.show()) } }",
+    );
+}

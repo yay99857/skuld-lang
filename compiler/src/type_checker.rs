@@ -6,8 +6,9 @@ use crate::{
     resolver::{Builtin, Resolution, SymbolId, SymbolKind},
     span::Span,
     types::{
-        ArrayId, ArrayInfo, EnumId, EnumInfo, FunctionTypeId, FunctionTypeInfo, IntType, OptionId,
-        OptionInfo, Pointee, ResultId, ResultInfo, StructId, Type, VariantInfo,
+        ArrayId, ArrayInfo, EnumId, EnumInfo, FunctionTypeId, FunctionTypeInfo, IntType,
+        InterfaceId, InterfaceInfo, InterfaceMethod, OptionId, OptionInfo, Pointee, ResultId,
+        ResultInfo, StructId, Type, VariantInfo,
     },
 };
 use std::collections::BTreeMap;
@@ -42,6 +43,8 @@ pub struct TypedProgram {
     pub(crate) entry: SymbolId,
     pub(crate) structs: Vec<StructInfo>,
     pub(crate) enums: Vec<EnumInfo>,
+    pub(crate) interfaces: Vec<InterfaceInfo>,
+    pub(crate) interface_wraps: BTreeMap<(FileId, usize, usize), Type>,
     /// Enum names by module, since two modules may each declare a `Tag`.
     pub(crate) enum_names: Vec<BTreeMap<String, EnumId>>,
     pub(crate) arrays: Vec<ArrayInfo>,
@@ -115,7 +118,10 @@ pub(crate) fn type_check(
         jumps_escape: false,
         structs: Vec::new(),
         enums: Vec::new(),
+        interfaces: Vec::new(),
         module_types: vec![ModuleTypes::default(); program.modules.len()],
+        conformances: BTreeMap::new(),
+        interface_wraps: BTreeMap::new(),
         arrays: Vec::new(),
         options: Vec::new(),
         option_types: BTreeMap::new(),
@@ -146,26 +152,22 @@ pub(crate) fn type_check(
             enum_sites.push((FileId(index), position));
         }
     }
-    // Interfaces parse but are not yet resolved; reporting them is better than
-    // accepting a declaration that would mean nothing.
+    // Interface names come first so that a field, a parameter or another
+    // interface's signature may mention one before it is filled in.
+    let mut interface_sites: Vec<(FileId, usize)> = Vec::new();
     for (index, file) in program.files.iter().enumerate() {
         checker.file = FileId(index);
         checker.module = file.module;
-        for declaration in &file.program.interfaces {
-            checker.error(
-                DiagnosticCode::UnsupportedFeature,
-                declaration.name.span,
-                "interfaces are not implemented yet",
-            );
-        }
-        for declaration in &file.program.structs {
-            for conformance in &declaration.conforms {
-                checker.error(
-                    DiagnosticCode::UnsupportedFeature,
-                    conformance.span,
-                    "interfaces are not implemented yet",
-                );
-            }
+        for (position, declaration) in file.program.interfaces.iter().enumerate() {
+            let id = InterfaceId(checker.interfaces.len());
+            checker.declare_type(&declaration.name, TypeEntry::Interface(id));
+            checker.interfaces.push(InterfaceInfo {
+                name: declaration.name.text.clone(),
+                module: file.module,
+                visibility: declaration.visibility,
+                methods: Vec::new(),
+            });
+            interface_sites.push((FileId(index), position));
         }
     }
     // Structs are collected before signatures so functions may use them, and
@@ -187,6 +189,44 @@ pub(crate) fn type_check(
             });
             struct_sites.push((FileId(index), position));
         }
+    }
+    for (index, &(file, position)) in interface_sites.iter().enumerate() {
+        checker.file = file;
+        checker.module = program.files[file.0].module;
+        let declaration = &program.files[file.0].program.interfaces[position];
+        let mut methods: Vec<InterfaceMethod> = Vec::new();
+        for method in &declaration.methods {
+            if methods
+                .iter()
+                .any(|existing| existing.name == method.name.text)
+            {
+                checker.error(
+                    DiagnosticCode::DuplicateDeclaration,
+                    method.name.span,
+                    format!(
+                        "`{}` is already declared in interface `{}`",
+                        method.name.text, declaration.name.text
+                    ),
+                );
+                continue;
+            }
+            let parameters = method
+                .parameters
+                .iter()
+                .map(|parameter| checker.type_ref(&parameter.type_ref, false))
+                .collect();
+            let return_type = method
+                .return_type
+                .as_ref()
+                .map(|reference| checker.type_ref(reference, true))
+                .unwrap_or(Type::Void);
+            methods.push(InterfaceMethod {
+                name: method.name.text.clone(),
+                parameters,
+                return_type,
+            });
+        }
+        checker.interfaces[index].methods = methods;
     }
     for (index, &(file, position)) in struct_sites.iter().enumerate() {
         checker.file = file;
@@ -363,6 +403,57 @@ pub(crate) fn type_check(
         }
         checker.structs[index].methods = methods;
     }
+    // Conformance, now that every method signature exists. It is checked
+    // against the interface rather than inferred from what happens to match.
+    for (index, &(file, position)) in struct_sites.iter().enumerate() {
+        checker.file = file;
+        checker.module = program.files[file.0].module;
+        let declaration = &program.files[file.0].program.structs[position];
+        if declaration.conforms.is_empty() {
+            continue;
+        }
+        let id = StructId(index);
+        if !checker.structs[index].reference {
+            checker.error(
+                DiagnosticCode::InvalidValueType,
+                declaration.conforms[0].span,
+                format!(
+                    "`{}` is a struct; only a class implements an interface, because an interface value is a counted reference",
+                    declaration.name.text
+                ),
+            );
+            continue;
+        }
+        let mut implemented: Vec<InterfaceId> = Vec::new();
+        for conformance in &declaration.conforms {
+            let interface = match checker.lookup_type(conformance, "interface") {
+                Some(TypeEntry::Interface(interface)) => interface,
+                Some(_) => {
+                    checker.error(
+                        DiagnosticCode::TypeMismatch,
+                        conformance.span,
+                        format!("`{}` is not an interface", conformance.name.text),
+                    );
+                    continue;
+                }
+                None => continue,
+            };
+            if implemented.contains(&interface) {
+                checker.error(
+                    DiagnosticCode::DuplicateDeclaration,
+                    conformance.span,
+                    format!(
+                        "`{}` is already implemented by `{}`",
+                        conformance.name.text, declaration.name.text
+                    ),
+                );
+                continue;
+            }
+            checker.check_conformance(id, interface, conformance.span, index);
+            implemented.push(interface);
+        }
+        checker.conformances.insert(id, implemented);
+    }
     // Foreign signatures come first: an ordinary function may call one, and
     // nothing about them depends on the rest of the program.
     for (index, file) in program.files.iter().enumerate() {
@@ -512,6 +603,8 @@ pub(crate) fn type_check(
     let Checker {
         structs,
         enums,
+        interfaces,
+        interface_wraps,
         function_signatures,
         module_types,
         arrays,
@@ -532,6 +625,8 @@ pub(crate) fn type_check(
         resolution,
         structs,
         enums,
+        interfaces,
+        interface_wraps,
         enum_names,
         arrays,
         options,
@@ -570,9 +665,16 @@ struct Checker<'a> {
     /// Declared structs in declaration order; `Type::Struct` indexes this.
     structs: Vec<StructInfo>,
     enums: Vec<EnumInfo>,
+    interfaces: Vec<InterfaceInfo>,
     /// Type names by module. A type is reached unqualified from its own
     /// module, or qualified and public from another.
     module_types: Vec<ModuleTypes>,
+    /// Which classes implement which interfaces, and in what order, so the
+    /// backend can emit one table per pair that is actually used.
+    conformances: BTreeMap<StructId, Vec<InterfaceId>>,
+    /// The interface a class value was used as, by position, so lowering can
+    /// build the pair without re-deriving the context.
+    interface_wraps: BTreeMap<(FileId, usize, usize), Type>,
     /// Interned array types; `Type::Array` indexes this.
     arrays: Vec<ArrayInfo>,
     options: Vec<OptionInfo>,
@@ -594,12 +696,14 @@ struct Checker<'a> {
 struct ModuleTypes {
     structs: BTreeMap<String, StructId>,
     enums: BTreeMap<String, EnumId>,
+    interfaces: BTreeMap<String, InterfaceId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TypeEntry {
     Struct(StructId),
     Enum(EnumId),
+    Interface(InterfaceId),
 }
 
 #[derive(Debug, Clone)]
@@ -666,7 +770,10 @@ impl Checker<'_> {
             );
         }
         let types = &self.module_types[self.module.0];
-        if types.structs.contains_key(&name.text) || types.enums.contains_key(&name.text) {
+        if types.structs.contains_key(&name.text)
+            || types.enums.contains_key(&name.text)
+            || types.interfaces.contains_key(&name.text)
+        {
             self.error(
                 DiagnosticCode::DuplicateDeclaration,
                 name.span,
@@ -681,6 +788,9 @@ impl Checker<'_> {
             }
             TypeEntry::Enum(id) => {
                 types.enums.insert(name.text.clone(), id);
+            }
+            TypeEntry::Interface(id) => {
+                types.interfaces.insert(name.text.clone(), id);
             }
         }
     }
@@ -718,6 +828,13 @@ impl Checker<'_> {
                     .get(&path.name.text)
                     .copied()
                     .map(TypeEntry::Enum)
+            })
+            .or_else(|| {
+                types
+                    .interfaces
+                    .get(&path.name.text)
+                    .copied()
+                    .map(TypeEntry::Interface)
             });
         let Some(entry) = entry else {
             self.error(
@@ -737,6 +854,7 @@ impl Checker<'_> {
             let visibility = match entry {
                 TypeEntry::Struct(id) => self.structs[id.0].visibility,
                 TypeEntry::Enum(id) => self.enums[id.0].visibility,
+                TypeEntry::Interface(id) => self.interfaces[id.0].visibility,
             };
             if visibility != Visibility::Public {
                 self.error(
@@ -797,6 +915,7 @@ impl Checker<'_> {
                 self.type_name(self.results[id.0].err)
             ),
             Type::Weak(id) => format!("weak {}", self.structs[id.0].name),
+            Type::Interface(id) => self.interfaces[id.0].name.clone(),
             Type::Function(id) => {
                 let info = &self.function_signatures[id.0];
                 let parameters: Vec<_> = info
@@ -982,6 +1101,7 @@ impl Checker<'_> {
                     _ => match self.lookup_type(path, "type") {
                         Some(TypeEntry::Struct(id)) => Type::Struct(id),
                         Some(TypeEntry::Enum(id)) => Type::Enum(id),
+                        Some(TypeEntry::Interface(id)) => Type::Interface(id),
                         // `lookup_type` reports whichever of unknown module,
                         // unknown name or private name applies.
                         None => Type::Error,
@@ -1046,10 +1166,31 @@ impl Checker<'_> {
         if expected == found {
             return true;
         }
-        if let Type::Option(id) = expected
-            && self.options[id.0].element == found
+        if let Type::Option(id) = expected {
+            let element = self.options[id.0].element;
+            if element == found {
+                self.implicit_wraps
+                    .insert((self.file, span.start, span.end), expected);
+                return true;
+            }
+            // A class going into an expected `Option<Interface>` takes both
+            // steps: it is seen through the interface, then wrapped.
+            if let Type::Interface(interface) = element
+                && self.conforms(found, interface)
+            {
+                self.interface_wraps
+                    .insert((self.file, span.start, span.end), element);
+                self.implicit_wraps
+                    .insert((self.file, span.start, span.end), expected);
+                return true;
+            }
+        }
+        // A class widens to an interface it declared, the way a value wraps
+        // into an expected Option: the declaration is what makes it safe.
+        if let Type::Interface(interface) = expected
+            && self.conforms(found, interface)
         {
-            self.implicit_wraps
+            self.interface_wraps
                 .insert((self.file, span.start, span.end), expected);
             return true;
         }
@@ -1551,6 +1692,71 @@ impl Checker<'_> {
             return annotated;
         }
         payload
+    }
+    /// Every signature the interface names must be present on the class, with
+    /// exactly the same parameters and result. Nothing is inferred and nothing
+    /// is coerced: a near miss is a mistake worth reporting.
+    fn check_conformance(
+        &mut self,
+        id: StructId,
+        interface: InterfaceId,
+        span: Span,
+        struct_index: usize,
+    ) {
+        let required = self.interfaces[interface.0].methods.clone();
+        let interface_name = self.interfaces[interface.0].name.clone();
+        let class_name = self.structs[struct_index].name.clone();
+        for method in &required {
+            let Some(found) = self.structs[id.0]
+                .methods
+                .iter()
+                .find(|candidate| candidate.name == method.name)
+                .map(|candidate| candidate.id)
+            else {
+                self.error(
+                    DiagnosticCode::MissingField,
+                    span,
+                    format!(
+                        "`{class_name}` declares it implements `{interface_name}` but has no `{}`",
+                        method.name
+                    ),
+                );
+                continue;
+            };
+            let Some(signature) = self.signatures.get(&found) else {
+                continue;
+            };
+            let (parameters, return_type) = (signature.parameters.clone(), signature.return_type);
+            if parameters != method.parameters || return_type != method.return_type {
+                let expected = self.signature_name(&method.parameters, method.return_type);
+                let actual = self.signature_name(&parameters, return_type);
+                self.error(
+                    DiagnosticCode::TypeMismatch,
+                    span,
+                    format!(
+                        "`{class_name}.{}` is `{actual}`, and `{interface_name}` requires `{expected}`",
+                        method.name
+                    ),
+                );
+            }
+        }
+    }
+    fn signature_name(&self, parameters: &[Type], return_type: Type) -> String {
+        let rendered: Vec<_> = parameters.iter().map(|ty| self.type_name(*ty)).collect();
+        match return_type {
+            Type::Void => format!("({})", rendered.join(", ")),
+            other => format!("({}) -> {}", rendered.join(", "), self.type_name(other)),
+        }
+    }
+    /// Whether a class may be seen through an interface it declared.
+    fn conforms(&self, ty: Type, interface: InterfaceId) -> bool {
+        match ty {
+            Type::Struct(id) => self
+                .conformances
+                .get(&id)
+                .is_some_and(|list| list.contains(&interface)),
+            _ => false,
+        }
     }
     fn construction(&mut self, path: &Path, fields: &[FieldInit], new: bool) -> Type {
         let name = &path.name;
@@ -2333,6 +2539,52 @@ impl Checker<'_> {
                 );
             }
             return ty;
+        }
+        // Dispatch through an interface: the method is looked up in the
+        // interface's own table, not in whatever class happens to be inside.
+        if let Type::Interface(interface) = receiver {
+            let Some(method) = self.interfaces[interface.0]
+                .methods
+                .iter()
+                .find(|candidate| candidate.name == member.text)
+                .cloned()
+            else {
+                self.error(
+                    DiagnosticCode::NotCallable,
+                    member.span,
+                    format!(
+                        "interface `{}` has no method `{}`",
+                        self.interfaces[interface.0].name, member.text
+                    ),
+                );
+                for argument in arguments {
+                    self.expression(argument);
+                }
+                return Type::Error;
+            };
+            if arguments.len() != method.parameters.len() {
+                self.error(
+                    DiagnosticCode::ArgumentCount,
+                    span,
+                    format!(
+                        "method `{}` expects {} arguments, found {}",
+                        member.text,
+                        method.parameters.len(),
+                        arguments.len()
+                    ),
+                );
+            }
+            let previous = self.expected_context;
+            for (argument, expected) in arguments.iter().zip(&method.parameters) {
+                self.expected_context = Some(*expected);
+                let found = self.expression(argument);
+                self.expect_type(*expected, found, argument.span);
+            }
+            self.expected_context = previous;
+            for argument in arguments.iter().skip(method.parameters.len()) {
+                self.expression(argument);
+            }
+            return method.return_type;
         }
         let Type::Struct(id) = receiver else {
             if receiver != Type::Error {
