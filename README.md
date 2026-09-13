@@ -377,7 +377,8 @@ and M10 (class interfaces) are also implemented, as is `let ... else`.
 M11 (the official formatter, `skuld fmt`), M12 (LSP refactoring), M13 (local
 CLI applications and `skuld test`) and M14 (field defaults) are implemented
 too. The LSP provides
-diagnostics, completion, hover, definition, find-references and rename, and
+diagnostics, completion, hover, definition, find-references, rename, the
+document outline and formatting through `skuld fmt`'s own formatter, and
 `examples/jsontool.skuld` is a multi-module native tool with its own test suite.
 
 No implementation milestone is active. [ROADMAP.md](ROADMAP.md#next-sequence--planned-not-selected)
