@@ -1,0 +1,139 @@
+// The parts of `jsontool` that are worth testing: reading a command line and
+// walking into a document. Neither one touches a file, which is why they are
+// here and the opening and writing is in the entry file.
+
+import "std/json"
+
+pub class Request {
+    // The document to read.
+    input: string
+    // A dotted path into it, empty for the whole document.
+    path: string
+    // Where to write the result; absent means standard output.
+    output: Option<string>
+}
+
+pub enum ToolError {
+    Usage(string)
+    // A path segment that named nothing in the document.
+    NoMember(string)
+    // An index into an array that is not a number, or is off the end.
+    NoElement(string)
+    // A path that walked into something with no members at all.
+    NotACollection(string)
+}
+
+pub func describe(error: ToolError) -> string {
+    match error {
+        ToolError.Usage(detail): return detail
+        ToolError.NoMember(key): return "no member named `${key}`"
+        ToolError.NoElement(index): return "no element at `${index}`"
+        ToolError.NotACollection(segment): return "`${segment}` has no members"
+    }
+}
+
+pub func usage() -> string {
+    return "usage: jsontool <file.json> [path] [-o <file.json>]"
+}
+
+// The command line, as the tool understands it. Options may sit on either
+// side of the operands, `-o` takes the name after it, and everything else is
+// positional: the input first, the path second.
+pub func parse_arguments(given: []string) -> Result<Request, ToolError> {
+    var input = ""
+    var path = ""
+    var output: Option<string> = null
+    var positional = 0
+    var index = 0
+    while index < given.len() {
+        let argument = given[index]
+        if argument == "-o" {
+            if index + 1 >= given.len() {
+                return Err(ToolError.Usage("`-o` needs a file name"))
+            }
+            output = given[index + 1]
+            index += 2
+        } else if argument.len() > 0 && argument[0] == 45 {
+            return Err(ToolError.Usage("unknown option `${argument}`"))
+        } else {
+            if positional == 0 {
+                input = argument
+            } else if positional == 1 {
+                path = argument
+            } else {
+                return Err(ToolError.Usage("one file and one path, not more"))
+            }
+            positional += 1
+            index += 1
+        }
+    }
+    if positional == 0 {
+        return Err(ToolError.Usage("a file to read is required"))
+    }
+    return Ok(new Request(input: input, path: path, output: output))
+}
+
+// The dotted path, split on `.`. An empty path selects nothing at all, which
+// is how the whole document is asked for.
+pub func segments(path: string) -> []string {
+    var found: []string = []
+    if path.len() == 0 {
+        return found
+    }
+    var start = 0
+    var index = 0
+    while index < path.len() {
+        if path[index] == 46 {
+            found.push(path[start..index])
+            start = index + 1
+        }
+        index += 1
+    }
+    found.push(path[start..path.len()])
+    return found
+}
+
+// Walk a document one segment at a time. A segment is a member name in an
+// object and an index in an array, which is the whole of the path language.
+pub func select(document: json.JsonValue, path: string) -> Result<json.JsonValue, ToolError> {
+    var current = document
+    for segment in segments(path) {
+        match current {
+            json.JsonValue.Object(members): {
+                let found = json.lookup(current, segment) else {
+                    return Err(ToolError.NoMember(segment))
+                }
+                current = found
+            }
+            json.JsonValue.Items(items): {
+                let position = index_of(segment) else {
+                    return Err(ToolError.NoElement(segment))
+                }
+                if position >= items.len() {
+                    return Err(ToolError.NoElement(segment))
+                }
+                current = items[position]
+            }
+            _: return Err(ToolError.NotACollection(segment))
+        }
+    }
+    return Ok(current)
+}
+
+// A segment as an array index: decimal digits and nothing else.
+pub func index_of(segment: string) -> Option<int> {
+    if segment.len() == 0 {
+        return null
+    }
+    var value = 0
+    var index = 0
+    while index < segment.len() {
+        let byte = segment[index]
+        if byte < 48 || byte > 57 {
+            return null
+        }
+        value = value * 10 + (int(byte) - 48)
+        index += 1
+    }
+    return value
+}

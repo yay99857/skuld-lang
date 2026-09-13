@@ -1,0 +1,67 @@
+// `jsontool` — read a JSON document, select part of it, write it back out.
+//
+// A small native command-line program in Skuld: arguments through `std/os`,
+// files through `std/fs`, parsing and rendering through `std/json`, and the
+// two parts worth testing — the command line and the path — in a module of
+// its own next door.
+//
+// Diagnostics go to file descriptor 2 through the program's own `extern "C"`
+// block, because `print` writes to standard output and a tool's errors do not
+// belong in its output. That is three lines of FFI in user code, which is
+// where a decision like this belongs rather than in the standard library.
+//
+//     skuld build examples/jsontool.skuld
+//     ./jsontool document.json user.name -o name.json
+
+import "std/fs"
+import "std/json"
+import "std/os"
+import "jsontool"
+
+unsafe extern "C" {
+    func write(handle: i32, buffer: *u8, count: u64) -> i64
+}
+
+func report(message: string) {
+    let line = "jsontool: ${message}\n"
+    let ignored = write(2, ptr(line), u64(line.len()))
+}
+
+func main() {
+    let given = os.parameters() else problem {
+        report(os.describe(problem))
+        os.exit(2)
+        return
+    }
+    let request = jsontool.parse_arguments(given) else problem {
+        report(jsontool.describe(problem))
+        report(jsontool.usage())
+        os.exit(2)
+        return
+    }
+    let text = fs.read_text(request.input) else problem {
+        report(fs.describe(problem))
+        os.exit(1)
+        return
+    }
+    let document = json.parse(text) else problem {
+        report("${request.input}: ${json.describe(problem)}")
+        os.exit(1)
+        return
+    }
+    let selected = jsontool.select(document, request.path) else problem {
+        report(jsontool.describe(problem))
+        os.exit(1)
+        return
+    }
+    let rendered = json.render(selected)
+    if let destination = request.output {
+        let ignored = fs.write_text(destination, "${rendered}\n") else problem {
+            report(fs.describe(problem))
+            os.exit(1)
+            return
+        }
+        return
+    }
+    print(rendered)
+}

@@ -1,0 +1,153 @@
+// The tests for `jsontool`, run by `skuld test examples/jsontool_tests.skuld`.
+//
+// A test is a top-level function whose name starts with `test_`, taking no
+// arguments and returning nothing. The runner finds them in this file, in the
+// order they are written, and runs them in one process: a failing assertion
+// stops the suite, because Skuld has no recoverable panic to carry on from.
+
+import "std/json"
+import "std/testing"
+import "jsontool"
+
+func test_a_file_and_a_path_are_positional() {
+    let request = jsontool.parse_arguments(["doc.json", "user.name"]) else problem {
+        testing.fail(jsontool.describe(problem))
+        return
+    }
+    testing.equal_text(request.input, "doc.json", "input")
+    testing.equal_text(request.path, "user.name", "path")
+    if let destination = request.output {
+        testing.fail("no output file was asked for, got `${destination}`")
+    }
+}
+
+func test_the_output_option_may_sit_on_either_side() {
+    let before = jsontool.parse_arguments(["-o", "out.json", "doc.json"]) else problem {
+        testing.fail(jsontool.describe(problem))
+        return
+    }
+    if let destination = before.output {
+        testing.equal_text(destination, "out.json", "output before the operand")
+    } else {
+        testing.fail("the option before the operand was lost")
+    }
+    let after = jsontool.parse_arguments(["doc.json", "-o", "out.json"]) else problem {
+        testing.fail(jsontool.describe(problem))
+        return
+    }
+    if let destination = after.output {
+        testing.equal_text(destination, "out.json", "output after the operand")
+    } else {
+        testing.fail("the option after the operand was lost")
+    }
+}
+
+func test_a_command_line_that_makes_no_sense_is_refused() {
+    match jsontool.parse_arguments([]) {
+        Ok(request): testing.fail("an empty command line was accepted")
+        Err(problem): testing.equal_text(
+            jsontool.describe(problem),
+            "a file to read is required",
+            "empty command line"
+        )
+    }
+    match jsontool.parse_arguments(["doc.json", "-o"]) {
+        Ok(request): testing.fail("a dangling -o was accepted")
+        Err(problem): testing.equal_text(
+            jsontool.describe(problem),
+            "`-o` needs a file name",
+            "dangling -o"
+        )
+    }
+    match jsontool.parse_arguments(["-x", "doc.json"]) {
+        Ok(request): testing.fail("an unknown option was accepted")
+        Err(problem): testing.equal_text(
+            jsontool.describe(problem),
+            "unknown option `-x`",
+            "unknown option"
+        )
+    }
+}
+
+func test_a_path_splits_on_dots() {
+    testing.equal_int(jsontool.segments("").len(), 0, "an empty path has no segments")
+    let one = jsontool.segments("name")
+    testing.equal_int(one.len(), 1, "one segment")
+    testing.equal_text(one[0], "name", "the only segment")
+    let three = jsontool.segments("user.tags.1")
+    testing.equal_int(three.len(), 3, "three segments")
+    testing.equal_text(three[2], "1", "the last segment")
+}
+
+func test_selecting_walks_objects_and_arrays() {
+    let document = json.parse("{\"user\":{\"name\":\"Ada\",\"tags\":[\"native\",\"fast\"]}}") else problem {
+        testing.fail(json.describe(problem))
+        return
+    }
+    let name = jsontool.select(document, "user.name") else problem {
+        testing.fail(jsontool.describe(problem))
+        return
+    }
+    testing.equal_text(json.render(name), "\"Ada\"", "a member of a member")
+    let tag = jsontool.select(document, "user.tags.1") else problem {
+        testing.fail(jsontool.describe(problem))
+        return
+    }
+    testing.equal_text(json.render(tag), "\"fast\"", "an element of an array")
+    // An empty path is the whole document.
+    let whole = jsontool.select(document, "") else problem {
+        testing.fail(jsontool.describe(problem))
+        return
+    }
+    testing.equal_text(json.render(whole), json.render(document), "the whole document")
+}
+
+func test_a_path_that_leads_nowhere_says_where_it_stopped() {
+    let document = json.parse("{\"user\":{\"tags\":[\"native\"]}}") else problem {
+        testing.fail(json.describe(problem))
+        return
+    }
+    match jsontool.select(document, "user.nope") {
+        Ok(value): testing.fail("a missing member was selected")
+        Err(problem): testing.equal_text(
+            jsontool.describe(problem),
+            "no member named `nope`",
+            "a missing member"
+        )
+    }
+    match jsontool.select(document, "user.tags.7") {
+        Ok(value): testing.fail("an index past the end was selected")
+        Err(problem): testing.equal_text(
+            jsontool.describe(problem),
+            "no element at `7`",
+            "an index past the end"
+        )
+    }
+    match jsontool.select(document, "user.tags.0.deeper") {
+        Ok(value): testing.fail("a path into a string was followed")
+        Err(problem): testing.equal_text(
+            jsontool.describe(problem),
+            "`deeper` has no members",
+            "a path into a string"
+        )
+    }
+}
+
+func test_an_index_is_digits_and_nothing_else() {
+    if let value = jsontool.index_of("12") {
+        testing.equal_int(value, 12, "digits")
+    } else {
+        testing.fail("`12` should be an index")
+    }
+    refuse_index("")
+    refuse_index("1a")
+    refuse_index("-1")
+}
+
+// A segment that is not an index, checked the only way an absent Option can
+// be checked: by failing if it turns out to be present.
+func refuse_index(segment: string) {
+    if let value = jsontool.index_of(segment) {
+        testing.fail("`${segment}` should not be an index, got ${value}")
+    }
+}
