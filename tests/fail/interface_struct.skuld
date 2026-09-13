@@ -1,0 +1,16 @@
+// A struct is a value with no identity. Putting one behind an interface means
+// boxing it, which means an allocation and a lifetime question; a class is
+// already a counted reference, so only a class implements one.
+interface Printable {
+    show() -> string
+}
+
+struct Point: Printable {
+    x: int
+
+    show() -> string {
+        return "${this.x}"
+    }
+}
+
+func main() { }

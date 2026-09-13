@@ -1,0 +1,101 @@
+// Interfaces: the named abstraction, and the answer to the one thing function
+// values deliberately cannot do — be stored.
+//
+// Conformance is declared on the class, not inferred from the methods that
+// happen to match. Only a class implements one: an interface value is the
+// object plus a table of methods, and a class is already a counted reference,
+// so nothing is boxed and nothing new is counted.
+
+interface Renderer {
+    render(value: int) -> string
+    label() -> string
+}
+
+interface Handler {
+    handle(event: string) -> string
+}
+
+class Decimal: Renderer {
+    prefix: string
+
+    render(value: int) -> string {
+        return "${this.prefix}${value}"
+    }
+
+    label() -> string {
+        return "decimal"
+    }
+}
+
+// A class may implement more than one, and may have methods beyond them.
+class Audit: Renderer, Handler {
+    seen: int
+
+    render(value: int) -> string {
+        return "audit ${value}"
+    }
+
+    label() -> string {
+        return "audit"
+    }
+
+    handle(event: string) -> string {
+        this.seen = this.seen + 1
+        return "#${this.seen} ${event}"
+    }
+
+    total() -> int {
+        return this.seen
+    }
+}
+
+// Dispatch is dynamic: the parameter says what can be called, and the value
+// says what runs.
+func show(renderer: Renderer, value: int) {
+    print("${renderer.label()}: ${renderer.render(value)}")
+}
+
+// A registry, which a function value could not have been: interface values
+// are stored in a field and outlive the call that added them.
+class Registry {
+    handlers: []Handler
+
+    add(handler: Handler) {
+        this.handlers.push(handler)
+    }
+
+    dispatch(event: string) {
+        for handler in this.handlers {
+            print(handler.handle(event))
+        }
+    }
+}
+
+func main() {
+    let decimal = new Decimal(prefix: "#")
+    let audit = new Audit(seen: 0)
+    show(decimal, 255)
+    show(audit, 255)
+
+    // An interface value is an ordinary value: an array element, ...
+    let renderers: []Renderer = [decimal, audit]
+    for renderer in renderers {
+        print(renderer.label())
+    }
+
+    // ... a field, ...
+    let registry = new Registry(handlers: [])
+    registry.add(audit)
+    registry.add(new Audit(seen: 10))
+    registry.dispatch("start" + "ed")
+    registry.dispatch("stopped")
+
+    // ... and an Option payload, which widens and wraps in one step.
+    let maybe: Option<Handler> = audit
+    if let handler = maybe {
+        print(handler.handle("direct"))
+    }
+
+    // The concrete class is still itself; the interface is a view of it.
+    print(audit.total())
+}

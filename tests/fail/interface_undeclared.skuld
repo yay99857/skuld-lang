@@ -1,0 +1,20 @@
+// Having the methods is not enough: conformance is declared, never inferred.
+interface Printable {
+    show() -> string
+}
+
+class Point {
+    x: int
+
+    show() -> string {
+        return "${this.x}"
+    }
+}
+
+func render(value: Printable) {
+    print(value.show())
+}
+
+func main() {
+    render(new Point(x: 1))
+}

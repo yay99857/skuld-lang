@@ -1,0 +1,9 @@
+interface Printable {
+    show() -> string
+}
+
+class Point: Printable {
+    x: int
+}
+
+func main() { }

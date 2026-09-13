@@ -1,0 +1,14 @@
+// A near miss is a mistake worth reporting: nothing is coerced to fit.
+interface Printable {
+    show() -> string
+}
+
+class Point: Printable {
+    x: int
+
+    show() -> int {
+        return this.x
+    }
+}
+
+func main() { }

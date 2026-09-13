@@ -1,0 +1,24 @@
+// An interface value can only be asked what the interface declares.
+interface Printable {
+    show() -> string
+}
+
+class Point: Printable {
+    x: int
+
+    show() -> string {
+        return "${this.x}"
+    }
+
+    hidden() -> int {
+        return this.x
+    }
+}
+
+func render(value: Printable) {
+    print(value.hidden())
+}
+
+func main() {
+    render(new Point(x: 1))
+}

@@ -1,0 +1,7 @@
+// A tripwire for syntax that is still reserved. `interface` left this fixture
+// when M10 gave it meaning and became `tests/pass/interfaces`; `static` has no
+// milestone yet, so it stays here until one arrives.
+static count = 0
+
+func main() {
+}
