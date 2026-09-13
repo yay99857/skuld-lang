@@ -47,7 +47,12 @@ impl Drop for TempDir {
 }
 
 /// Write the generated C into `directory` and compile it to `executable`.
-fn emit_and_compile(c_source: &str, directory: &Path, executable: &Path) -> Result<(), String> {
+fn emit_and_compile(
+    c_source: &str,
+    directory: &Path,
+    executable: &Path,
+    link_flags: &[String],
+) -> Result<(), String> {
     let source = directory.join("generated.c");
     let mut file = OpenOptions::new()
         .write(true)
@@ -57,18 +62,18 @@ fn emit_and_compile(c_source: &str, directory: &Path, executable: &Path) -> Resu
     file.write_all(c_source.as_bytes())
         .map_err(|error| format!("cannot write generated C: {error}"))?;
     drop(file);
-    compile(&source, executable)
+    compile(&source, executable, link_flags)
 }
 
 /// Compile to a persistent executable. Only the C stays in the temporary
 /// directory; the executable is the one artifact the user keeps.
-pub fn build(c_source: &str, executable: &Path) -> Result<(), String> {
+pub fn build(c_source: &str, executable: &Path, link_flags: &[String]) -> Result<(), String> {
     let temp = TempDir::create()
         .map_err(|error| format!("cannot create temporary build directory: {error}"))?;
-    emit_and_compile(c_source, &temp.path, executable)
+    emit_and_compile(c_source, &temp.path, executable, link_flags)
 }
 
-pub fn run(c_source: &str) -> Result<u8, String> {
+pub fn run(c_source: &str, link_flags: &[String]) -> Result<u8, String> {
     let temp = TempDir::create()
         .map_err(|error| format!("cannot create temporary build directory: {error}"))?;
     let executable = temp.path.join(if cfg!(windows) {
@@ -76,7 +81,7 @@ pub fn run(c_source: &str) -> Result<u8, String> {
     } else {
         "program"
     });
-    emit_and_compile(c_source, &temp.path, &executable)?;
+    emit_and_compile(c_source, &temp.path, &executable, link_flags)?;
     let status = Command::new(&executable)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
@@ -85,8 +90,10 @@ pub fn run(c_source: &str) -> Result<u8, String> {
         .map_err(|error| format!("cannot execute compiled program: {error}"))?;
     Ok(exit_code(status))
 }
-fn compile(source: &Path, executable: &Path) -> Result<(), String> {
-    let output = Command::new("clang").arg("-std=c11").arg("-O2").arg("-fno-fast-math").arg(source).arg("-o").arg(executable).stdin(Stdio::null()).output().map_err(|error| {
+/// `link_flags` carries `-l`/`-L` arguments for libraries an `extern "C"`
+/// declaration needs; libc is linked by clang without asking.
+fn compile(source: &Path, executable: &Path, link_flags: &[String]) -> Result<(), String> {
+    let output = Command::new("clang").arg("-std=c11").arg("-O2").arg("-fno-fast-math").arg(source).arg("-o").arg(executable).args(link_flags).stdin(Stdio::null()).output().map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound { "clang was not found; install clang and make it available on PATH to use `skuld run` (checking does not need clang)".into() }
         else { format!("cannot launch clang: {error}") }
     })?;
@@ -153,6 +160,6 @@ mod unix_tests {
     }
     #[test]
     fn driver_forwards_real_child_exit_code() {
-        assert_eq!(run("int main(void) { return 37; }"), Ok(37));
+        assert_eq!(run("int main(void) { return 37; }", &[]), Ok(37));
     }
 }

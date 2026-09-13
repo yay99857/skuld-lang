@@ -7,7 +7,7 @@ use std::{
     process::ExitCode,
 };
 
-const USAGE: &str = "Usage: skuld <lex|parse|resolve|check|emit-c|build|run> <file.skuld>";
+const USAGE: &str = "Usage: skuld <lex|parse|resolve|check|emit-c|build|run> <file.skuld> [-l<library> | -L<directory>]...";
 #[derive(Clone, Copy)]
 enum Action {
     Lex,
@@ -23,7 +23,7 @@ fn main() -> ExitCode {
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         return write_output(&format!("{USAGE}\n"));
     }
-    if args.len() != 2 {
+    if args.len() < 2 {
         eprintln!("{USAGE}");
         return ExitCode::from(2);
     }
@@ -40,6 +40,29 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // Linker arguments are restricted to library selection: nothing here may
+    // redirect clang's output or change how the program itself is compiled.
+    let mut link_flags = Vec::new();
+    for argument in &args[2..] {
+        let Some(flag) = argument.to_str() else {
+            eprintln!("error: linker arguments must be valid UTF-8");
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        };
+        if !matches!(action, Action::Build | Action::Run) {
+            eprintln!("error: linker arguments are only meaningful for `build` and `run`");
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
+        if !((flag.starts_with("-l") || flag.starts_with("-L")) && flag.len() > 2) {
+            eprintln!(
+                "error: unsupported linker argument `{flag}`; only `-l<library>` and `-L<directory>` are accepted"
+            );
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
+        link_flags.push(flag.to_owned());
+    }
     let text = match fs::read_to_string(&args[1]) {
         Ok(text) => text,
         Err(error) => {
@@ -91,7 +114,7 @@ fn main() -> ExitCode {
             }
             ExitCode::FAILURE
         }
-        Ok(output) if matches!(action, Action::Run) => match native::run(&output) {
+        Ok(output) if matches!(action, Action::Run) => match native::run(&output, &link_flags) {
             Ok(code) => ExitCode::from(code),
             Err(error) => {
                 eprintln!("error: {error}");
@@ -106,7 +129,7 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            match native::build(&output, &executable) {
+            match native::build(&output, &executable, &link_flags) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
                     eprintln!("error: {error}");

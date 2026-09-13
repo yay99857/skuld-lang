@@ -38,6 +38,10 @@ fn invalid_arguments() {
         vec!["unknown-command", "x.skuld"],
         vec!["build"],
         vec!["lex", "x", "y"],
+        // Linker arguments belong to `build` and `run`, and only name libraries.
+        vec!["lex", "x.skuld", "-lm"],
+        vec!["run", "x.skuld", "-O2"],
+        vec!["run", "x.skuld", "-l"],
     ] {
         let output = cli().args(args).output().expect("start CLI");
         assert_eq!(output.status.code(), Some(2));
