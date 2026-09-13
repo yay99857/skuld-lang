@@ -1,0 +1,76 @@
+// The process itself: the arguments it was started with, and leaving early.
+//
+// Both go through the runtime rather than straight to libc, and that is the
+// interesting part. Reading `argv` means following a pointer to a pointer,
+// which `AGENTS.md` keeps out of the foreign boundary, so the runtime offers
+// a count, a length and a copy into bytes Skuld already owns. The boundary
+// stays exactly as narrow as it was: scalars and a pointer to bytes the
+// caller owns, with nothing managed crossing it.
+
+unsafe extern "C" {
+    func sk_arg_count() -> i64
+    func sk_arg_len(index: i64) -> i64
+    func sk_arg_copy(index: i64, out: *u8, capacity: u64) -> i64
+    func sk_exit(code: i64) -> void
+}
+
+pub enum OsError {
+    // An argument that is not UTF-8. Skuld strings are UTF-8, and a command
+    // line is bytes, so the two can disagree.
+    NotText(int)
+}
+
+pub func describe(error: OsError) -> string {
+    match error {
+        OsError.NotText(index): return "argument ${index} is not valid UTF-8"
+    }
+}
+
+// Every argument, starting with the program as it was invoked, the way C and
+// every shell count them. `arguments()[0]` is therefore the program itself.
+pub func arguments() -> Result<[]string, OsError> {
+    var all: []string = []
+    var index = 0
+    let count = int(sk_arg_count())
+    while index < count {
+        let length = int(sk_arg_len(i64(index)))
+        if length < 0 {
+            return Err(OsError.NotText(index))
+        }
+        var bytes: []u8 = []
+        var filled = 0
+        while filled < length {
+            bytes.push(0)
+            filled += 1
+        }
+        if length > 0 {
+            let copied = sk_arg_copy(i64(index), ptr(bytes), u64(length))
+            if copied != i64(length) {
+                return Err(OsError.NotText(index))
+            }
+        }
+        let text = bytes_to_string(bytes) else message {
+            return Err(OsError.NotText(index))
+        }
+        all.push(text)
+        index += 1
+    }
+    return Ok(all)
+}
+
+// The arguments the program was given, without the program itself, which is
+// what a tool actually reads.
+pub func parameters() -> Result<[]string, OsError> {
+    let all = arguments()?
+    if all.len() == 0 {
+        return Ok(all)
+    }
+    return Ok(all[1..all.len()])
+}
+
+// Stop now with this status. Output is flushed first; nothing is released,
+// because the process is ending. A status outside 0..255 is truncated by the
+// operating system, not here.
+pub func exit(code: int) {
+    sk_exit(i64(code))
+}

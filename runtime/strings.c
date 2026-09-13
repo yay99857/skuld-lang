@@ -289,3 +289,49 @@ static inline size_t skuld_insert_index(int64_t index, size_t length, size_t byt
         skuld_fail("array insertion index out of bounds", byte);
     return (size_t)index;
 }
+
+/* The process bridge: arguments and exit.
+ *
+ * Reading `argv` means following a pointer to a pointer, which the foreign
+ * boundary deliberately refuses, so a Skuld program cannot reach its own
+ * arguments through `extern "C"` alone. These four calls are the whole of the
+ * bridge and they are deliberately shaped like the boundary already is: a
+ * count, a length, and a copy into bytes Skuld already owns. Nothing here
+ * hands a pointer back.
+ *
+ * They are not `static` and not prefixed with `skuld_`, because the standard
+ * library declares them in an ordinary `unsafe extern "C"` block: a generated
+ * name may not start with `skuld_`, and neither may a declared one. */
+static int skuld_argument_count = 0;
+static char **skuld_argument_values = NULL;
+
+static void skuld_arguments_init(int argc, char **argv) {
+    skuld_argument_count = argc;
+    skuld_argument_values = argv;
+}
+
+int64_t sk_arg_count(void) { return (int64_t)skuld_argument_count; }
+
+/* The length of one argument in bytes, or -1 where there is no such
+ * argument, which is how a caller checks an index without trusting it. */
+int64_t sk_arg_len(int64_t index) {
+    if (index < 0 || index >= (int64_t)skuld_argument_count) return -1;
+    return (int64_t)strlen(skuld_argument_values[index]);
+}
+
+/* Copy one argument into a buffer the caller owns, and report how many bytes
+ * were written. A buffer that is too small is refused rather than truncated. */
+int64_t sk_arg_copy(int64_t index, unsigned char *out, uint64_t capacity) {
+    int64_t len = sk_arg_len(index);
+    if (len < 0 || (uint64_t)len > capacity) return -1;
+    memcpy(out, skuld_argument_values[index], (size_t)len);
+    return len;
+}
+
+/* Exit with a status. The generated `main` flushes stdout before returning;
+ * a program that leaves early has to flush here, or its output would be lost
+ * in a pipe. Nothing is released: the process is ending. */
+void sk_exit(int64_t code) {
+    fflush(stdout);
+    exit((int)code);
+}

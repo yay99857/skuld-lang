@@ -52,6 +52,10 @@ const MODULES: &[(&str, &[(&str, &str)])] = &[
         )],
     ),
     (
+        "std/os",
+        &[("std/os/os.skuld", include_str!("../../std/os/os.skuld"))],
+    ),
+    (
         "std/strings",
         &[(
             "std/strings/strings.skuld",

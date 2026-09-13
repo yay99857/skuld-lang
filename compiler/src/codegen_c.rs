@@ -517,8 +517,12 @@ pub fn emit_c(program: &Program) -> String {
         emitter.line("}");
     }
     emitter.line("");
-    emitter.line("int main(void) {");
+    // The arguments are taken here and nowhere else: a Skuld program reaches
+    // them through the runtime bridge, since following `argv` is a pointer
+    // read the foreign boundary does not do.
+    emitter.line("int main(int argc, char **argv) {");
     emitter.indent += 1;
+    emitter.line("skuld_arguments_init(argc, argv);");
     emitter.line(&format!("skuld_f{}();", program.entry.0));
     emitter.line("return fflush(stdout) == 0 ? 0 : 1;");
     emitter.indent -= 1;
