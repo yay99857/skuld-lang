@@ -59,6 +59,16 @@ skuld run examples/functions.skuld
 If an older `skuld` is already installed, run `cargo install --path cli --force`
 to update it. Without installation, use `./target/debug/skuld` after `cargo build`.
 
+`skuld --help` lists every command, option and exit code, and `skuld --version`
+prints the version. Options may sit on either side of the file, and `--` ends
+them, so a source whose name begins with a dash can still be named:
+
+```bash
+skuld run -lm program.skuld
+skuld build program.skuld -o bin/program
+skuld check -- -odd-name.skuld
+```
+
 `check` is silent on success. Compiler errors show source locations and return
 exit code 1; invalid CLI usage returns 2. `run` checks first, generates C in a
 private temporary directory, invokes clang, executes the binary and cleans up.
@@ -81,13 +91,15 @@ clang -std=c11 -O2 generated.c -o generated-program
 `lex`, `parse` and `resolve` inspect their respective stages; they do not perform
 a full type check. `emit-c` does run every compiler stage through C generation.
 The debug AST and resolution output are not stable serialization formats.
-`build` compiles to a native executable in the working directory, named after
-the source file stem, and keeps only that artifact. `new`, `fmt`, `test` and
-`doc` remain future CLI commands.
+`build` compiles to a native executable and keeps only that artifact: in the
+working directory under the source file's stem, or wherever `-o <path>` names.
+A build never overwrites its own source. `new`, `fmt`, `test` and `doc` remain
+future CLI commands.
 
 A program that declares foreign functions from a library other than libc names
 it on the command line; `build` and `run` forward `-l` and `-L` to clang and
-accept nothing else:
+accept no other linker argument, so nothing here can redirect the output or
+change how the program itself is compiled:
 
 ```bash
 cargo run -p skuld-cli -- run examples/ffi.skuld

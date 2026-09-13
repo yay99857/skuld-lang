@@ -75,9 +75,16 @@ accurate; documenting a future feature is not a request to implement it.
 - `lex`, `parse`, `resolve` inspect individual stages. `check` performs full
   static checking without clang; `emit-c` emits checked C; `run` builds and
   executes in a private temporary directory, keeping nothing; `build` keeps the
-  executable in the working directory under the source stem. `build` and `run`
-  also forward trailing `-l<library>`/`-L<directory>` arguments to clang, and
-  accept no other linker argument.
+  executable, under the source stem in the working directory or wherever `-o`
+  names, and never overwrites its own source. `build` and `run` also forward
+  `-l<library>`/`-L<directory>` to clang and accept no other linker argument, so
+  nothing there can redirect the output or change how the program is compiled;
+  `-o` may point anywhere the user can write, since it carries no code into the
+  build, unlike a module path. Argument parsing is one pure function with its
+  own tests: options on either side of the file, `--` to end them, `-h/--help`
+  and `-V/--version` answered before anything else is judged and printed to
+  stdout, a misuse on stderr with exit 2, and a mistyped command matched against
+  the real ones with a transposition-aware distance.
 - The resolver's declaration and use tables are keyed by file and byte offset;
   keep them with their exact AST revision. Functions are predeclared; parameters share the function
   body scope; locals become visible after initializers; child scopes shadow.
