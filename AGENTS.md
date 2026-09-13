@@ -162,9 +162,11 @@ accurate; documenting a future feature is not a request to implement it.
   intermediate. M6 (modules and `import`) is the active milestone by explicit
   user decision: a module is a directory whose `.skuld` files share a namespace,
   export is an explicit `pub`, imported names are always qualified by the
-  module's last path segment, and an import cycle is a diagnostic. M5 (FFI) was
-  deliberately skipped for now, since modules do not depend on it. Do not infer
-  authorization for further features without explicit decision.
+  module's last path segment, and an import cycle is a diagnostic. M6 was
+  selected without waiting for M5, which modules do not depend on; M5 landed
+  concurrently in another session (`2606206`, `e3d84c2`) and owns its own status
+  entry. Do not infer authorization for further features without explicit
+  decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
   and string slices → `extern "C"` FFI → modules → standard library → function
   values → sockets. It is a plan, not a selection: a remaining entry is Planned,
