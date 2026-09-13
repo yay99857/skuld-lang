@@ -1,7 +1,7 @@
 # Skuld roadmap
 
 This document records completed milestones and a **proposed** next sequence.
-M1–M12 are implemented. No implementation milestone is active. Starting any of
+M1–M13 are implemented. No implementation milestone is active. Starting any of
 the milestones below still needs explicit selection and any open design
 decisions recorded in `AGENTS.md`. See `LANGUAGE.md` for semantics and `README.md` for usage.
 
@@ -13,17 +13,18 @@ come before expanding the type system or changing the backend.
 
 ## Current baseline
 
-- **Implemented:** M1–M12, including non-escaping lambdas, stable array sorting,
+- **Implemented:** M1–M13, including non-escaping lambdas, stable array sorting,
   storable class interfaces, modules, the embedded library, blocking HTTP, the
-  official formatter (`skuld fmt` with `--check`) and verified rename in the
-  editor.
+  official formatter (`skuld fmt` with `--check`), verified rename in the
+  editor, whole-file reads and writes, the process arguments, and `skuld test`.
   `let ... else` also unwraps Option/Result without nesting the success path.
 - **Tooling implemented:** highlighting, the official formatter `skuld fmt`, and
   a third workspace crate, `lsp/`, with diagnostics, completion, hover,
   definition, find-references and rename.
 - **Current limits:** required named fields at construction; no user-defined
-  constructors or field defaults; no maps or general generics; no file/argument
-  standard library; no language test command. Network
+  constructors or field defaults; no maps or general generics; a file API that
+  is whole-file and by path only, with no `errno`; `skuld run` does not forward
+  arguments to the program it runs. Network
   access has no host-name resolution, errno detail or TLS. Linux x86_64 is the
   currently tested native target; Go/Rust-level performance remains unmeasured.
 - **Syntax reference:** `test.skuld` remains an untouched design sketch.
@@ -506,7 +507,7 @@ Not sequenced with the milestones above and not blocking any of them.
 ## Next sequence — Planned, not selected
 
 The numbers express a recommended order, not a requirement to implement every
-entry. M11 and M12 improved daily use without new language semantics. M13 is the
+entry. M11 and M12 improved daily use without new language semantics. M13 was the
 first application milestone. M14 and M15 address language ergonomics separately;
 M16 and M17 require explicit foreign-boundary and dependency decisions.
 M18 can collect a baseline earlier, but optimizations must follow measurements.
@@ -515,7 +516,7 @@ M18 can collect a baseline earlier, but optimizations must follow measurements.
 | --- | --- | --- |
 | M11 | Official formatter | Implemented |
 | M12 | References and safe rename in the LSP | Implemented |
-| M13 | Local CLI applications and `skuld test` | File/process API design |
+| M13 | Local CLI applications and `skuld test` | Implemented |
 | M14 | Field defaults and construction | Initialization design |
 | M15 | A map for real application data | Collection/type-system decision |
 | M16 | Host names and useful network errors | Foreign-boundary decision |
@@ -595,26 +596,69 @@ to be sure nothing was missed.
   editor-specific UI, renaming a type or a member, and a workspace the editor
   has not opened.
 
-## M13 — Local CLI applications and tests — Planned
+## M13 — Local CLI applications and tests — Implemented
 
-- **Purpose:** build a JSON transformation tool that can consume an actual file,
-  accept arguments, report errors and be tested as an ordinary Skuld project.
-- **Scope:** minimal file reads/writes and process arguments, an explicit process
-  exit policy, and `skuld test` with deterministic discovery and failure reporting.
-  Library entries must have callers in this application or its tests.
-- **Decisions before implementation:** file/resource lifetime and explicit close,
-  byte versus text APIs, concrete error types, argument forwarding after `--`,
-  and test discovery/assertion syntax. Keep `main` returning void unless a
-  separate decision changes it. Do not introduce annotations implicitly.
-- **Dependencies:** the current scalar/buffer FFI supports a limited file API;
-  richer OS errors or argument access may need a narrowly approved bridge.
-  Decide that boundary explicitly, or sequence the affected part after M16.
-- **Closing marker:** a multi-module Skuld CLI reads a temporary JSON file,
-  transforms it and writes output; its own tests run with `skuld test` and a
-  failing test gives a nonzero exit. Host integration tests own all temporary
-  files and also cover missing files, malformed input and cleanup on failure.
-- **Out of scope:** subprocess execution, directory traversal, package registry,
-  project generator and a general-purpose IO framework.
+The first milestone whose deliverable is a program rather than a language
+feature: `examples/jsontool.skuld` reads a JSON file, selects part of it by a
+dotted path and writes the result, and `skuld test` runs its suite.
+
+- **Implemented:** `std/fs` (`read_file`, `read_text`, `write_file`,
+  `write_text`), `std/os` (`arguments`, `parameters`, `flush`, `exit`),
+  `std/testing` (`check`, `equal_int`, `equal_text`, `equal_bool`, `fail`,
+  `passed`), the `skuld test` command, and the example application with a
+  module of its own and seven tests.
+- **Decision taken — files are opened by path, not by handle.** A handle
+  exposed to Skuld would need a lifetime rule: who closes it, and what happens
+  to one that is dropped. Skuld has no destructor a user can write, and a file
+  read or replaced whole — which is what a document transformer does — needs
+  none. The cost is that streaming a file larger than memory is not possible
+  yet, and it will need the handle question answered.
+- **Decision taken — the process bridge lives in the runtime.** Reading `argv`
+  means following a pointer to a pointer, which the foreign boundary refuses,
+  so the runtime offers a count, a length, a copy into bytes Skuld already owns
+  and an exit that flushes first. It is shaped exactly like the boundary
+  already is — scalars and a pointer to bytes the caller owns — and the
+  checker's rule that no managed value crosses `extern "C"` is untouched. The
+  generated `main` now takes `argc`/`argv` and hands them straight to the
+  runtime; that is the only place in a program that sees them.
+- **Decision taken — bytes or text is the caller's choice.** `read_file`
+  answers `[]u8` and `read_text` answers a `string` after UTF-8 validation, so
+  nothing is decoded that did not ask to be.
+- **Decision taken — a test is a function, not an annotation.** A top-level
+  `func test_...()` taking nothing and returning nothing is a test. A naming
+  rule needs nothing from the compiler, and annotations are not this
+  milestone's to introduce. A name that looks like a test but cannot be called
+  as one is an error, not something skipped: a test that silently never runs is
+  the worst outcome available.
+- **Decision taken — the suite is one program.** The file is compiled once with
+  an entry point the runner writes, and the tests run in source order in one
+  process. Skuld has no recoverable panic, so the first failure stops the run
+  and the report says which tests never started. Each finished test prints a
+  line that is flushed as it is written, so the record survives a trap that
+  kills the process. Compiling once per test would make each independent at the
+  price of a clang invocation each; that trade can be revisited when a suite is
+  large enough to care.
+- **Decision taken — `main` still returns void.** A program that wants a status
+  calls `os.exit(code)`, which flushes and leaves. Nothing is released on the
+  way out, because the process is ending.
+- **Left undone, deliberately:** `skuld run` does not forward arguments to the
+  program it runs. `--` already means "every later argument is a path" in this
+  CLI, and quietly changing that would break a documented, tested rule for a
+  convenience; a program that reads arguments is built and run directly, and a
+  test suite goes through `skuld test`. Giving `run` a forwarding marker of its
+  own is a small decision that nothing needed yet.
+- **Closing marker — reached:** `cli/tests/jsontool.rs` builds the application,
+  reads a temporary JSON file, writes a selected part to another file and
+  checks both, and covers a missing file, malformed input, a path that leads
+  nowhere and a command line that makes no sense — each with its own exit
+  status, and nothing written when the run fails. `cli/tests/testing.rs` runs
+  the application's own suite through `skuld test`, and covers a failing
+  assertion, a trap, a file with no tests, a file that declares `main` and one
+  that does not compile. Every temporary file belongs to the host test and is
+  removed with the scratch directory.
+- **Out of scope, and still out:** subprocess execution, directory traversal, a
+  package registry, a project generator, a general IO framework, `errno`
+  detail, and any file API that is not whole-file.
 
 ## M14 — Field defaults and construction — Planned
 

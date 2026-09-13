@@ -1250,6 +1250,21 @@ length-aware and not NUL-terminated, so `to_c(text) -> Result<[]u8,
 CStringError>` copies the bytes and appends the terminator, refusing a string
 that already contains a NUL, since a C string would end there.
 
+**`std/fs`** reads and writes a whole file, by path rather than by handle: a
+handle would need a lifetime rule, and Skuld has no destructor a user can
+write, while a file read or replaced whole needs none. `read_file`, `read_text`,
+`write_file` and `write_text` answer a `Result` whose error names the step and
+the path — there is no `errno`, for the reason `std/net` already records.
+
+**`std/os`** reaches the process itself: `arguments()` and `parameters()` (the
+same list without the program), `flush()` and `exit(code)`. Following `argv`
+means reading a pointer to pointers, which the foreign boundary does not do, so
+the runtime offers a count, a length and a copy into bytes Skuld already owns.
+
+**`std/testing`** is what `skuld test` runs: `check`, `equal_int`, `equal_text`,
+`equal_bool`, `fail` and `passed`. A failing assertion prints why and ends the
+process, because Skuld has no recoverable panic to carry on from.
+
 **What the library is not.** There is no collection beyond arrays, no map, no
 time, no randomness and no filesystem traversal. It is not a package registry,
 and there is no way to add to it except by changing the compiler — which is the
@@ -1266,6 +1281,9 @@ move with the language.
 | `std/json` | Parsing and rendering JSON over `[]u8` |
 | `std/net` | A blocking TCP connection over libc sockets |
 | `std/http` | An HTTP/1.1 client written on `std/net` |
+| `std/fs` | Reading and writing a whole file, by path |
+| `std/os` | The process arguments, an output flush and an exit status |
+| `std/testing` | The assertions `skuld test` runs |
 
 The last three arrived with M9, and reach as far as fetching a document and
 decoding it:
@@ -1351,7 +1369,7 @@ Enums are sum types, e.g.
 propagation are implemented above, as are the sized integers, `[]u8`,
 string slicing and the `extern "C"` boundary.
 
-Future commands: `new`, `test`, `doc` (`fmt` is implemented). LLVM/Cranelift and eventual
+Future commands: `new` and `doc` (`fmt` and `test` are implemented). LLVM/Cranelift and eventual
 self-hosting remain long-term possibilities.
 
 `ROADMAP.md` records M1–M11 as implemented, including function values,

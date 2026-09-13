@@ -96,8 +96,18 @@ a full type check. `emit-c` does run every compiler stage through C generation.
 The debug AST and resolution output are not stable serialization formats.
 `build` compiles to a native executable and keeps only that artifact: in the
 working directory under the source file's stem, or wherever `-o <path>` names.
-A build never overwrites its own source. `fmt` formats source files; `new`,
-`test` and `doc` remain future CLI commands.
+A build never overwrites its own source. `fmt` formats source files and `test`
+runs the `test_...` functions in a file; `new` and `doc` remain future CLI
+commands.
+
+```bash
+cargo run -p skuld-cli -- test examples/jsontool_tests.skuld
+```
+
+A test is a top-level `func test_...()` that takes nothing and returns nothing.
+The file is compiled once with an entry point the runner writes, so the suite is
+one program: the first failure stops it, and the report says which tests never
+started. A failing suite exits non-zero.
 
 A program that declares foreign functions from a library other than libc names
 it on the command line; `build` and `run` forward `-l` and `-L` to clang and
@@ -205,7 +215,9 @@ func main() {
 embedded in the compiler binary, so it needs no installation and a directory
 named `std` beside a program cannot replace it. It is deliberately small —
 `std/utf8` decodes bytes with a real error type, `std/strings` has byte-offset
-helpers, `std/cstring` builds the NUL-terminated buffer C expects.
+helpers, `std/cstring` builds the NUL-terminated buffer C expects, `std/fs`
+reads and writes whole files, `std/os` reaches the process arguments and exit
+status, and `std/testing` holds the assertions `skuld test` runs.
 
 ```skuld
 import "std/strings"
@@ -356,15 +368,15 @@ and iteration) and M1 (Enums and `match`), alongside
 Option, classes, weak references and arrays.
 M8 (function values and stable sorting), M9 (blocking TCP, HTTP and JSON)
 and M10 (class interfaces) are also implemented, as is `let ... else`.
-M11 (the official formatter, `skuld fmt`) and M12 (LSP refactoring) are
-implemented too. The LSP provides diagnostics, completion, hover, definition,
-find-references and rename.
+M11 (the official formatter, `skuld fmt`), M12 (LSP refactoring) and M13 (local
+CLI applications and `skuld test`) are implemented too. The LSP provides
+diagnostics, completion, hover, definition, find-references and rename, and
+`examples/jsontool.skuld` is a multi-module native tool with its own test suite.
 
 No implementation milestone is active. [ROADMAP.md](ROADMAP.md#next-sequence--planned-not-selected)
-proposes M13–M18: local CLI applications and tests,
-construction defaults, maps, host-name resolution, verified HTTPS, and measured
-performance/portability. M13 is the recommended next step; each milestone still
-requires explicit selection and its open design decisions. General generics and
+proposes M14–M18: construction defaults, maps, host-name resolution, verified
+HTTPS, and measured performance/portability. M14 is the recommended next step;
+each milestone still requires explicit selection and its open design decisions. General generics and
 self-hosting remain separate candidates.
 Status is reported as completed milestones, not as a completion percentage, and
 implies neither production readiness nor measured Go/Rust performance.

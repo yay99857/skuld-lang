@@ -218,6 +218,8 @@ accurate; documenting a future feature is not a request to implement it.
   in source. All fixtures and examples format idempotently and execute cleanly.
   M12 (references and rename in the LSP) is complete; its two open decisions
   were taken as recorded below and in `ROADMAP.md`.
+  M13 (local CLI applications and `skuld test`) is complete, with its file,
+  process and test-discovery decisions recorded below and in `ROADMAP.md`.
   No milestone is active. Do not infer authorization for further features without
   explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
@@ -249,7 +251,10 @@ accurate; documenting a future feature is not a request to implement it.
   disk. The library is `std/utf8` (a real `Utf8Error` with byte offsets, strict
   `validate`, `decode`, `count`, `describe`), `std/strings` (`starts_with`,
   `ends_with`, `index_of`, `contains`, `trim`, `split`, `join`, all in byte
-  offsets) and `std/cstring` (`to_c`, refusing an embedded NUL). It stays small
+  offsets) and `std/cstring` (`to_c`, refusing an embedded NUL); M9 added
+  `std/json`, `std/net` and `std/http`, and M13 `std/fs` (whole files by path),
+  `std/os` (arguments, flush, exit) and `std/testing` (the assertions `skuld
+  test` runs). It stays small
   on purpose: every entry needs a caller in a milestone already planned, and
   adding one means changing the compiler, which is the intended brake. The
   builtin `bytes_to_string` keeps returning `Result<string, string>`: making it
@@ -326,6 +331,24 @@ accurate; documenting a future feature is not a request to implement it.
   would still compile is refused. A buffer that has changed since it last
   checked is refused, since its recorded offsets describe a text that is gone.
   The server writes nothing: a workspace edit is the client's to apply.
+- Files, the process and tests arrived with M13. `std/fs` reads and writes a
+  whole file **by path**: a handle would need a lifetime rule and Skuld has no
+  destructor a user can write, so there is no `open`, no close and no streaming
+  yet. `std/os` reaches the process through the runtime, not through libc
+  directly: following `argv` is a pointer-to-pointer read the foreign boundary
+  refuses, so `sk_arg_count`, `sk_arg_len`, `sk_arg_copy`, `sk_flush` and
+  `sk_exit` are the whole bridge — scalars and a pointer to bytes the caller
+  owns, nothing managed, nothing handed back. The generated `main` takes
+  `argc`/`argv` and gives them to the runtime; that is the only place a program
+  sees them. `main` still returns void, and a status comes from `os.exit(code)`,
+  which flushes and releases nothing because the process is ending. A test is a
+  top-level `func test_...()` taking nothing and returning nothing — a naming
+  rule, not an annotation — and `skuld test` compiles the file once with an
+  entry point it writes, runs the tests in source order in one process, and
+  stops at the first failure, since Skuld has no recoverable panic. Each
+  finished test prints a flushed marker so the record survives a trap. `skuld
+  run` does not forward arguments: `--` already means "every later argument is
+  a path" in this CLI, and changing that quietly would break a tested rule.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built
