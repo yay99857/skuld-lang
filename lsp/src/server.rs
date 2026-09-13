@@ -157,7 +157,19 @@ impl Server {
             return;
         };
         self.open.insert(path.clone(), text.to_string());
-        self.publish(&path, output);
+        // Every open document is re-checked, not only this one: a file whose
+        // imported module just changed under it must not keep reporting what
+        // was true before the change. A program this size checks in
+        // microseconds, so the cost is not worth a dependency graph.
+        self.publish_all(output);
+    }
+
+    /// Re-check every open document. Reports are sent in path order so that a
+    /// file appearing in two programs settles on one answer deterministically.
+    fn publish_all(&mut self, output: &mut impl Write) {
+        for path in self.open.keys().cloned().collect::<Vec<_>>() {
+            self.publish(&path, output);
+        }
     }
 
     /// Compile the document and send what the checker reports.
@@ -179,6 +191,12 @@ impl Server {
             open: &self.open,
         };
         let result = skuld_compiler::check_program(&name, &source, &mut loader);
+        // Whether a program has an entrypoint is a property of the program,
+        // and an editor showing one file cannot know which program that file
+        // belongs to. A module file, or anything under `std/`, would otherwise
+        // be permanently red for a mistake it is not making. A file that does
+        // declare `main` is a program, and keeps every diagnostic about it.
+        let declares_main = declares_main(&source);
 
         // Every file the program touched gets a report, so fixing the last
         // error in an imported module actually clears its underline. A file
@@ -189,6 +207,12 @@ impl Server {
 
         if let Err(errors) = result {
             for entry in &errors.diagnostics {
+                if !declares_main
+                    && entry.diagnostic.code
+                        == skuld_compiler::diagnostic::DiagnosticCode::InvalidEntrypoint
+                {
+                    continue;
+                }
                 let Some(file) = errors.sources.get(entry.file.0) else {
                     continue;
                 };
@@ -260,6 +284,14 @@ impl ModuleLoader for OpenFirst<'_> {
         files.sort_by(|left, right| left.0.cmp(&right.0));
         Ok(files)
     }
+}
+
+/// Whether the text declares a top-level `main`, which is what makes it an
+/// entry file rather than a module the editor happens to be showing.
+fn declares_main(source: &str) -> bool {
+    skuld_compiler::parse(source)
+        .program
+        .is_some_and(|program| program.functions.iter().any(|f| f.name.text == "main"))
 }
 
 fn document_path(message: &Json) -> Option<String> {

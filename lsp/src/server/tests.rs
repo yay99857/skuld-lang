@@ -286,3 +286,68 @@ fn json_survives_the_full_round_trip() {
     assert!(!out.is_empty());
     assert!(json::parse(&out[0].to_text()).is_ok());
 }
+
+#[test]
+fn a_file_that_declares_no_main_is_not_judged_as_a_program() {
+    // Every module file, and every file under `std/`, is a file the editor
+    // shows and no program's entry. Reporting a missing entrypoint against it
+    // would leave the whole library permanently red.
+    let (out, _) = converse(&[did_open(
+        "/tmp/skuld-lsp-test/geometry/point.skuld",
+        "pub struct Point {\n    x: int\n    y: int\n}\n",
+    )]);
+    assert!(
+        diagnostics_for(&out, "/tmp/skuld-lsp-test/geometry/point.skuld").is_empty(),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_broken_main_is_still_reported() {
+    // Suppression applies to a file that declares no `main` at all; one that
+    // declares a wrong `main` is a program with a real mistake in it.
+    let (out, _) = converse(&[did_open(
+        "/tmp/skuld-lsp-test/main.skuld",
+        "func main(n: int) {\n}\n",
+    )]);
+    assert_eq!(
+        diagnostics_for(&out, "/tmp/skuld-lsp-test/main.skuld").len(),
+        1,
+        "{out:?}"
+    );
+}
+
+/// A path inside the repository's own fixtures, so a module on disk can be
+/// imported without inventing a temporary tree.
+fn fixture_path(name: &str) -> String {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("tests")
+        .join("pass");
+    root.join(name).to_string_lossy().into_owned()
+}
+
+#[test]
+fn editing_a_module_refreshes_the_files_that_import_it() {
+    // The editor shows one program; a file whose dependency changed under it
+    // must not keep reporting what was true before the change.
+    let entry = fixture_path("lsp_entry.skuld");
+    let module = fixture_path("modules/geometry/point.skuld");
+    let (out, _) = converse(&[
+        did_open(
+            &entry,
+            "import \"modules/geometry\"\nfunc main() { print(geometry.origin().sum()) }\n",
+        ),
+        // The same module, opened unsaved with `pub` taken off `origin`, which
+        // is the name the entry file calls.
+        did_open(
+            &module,
+            "pub struct Point {\n    x: int\n    y: int\n\n    sum() -> int {\n        return this.x + this.y\n    }\n}\n\npub enum Shape {\n    Dot\n    Box(Point)\n}\n\nfunc origin() -> Point {\n    return Point { x: 0, y: 0 }\n}\n\nfunc scale(value: int) -> int {\n    return value * 2\n}\n",
+        ),
+    ]);
+    assert!(
+        !diagnostics_for(&out, &entry).is_empty(),
+        "the importing file was never re-checked: {out:?}"
+    );
+}
