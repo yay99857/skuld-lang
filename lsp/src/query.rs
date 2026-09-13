@@ -32,10 +32,7 @@ pub enum Target {
     /// A resolved name: a binding, a function, an import qualifier.
     Symbol(SymbolId, Word),
     /// A member reached through a `.`, which has no symbol of its own.
-    Member {
-        receiver: Type,
-        word: Word,
-    },
+    Member { receiver: Type, word: Word },
     /// A declared type, which is not a value name.
     Type(Type, Word),
 }
@@ -251,7 +248,11 @@ fn describe_symbol(typed: &TypedProgram, symbol: SymbolId, word: &Word) -> Strin
             ),
             None => format!("func {}", word.text),
         },
-        SymbolKind::Parameter => format!("{}: {}", word.text, type_name(typed, typed.symbol_type(symbol))),
+        SymbolKind::Parameter => format!(
+            "{}: {}",
+            word.text,
+            type_name(typed, typed.symbol_type(symbol))
+        ),
         SymbolKind::Variable(mutability) => format!(
             "{} {}: {}",
             match mutability {

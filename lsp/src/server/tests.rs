@@ -502,11 +502,15 @@ fn the_server_advertises_and_answers_hover() {
     );
     // The range covers the word asked about, so a client can highlight it.
     assert_eq!(
-        hover.path(&["range", "start", "character"]).and_then(Json::as_i64),
+        hover
+            .path(&["range", "start", "character"])
+            .and_then(Json::as_i64),
         Some(10)
     );
     assert_eq!(
-        hover.path(&["range", "end", "character"]).and_then(Json::as_i64),
+        hover
+            .path(&["range", "end", "character"])
+            .and_then(Json::as_i64),
         Some(14)
     );
 }
@@ -514,10 +518,7 @@ fn the_server_advertises_and_answers_hover() {
 #[test]
 fn hover_over_nothing_answers_null_rather_than_an_error() {
     let path = "/tmp/skuld-lsp-test/blank.skuld";
-    let (out, _) = converse(&[
-        did_open(path, "func main() {\n}\n"),
-        hover_at(path, 1, 0),
-    ]);
+    let (out, _) = converse(&[did_open(path, "func main() {\n}\n"), hover_at(path, 1, 0)]);
     let hover = out
         .iter()
         .rfind(|message| message.get("id").and_then(Json::as_i64) == Some(9))
@@ -580,7 +581,9 @@ fn definition_crosses_into_the_module_that_declared_the_name() {
     );
     // `pub func origin()` is on line 17 of that file, zero-based.
     assert_eq!(
-        location.path(&["range", "start", "line"]).and_then(Json::as_i64),
+        location
+            .path(&["range", "start", "line"])
+            .and_then(Json::as_i64),
         Some(17)
     );
 }

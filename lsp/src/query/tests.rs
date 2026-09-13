@@ -43,7 +43,9 @@ fn hover_answers_at_a_declaration_as_well_as_at_a_use() {
     // The name in `func area(...)` itself, not a call to it.
     let offset = PROGRAM.find("area(width").expect("the declaration") + 1;
     assert_eq!(
-        hover(PROGRAM, offset, &typed).map(|(text, _)| text).as_deref(),
+        hover(PROGRAM, offset, &typed)
+            .map(|(text, _)| text)
+            .as_deref(),
         Some("func area(int, int) -> int")
     );
 }
@@ -126,7 +128,10 @@ fn definition_points_at_the_name_that_was_declared() {
     assert_eq!(span.start, PROGRAM.find("user = new").expect("the `let`"));
 
     let (_, span) = definition_of(PROGRAM, "width * height", &typed).expect("a parameter");
-    assert_eq!(span.start, PROGRAM.find("width: int").expect("the parameter"));
+    assert_eq!(
+        span.start,
+        PROGRAM.find("width: int").expect("the parameter")
+    );
 }
 
 #[test]

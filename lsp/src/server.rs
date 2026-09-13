@@ -7,8 +7,8 @@
 //! a later stage, not a bigger version of this one.
 
 use crate::complete;
-use crate::query;
 use crate::json::Json;
+use crate::query;
 use crate::rpc::{self, ReadError};
 use crate::text::{Positions, path_to_uri, uri_to_path};
 use skuld_compiler::module::{Errors, ModuleLoader};
@@ -313,10 +313,7 @@ impl Server {
             ("uri", Json::string(path_to_uri(&target))),
             (
                 "range",
-                Json::object([
-                    ("start", position_json(start)),
-                    ("end", position_json(end)),
-                ]),
+                Json::object([("start", position_json(start)), ("end", position_json(end))]),
             ),
         ])
     }
@@ -343,10 +340,7 @@ impl Server {
             ),
             (
                 "range",
-                Json::object([
-                    ("start", position_json(start)),
-                    ("end", position_json(end)),
-                ]),
+                Json::object([("start", position_json(start)), ("end", position_json(end))]),
             ),
         ])
     }
@@ -372,7 +366,8 @@ impl Server {
             .and_then(Json::as_i64)
             .unwrap_or(0)
             .max(0) as usize;
-        let offset = Positions::new(source.clone()).offset(crate::text::Position { line, character });
+        let offset =
+            Positions::new(source.clone()).offset(crate::text::Position { line, character });
         Some((source, offset, typed))
     }
 
