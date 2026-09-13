@@ -366,7 +366,7 @@ Skuld, and the JSON parser that closes M4.
   halves without a socket, so they run under the sanitizers with everything
   else. Nothing in the suite touches the network.
 
-## M10 — Interfaces — Planned
+## M10 — Interfaces — Implemented
 
 The named abstraction every other milestone deferred, and the answer to the
 one limit M8 chose: a function value cannot be stored, so a handler table, a
@@ -411,6 +411,16 @@ func show(renderer: Renderer, value: int) {
 - **Out of scope:** inheritance between interfaces, default method bodies,
   structs behind interfaces, generics of any kind, and asking at run time which
   concrete class is inside — a downcast needs a decision of its own.
+- **Validated:** `tests/pass/interfaces` covers dispatch, a class implementing
+  two interfaces and keeping methods beyond them, interface values in an array,
+  a field and an `Option` payload, and a registry that outlives the call that
+  filled it. Five `tests/fail` fixtures pin the refusals: a struct, a missing
+  method, a differing signature, a class that never declared conformance, and a
+  method the interface does not name.
+- **One thing composed that had to:** a class widens into an interface the way
+  a value wraps into an expected `Option`, and the two chain in that order, so
+  `Option<Handler>` takes a class directly. It is the only place two implicit
+  conversions meet.
 - **Cheap by construction:** the shared allocation header already carries a
   `destroy` pointer, so retain and release over an interface value need no new
   runtime code. Dispatch goes through per-class thunks, the same shape M8's

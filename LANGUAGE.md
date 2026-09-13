@@ -57,9 +57,9 @@ The builtin is `print`, replacing `println`; neither old spelling is an alias.
 The old words are ordinary identifiers and can be explicitly declared by users.
 
 Keywords: `func let var return if else while loop for in break continue new weak class struct
-impl enum match import pub extern unsafe`. A lambda needs none of them: it is
+impl enum match import pub extern unsafe interface`. A lambda needs none of them: it is
 written `(a: int): int { ... }`, the shape a method already uses.
-Reserved future keywords: `interface static`.
+Reserved future keywords: `static`.
 `true` and `false` produce boolean literal tokens. Type names, `print`, `Some`,
 `None`, `Ok` and `Err` are identifiers. `Option<T>` and `Result<T, E>` are
 builtin type syntax, not user-defined generics. In a type annotation,
@@ -993,6 +993,77 @@ arithmetic traps on overflow at every width, so comparing values near the
 extremes of `int` that way aborts the program. Comparing and returning `-1`,
 `0` or `1` always works.
 
+## Interfaces — Implemented
+
+An interface names a set of method signatures. A class states which ones it
+implements on its own declaration:
+
+```skuld
+interface Renderer {
+    render(value: int) -> string
+    label() -> string
+}
+
+class Decimal: Renderer {
+    prefix: string
+
+    render(value: int) -> string {
+        return "${this.prefix}${value}"
+    }
+
+    label() -> string {
+        return "decimal"
+    }
+}
+
+func show(renderer: Renderer, value: int) {
+    print("${renderer.label()}: ${renderer.render(value)}")
+}
+```
+
+An interface method needs no new spelling: a class method already takes an
+implicit `this`, so a signature is that method without its body.
+
+**Conformance is declared, never inferred.** A class with the right methods
+that never said so is not accepted, and each declared interface is checked
+method by method, with parameters and result matching exactly. Nothing is
+coerced to fit; a near miss names both signatures. Saying it on the
+declaration is the same choice `pub` made in modules: this language says what
+it means where the thing is defined.
+
+**Only a class implements an interface.** A struct is a value with no
+identity, so putting one behind an interface would mean boxing it — an
+allocation and a lifetime question with nothing asking for them. A class is
+already a counted reference, so an interface value is that reference plus a
+table of methods, and reference counting works unchanged.
+
+**An interface value is storable**, which is the point. It may be a field, an
+array element, a payload or a return type, and it outlives the call that made
+it:
+
+```skuld
+class Registry {
+    handlers: []Handler
+
+    add(handler: Handler) {
+        this.handlers.push(handler)
+    }
+}
+```
+
+That is what a function value deliberately cannot do, and it is why the two
+exist side by side: a lambda is a cheap, non-escaping argument, and an
+interface is a named abstraction you can keep. Keeping one brings the cycles
+classes already have, and `weak` is already the answer to those.
+
+A class widens into an interface it declared the way a value wraps into an
+expected `Option`, and the two compose in that order, so `Option<Handler>`
+accepts a class directly.
+
+**Not here:** inheritance between interfaces, default method bodies, structs
+behind interfaces, and asking at run time which concrete class is inside. A
+downcast is a decision of its own.
+
 ## Unwrapping with an escape — Implemented
 
 A declaration can unwrap an `Option` or a `Result` and say what to do when
@@ -1269,9 +1340,11 @@ or automatically implement every construct it contains.
 
 ## Later capabilities — Planned
 
-Interfaces and `impl Printable for User { ... }` remain planned. Their member
-and receiver syntax needs alignment with the class design before it is fixed;
-the earlier `func print(self)` sketch is superseded as a class-method model.
+Interfaces are implemented, and `impl Printable for User { ... }` is not how
+they are written: conformance is stated on the class, as `class User:
+Printable`. The earlier `func print(self)` sketch is superseded twice over —
+a method takes an implicit `this`, and an interface signature is that method
+without its body.
 Enums are sum types, e.g.
 `enum Status { Online Offline Away }`.
 `Option<T>` with `Some`/`None` and `Result<T, E>` with `Ok`/`Err` and `?`

@@ -198,11 +198,15 @@ accurate; documenting a future feature is not a request to implement it.
   concurrently in another session (`2606206`, `e3d84c2`) and owns its own
   status entry. M8 (function values and lambdas) is complete; its three open
   design questions were delegated by the user and are recorded in `ROADMAP.md`.
-  M10 (interfaces) is the active milestone, delegated the same way: conformance
-  is declared on the class (`class User: Printable`), only classes implement
-  one, and an interface value is storable — which is what M8's escape rule left
-  out. Inheritance between interfaces, default bodies, structs behind
-  interfaces and run-time downcasts are all out.
+  M10 (interfaces) is complete, delegated the same way: conformance is declared
+  on the class (`class User: Printable`) and checked method by method, only
+  classes implement one — a struct would have to be boxed — and an interface
+  value is storable, which is what M8's escape rule left out. An interface
+  value is the object plus a method table; the allocation header already
+  carries each class's destructor, so counting one needs no new runtime code.
+  Inheritance between interfaces, default bodies, structs behind interfaces and
+  run-time downcasts are all out and need their own decision. No milestone is
+  active.
   M9 (sockets, HTTP and the long-range target) is complete: `std/net` is a
   blocking TCP connection over libc, `std/http` an HTTP/1.1 client on top of
   it, and `std/json` is M4's parser promoted out of its fixture. A Skuld
@@ -260,6 +264,13 @@ accurate; documenting a future feature is not a request to implement it.
   read as one. `sort()` is in place, returns void, is stable, and runs on a
   snapshot so a comparator that mutates the array aborts instead of reading a
   reallocated buffer.
+- Interfaces are implemented and only classes implement them. Conformance is
+  declared, never inferred from a class that happens to have the methods, and
+  each is checked with parameters and result matching exactly. Dispatch is
+  dynamic through per-class thunks, so no call goes through a mismatched
+  function pointer. A class widens into an interface it declared like a value
+  wraps into an expected Option, and the two compose in that order — the only
+  place two implicit conversions meet.
 - A declaration can unwrap: `let name = value else binding { ... }` binds the
   payload of an `Option` or a `Result` for the rest of the scope and runs the
   block when there is none. A `Result` names its error there; an `Option` has

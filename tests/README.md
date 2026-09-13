@@ -130,3 +130,11 @@ block, managed payloads under the sanitizers, and each refusal — a block that
 falls through, an `if` that only sometimes returns, a name written for an
 Option, an initializer that is neither Option nor Result, and the error named
 outside the block that handles it.
+
+`pass/interfaces` and the `interface_*` fixtures in `fail/` cover M10: dynamic
+dispatch, a class implementing two interfaces, interface values in an array, a
+field and an Option payload, a registry that outlives the call that filled it,
+and each refusal — a struct, a missing method, a differing signature, a class
+that never declared conformance, and a method the interface does not name.
+`reserved_declaration` kept its name and lost `interface` to `pass/interfaces`;
+`static` stays behind, which is what a promoted tripwire should look like.
