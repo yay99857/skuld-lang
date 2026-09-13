@@ -57,8 +57,8 @@ The builtin is `print`, replacing `println`; neither old spelling is an alias.
 The old words are ordinary identifiers and can be explicitly declared by users.
 
 Keywords: `func let var return if else while loop for in break continue new weak class struct
-impl enum match`.
-Reserved future keywords: `interface import static extern`.
+impl enum match import pub extern unsafe`.
+Reserved future keywords: `interface static`.
 `true` and `false` produce boolean literal tokens. Type names, `print`, `Some`,
 `None`, `Ok` and `Err` are identifiers. `Option<T>` and `Result<T, E>` are
 builtin type syntax, not user-defined generics. In a type annotation,
@@ -898,6 +898,96 @@ reading or writing through one from Skuld, and any ABI other than C. A
 declaration whose C prototype disagrees with a header the generated program
 already includes is a clang error at build time, not a Skuld diagnostic.
 
+## Modules — Implemented
+
+A program is a set of modules. A **module is a directory**: every `.skuld` file
+in it shares one namespace, so splitting a module across files is a filing
+decision rather than a semantic one, and two files of the same module call each
+other without importing anything.
+
+```skuld
+// geometry/point.skuld
+pub struct Point {
+    x: int
+    y: int
+}
+
+pub func origin() -> Point {
+    return Point { x: 0, y: 0 }
+}
+
+// Not exported: visible to the rest of `geometry`, and nowhere else.
+func scale(value: int) -> int {
+    return value * 2
+}
+```
+
+```skuld
+// main.skuld
+import "geometry"
+
+func main() {
+    print(geometry.origin().x)
+}
+```
+
+**Importing.** `import "path"` comes before every declaration in a file, so the
+top of a file lists everything it depends on. The path is relative to the
+**program root**, the directory the entry file lives in, and its segments are
+plain names — `..`, a leading `/` and an empty segment are rejected, so a path
+never climbs out of the root. Imports belong to the file that writes them, not
+to its module: a sibling file that wants the same module imports it too.
+
+**Qualification.** An import binds one name: the **last segment** of the path.
+`import "net/socket"` is spelled `socket.connect(...)`. There is no unqualified
+access to another module, so an import can never quietly change what a name in
+the file already means, and reading a call says where it comes from. Two
+imports whose last segments agree are rejected in that file rather than one
+silently winning. An ordinary binding shadows a qualifier like any other name:
+
+```skuld
+import "geometry"
+
+func main() {
+    let geometry = "an ordinary string"
+    print(geometry)
+}
+```
+
+**Exporting.** `pub` marks what leaves a module — functions, structs, classes
+and enums. Visibility is written rather than inferred from spelling; a capital
+letter would have decided it in a language whose prelude is `print`, `len` and
+`bytes_to_string`. A method is public with the type that owns it, so `pub` is
+never written on a method, and a field is reachable wherever its type is. An
+`extern` block cannot be exported: a foreign signature is an assertion made by
+the module that wrote it.
+
+Types are qualified in every position they can appear:
+
+```skuld
+import "geometry"
+
+func place(p: geometry.Point, all: []geometry.Point) -> Option<geometry.Point> {
+    match geometry.Shape.Box(p) {
+        geometry.Shape.Dot: return null
+        geometry.Shape.Box(inner): return inner
+    }
+}
+```
+
+A qualified pattern names its enum by identity, not by spelling, so two modules
+may each declare a `Tag` without either shadowing the other.
+
+**Cycles are rejected.** If two modules import each other there is no order in
+which they could be checked, and nothing in the language needs one; the
+diagnostic points at the import that closes the cycle.
+
+**What a module is not.** There is no package registry, no versioned or remote
+dependency, no conditional compilation, and no separate compilation: the
+compiler still reads every source of a program on every build. The entry file
+is the root module on its own, so a directory full of unrelated programs — as
+`tests/pass` is — does not become one module by sitting together.
+
 ## Demonstration proposals — Experimental
 
 `test.skuld` may contain incomplete examples and comments asking for redesign.
@@ -937,8 +1027,8 @@ self-hosting remain long-term possibilities.
 enums and `match`, then `for`, then `Result` and `?`, then bytes and string
 slices, then the FFI, then modules — together with the design questions each one
 depends on.
-Everything up to and including the `extern "C"` FFI has landed. Modules and
-everything after them are a plan, not a commitment, and none of it is
+Everything up to and including modules has landed. A standard library and
+everything after it are a plan, not a commitment, and none of it is
 implemented.
 
 ## Unsupported features and experimental status
@@ -951,8 +1041,9 @@ variables, conditional execution and classes with methods/interpolation
 Loops (`while`, `loop`, `for`), structs, classes, interpolation, weak class references, arrays, Option,
 `Result` with `?`, enums, pattern matching, the sized integers, `[]u8`, string indexing and slicing,
 foreign `extern "C"` declarations with raw pointers,
+modules with `import` and `pub`,
 and reference-counted runtime behavior are **Implemented**. Interfaces,
-modules and the remaining capabilities above are **Planned**. No generics, macros, async/await, threads, channels,
+a standard library and the remaining capabilities above are **Planned**. No generics, macros, async/await, threads, channels,
 reflection, decorators, annotations, package registry, compiler plugins,
 compile-time execution, operator overloading or user-defined conversions will
 be implemented before Demo 3. Inheritance is excluded from the core design.

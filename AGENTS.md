@@ -69,7 +69,7 @@ accurate; documenting a future feature is not a request to implement it.
   reference-counted string concatenation and interpolation execute. Weak class
   references, homogeneous arrays, builtin Option values, builtin `Result<T, E>`
   with `?` propagation, the sized integers, byte-level string access and
-  `extern "C"` foreign calls execute
+  `extern "C"` foreign calls and programs made of several modules execute
   too. Parameters and `let` bindings are immutable.
 - `lex`, `parse`, `resolve` inspect individual stages. `check` performs full
   static checking without clang; `emit-c` emits checked C; `run` builds and
@@ -77,8 +77,8 @@ accurate; documenting a future feature is not a request to implement it.
   executable in the working directory under the source stem. `build` and `run`
   also forward trailing `-l<library>`/`-L<directory>` arguments to clang, and
   accept no other linker argument.
-- The resolver uses single-source declaration/use tables; keep them with their
-  exact AST revision. Functions are predeclared; parameters share the function
+- The resolver's declaration and use tables are keyed by file and byte offset;
+  keep them with their exact AST revision. Functions are predeclared; parameters share the function
   body scope; locals become visible after initializers; child scopes shadow.
   The prelude bindings — `print`, `Some`, `None`, `null`, `Ok`, `Err`, `ptr`, the width
   conversions and `bytes_to_string` — may all be shadowed. Use resolved symbols,
@@ -180,14 +180,15 @@ accurate; documenting a future feature is not a request to implement it.
   JSON parser in pure Skuld over `[]u8`, so M4 is closed. It exposed one rough
   edge left unfixed — the expected width of a conversion call reaches into its
   whole argument expression, so `u8(128 + n % 64)` is rejected and needs a named
-  intermediate. M6 (modules and `import`) is the active milestone by explicit
-  user decision: a module is a directory whose `.skuld` files share a namespace,
-  export is an explicit `pub`, imported names are always qualified by the
-  module's last path segment, and an import cycle is a diagnostic. M6 was
-  selected without waiting for M5, which modules do not depend on; M5 landed
-  concurrently in another session (`2606206`, `e3d84c2`) and owns its own status
-  entry. Do not infer authorization for further features without explicit
-  decision.
+  intermediate. M6 (modules and `import`) is complete, by explicit user
+  decision on its three open questions: a module is a directory whose `.skuld`
+  files share a namespace, export is an explicit `pub`, imported names are
+  always qualified by the module's last path segment, and an import cycle is a
+  diagnostic. Its rules are set out in their own entry below. M6 was selected
+  without waiting for M5, which modules do not depend on; M5 landed
+  concurrently in another session (`2606206`, `e3d84c2`) and owns its own
+  status entry. No milestone is active. Do not infer authorization for further
+  features without explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
   and string slices → `extern "C"` FFI → modules → standard library → function
   values → sockets. It is a plan, not a selection: a remaining entry is Planned,
@@ -196,6 +197,18 @@ accurate; documenting a future feature is not a request to implement it.
   slice-retention, JSON-object and module-boundary questions are answered there;
   recursive enum boxing, callback syntax, capture and where interfaces belong
   are not. Do not settle those unilaterally while implementing something else.
+- Modules are implemented: a module is a directory whose `.skuld` files share one
+  namespace; `import "path"` precedes every declaration, resolves against the
+  program root — the entry file's directory — and binds the path's last segment
+  as the only way to name that module's exports. Path segments are plain names,
+  so a path cannot climb out of the root. `pub` exports a function, struct, class
+  or enum; a method is public with the type that owns it and an `extern` block
+  cannot be exported. Imports belong to a file, declarations to its module.
+  Scopes nest prelude → module → file → bodies, and a local binding shadows a
+  qualifier. An import cycle, a duplicate qualifier in one file, a private name
+  and a missing module are diagnostics. The compiler performs no I/O: the graph
+  asks a `ModuleLoader` the caller supplies, and the CLI's reads directories.
+  A reserved `std` prefix is *not* implemented; it belongs to M7.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built
@@ -252,14 +265,15 @@ Do not build a standard library or memory-management runtime ahead of need.
 
 The milestones proposed in `ROADMAP.md` do not relax any of the above.
 HTTP and JSON are Planned and each needs its own
-authorization; `extern "C"` is implemented, which is a boundary, not a
-standard library. `Result` arrived as a builtin, which settles that roadmap
+authorization; `extern "C"` and modules are implemented, and neither is a
+standard library: a module system says where code lives, not what ships. `Result` arrived as a builtin, which settles that roadmap
 question; general generics remain excluded and still need their own explicit
 decision. M4's closing marker was met by `tests/pass/json_parser.skuld`, a
 parser written in Skuld — it is a fixture, never a JSON facility in the
-compiler, and nothing about it authorizes one. Modules and `import` are the
-active milestone by explicit user decision, under the shape recorded in the
-status section above. Nothing in that document authorizes a standard library, a
+compiler, and nothing about it authorizes one. Modules and `import` landed by
+explicit user decision, under the shape recorded in the status section above;
+the reserved `std` prefix recorded in `ROADMAP.md` belongs to M7 and is not
+implemented. Nothing in that document authorizes a standard library, a
 networking runtime or process execution from the compiler library.
 
 ## Diagnostics and validation

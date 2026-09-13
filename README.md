@@ -129,8 +129,30 @@ class references are supported; strong cycles require weak links or explicit bre
 `unsafe extern "C" { ... }` declares functions from a linked library, and
 `ptr(value)` borrows the bytes of a string or an array to pass to one. Only
 scalars and raw pointers cross that boundary: a reference-counted value never
-does. See [LANGUAGE.md](LANGUAGE.md) for the complete implemented/planned
-distinction.
+does.
+
+A program can span several modules. A module is a directory whose `.skuld`
+files share one namespace; `import "net/socket"` binds the path's last segment,
+so its exports are reached as `socket.connect(...)` and never unqualified.
+`pub` marks what leaves a module, a method is public with the type that owns
+it, and an import cycle is an error. Paths resolve against the directory of the
+entry file and cannot climb out of it. See [LANGUAGE.md](LANGUAGE.md) for the
+complete implemented/planned distinction.
+
+```skuld
+// geometry/point.skuld
+pub struct Point {
+    x: int
+    y: int
+}
+
+// main.skuld
+import "geometry"
+
+func main() {
+    print(geometry.Point { x: 3, y: 4 }.x)
+}
+```
 
 ## Architecture and verification
 
@@ -138,7 +160,8 @@ One Cargo workspace contains the `skuld-compiler` library and `skuld-cli` binary
 package, without external Rust dependencies. Recursive descent and Pratt parsing
 remain separate from resolution and checking. The type checker builds semantic
 tables; a distinct lowering pass creates typed HIR. C generation reads only HIR.
-External process invocation belongs to the CLI, never the compiler library.
+External process invocation belongs to the CLI, never the compiler library, and
+so does reading files: the module graph asks a loader the caller supplies.
 
 ```bash
 cargo fmt --all -- --check
@@ -262,11 +285,12 @@ func emit(text: string) -> int {
 }
 ```
 
-This closes M5 (`extern "C"` FFI and linking), M4 (bytes, sized integers and
-string slices, closed by `tests/pass/json_parser.skuld`), M3 (`Result<T, E>` and
-propagation), M2 (`for` and iteration) and M1 (Enums and `match`), alongside
+This closes M6 (modules and `import`), M5 (`extern "C"` FFI and linking), M4
+(bytes, sized integers and string slices, closed by
+`tests/pass/json_parser.skuld`), M3 (`Result<T, E>` and propagation), M2 (`for`
+and iteration) and M1 (Enums and `match`), alongside
 Option, classes, weak references and arrays.
-Modules, a standard library, the official
+A standard library, the official
 formatter, broader tooling, portability and eventual self-hosting remain ahead;
 `ROADMAP.md` proposes an ordering for those milestones and records the design
 questions they depend on.

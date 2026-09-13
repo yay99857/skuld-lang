@@ -82,3 +82,14 @@ buffering. Under the sanitizers it is also the proof that a borrow retains and
 leaks nothing. The refusals that keep the boundary narrow live in `fail/`: a
 managed type in a signature, a pointer to one, `ptr` on a value that owns no
 bytes, a missing `unsafe` marker and a body on a declaration.
+
+Module fixtures are a program plus the directories it imports, grouped under a
+directory named after the fixture: `pass/modules.skuld` imports
+`modules/geometry` and `modules/text`, which live in `pass/modules/`. The
+runner still discovers fixtures by their `.skuld` file at the category root, so
+a module directory is never mistaken for one. `pass/modules` covers a module
+split across two files, a class field typed from another module, qualified
+calls, construction and enum patterns, and an import shadowed by a local; the
+`import_*` fixtures in `fail/` pin the cycle, the missing module, the private
+value, the private type, the undeclared name, the unqualified use, the
+misplaced `import` and the path that tries to escape the program root.

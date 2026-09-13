@@ -178,26 +178,33 @@ The boundary with the outside world, and the real gate for any network work.
   trailing `0`. Whether a helper for that belongs in the language or in the
   standard library is a question for M7, not for the boundary.
 
-## M6 — Modules and `import` — Planned
+## M6 — Modules and `import` — Implemented
 
-Where a function lives, which is the question every milestone after M5 runs
-into first. `import` is currently a reserved word the parser rejects.
+Where a function lives, which is the question every milestone after M5 ran
+into first.
 
 ```skuld
 import "json"
 import "net/socket"
 ```
 
-- **In scope:** a compilation unit larger than one file, a path-to-file mapping
-  rule, per-module name resolution tables, an export marker, and the CLI
-  learning to compile a set of files rather than one.
+- **Implemented:** a compilation unit larger than one file; `import "path"`
+  before any declaration, resolved against the program root; `pub` as the export
+  marker; per-module type and value namespaces; qualified names in every
+  position a type or constructor can appear; and a CLI that compiles a set of
+  files. Reading them stays with the caller: the compiler asks a loader, so the
+  library still performs no I/O.
+- **Not implemented here:** the reserved `std` prefix M7 records below. Every
+  path this milestone resolves is a directory under the program root.
 - **Out of scope:** a package registry, versioned dependencies, remote imports,
   conditional compilation, and separate compilation with a cached artifact per
   module. The compiler keeps reading every source of a program.
-- **Open risk:** the resolver's single-source declaration/use tables assume one
-  `SourceFile`. Either they grow a module dimension or a module-level table sits
-  above them; deciding that before writing code is the whole of this milestone's
-  design work. Spans stay byte offsets into their own file.
+- **Risk resolved:** the resolver's declaration and use tables grew a file
+  dimension rather than gaining a table above them. Spans stay byte offsets into
+  their own file, so the file has to be part of the key; pretending a span
+  identified a position on its own was the only alternative and it was wrong.
+  Scopes nest prelude → module → file → bodies, which is what makes a module's
+  declarations shared between its files while its imports stay per-file.
 - **Decisions taken:** a module is a **directory**; every `.skuld` file in it
   shares one namespace, as a Go package does. A name leaves it through an
   explicit **`pub`**, not through its spelling — tying visibility to a capital
@@ -205,8 +212,17 @@ import "net/socket"
   An imported name is **always qualified** by the module's last path segment
   (`json.parse`), so no import can quietly shadow a local name. An **import
   cycle is a diagnostic**, which also keeps initialization order defined.
-- **Validation:** a two-module program in `tests/pass`, plus fail fixtures for
-  a missing module, a cyclic import and a private name used from outside.
+- **Also decided while implementing:** path segments are plain names, so a path
+  cannot climb out of the program root; a method is public with the type that
+  owns it; an `extern` block cannot be exported, since a foreign signature is an
+  assertion by the module that wrote it; and the entry file is the root module
+  on its own, so a directory of unrelated programs does not become one module.
+- **Validated:** `tests/pass/modules` is a three-module program — a module split
+  across two files, a class field typed from another module, qualified calls,
+  construction and enum patterns, and an import shadowed by a local — running
+  under the sanitizers. Eight `tests/fail` fixtures pin the cycle, the missing
+  module, the private value, the private type, the undeclared name, the
+  unqualified use, the misplaced `import` and the escaping path.
 
 ## M7 — A minimal standard library — Planned
 
@@ -321,8 +337,8 @@ above.
 6. ~~Where module boundaries sit — file or directory, `pub` or convention?~~
    Answered for M6 by the user: a module is a **directory**, export is an
    explicit **`pub`**, use is always **qualified** (`json.parse`), and an import
-   cycle is an error. Whether the resolver grows a module dimension or gains a
-   table above it is an implementation question left to that milestone. Where a
+   cycle is an error. M6 settled the implementation question too: the resolver's
+   tables grew a file dimension rather than gaining a table above them. Where a
    module path is **rooted** was left open by M6 and answered separately by the
    user for M7: a reserved `std` prefix over sources embedded in the compiler
    binary, with every other path still relative to the program root.
