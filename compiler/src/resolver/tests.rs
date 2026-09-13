@@ -1,5 +1,5 @@
 use super::*;
-use crate::parse;
+use crate::{parse, types::IntType};
 fn output(source: &str) -> ResolveOutput {
     let parsed = parse(source);
     assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
@@ -175,6 +175,50 @@ fn try_operand_and_result_if_let_bindings_resolve() {
     );
     assert_eq!(result.diagnostics.len(), 1);
     assert_eq!(result.diagnostics[0].code, DiagnosticCode::UnknownName);
+}
+
+#[test]
+fn width_conversions_and_decoding_are_prelude_bindings() {
+    let result = valid("func f() { u8(1)\nint(2)\ni64(3)\nbytes_to_string(4) }");
+    let kinds: Vec<_> = result
+        .references
+        .values()
+        .map(|id| result.symbols[id.0].kind)
+        .collect();
+    assert!(kinds.contains(&SymbolKind::Builtin(Builtin::IntConvert(IntType::U8))));
+    // `int` and `i64` are two spellings of one width, so both resolve to it.
+    assert_eq!(
+        kinds
+            .iter()
+            .filter(|kind| **kind == SymbolKind::Builtin(Builtin::IntConvert(IntType::I64)))
+            .count(),
+        2
+    );
+    assert!(kinds.contains(&SymbolKind::Builtin(Builtin::BytesToString)));
+
+    // They are ordinary prelude bindings, so a user may shadow them.
+    let result = valid("func f() { let u8 = 1\nu8 }");
+    let id = result.references.values().next().expect("use");
+    assert_eq!(
+        result.symbols[id.0].kind,
+        SymbolKind::Variable(Mutability::Immutable)
+    );
+}
+
+#[test]
+fn slice_endpoints_resolve() {
+    let result = output(
+        "func main() {\n    let xs = [1, 2, 3]\n    let a = 0\n    let b = 2\n    print(xs[a..b].len())\n}",
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let result = output("func main() {\n    let xs = [1, 2, 3]\n    print(xs[lo..hi].len())\n}");
+    assert_eq!(result.diagnostics.len(), 2);
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .all(|d| d.code == DiagnosticCode::UnknownName)
+    );
 }
 
 #[test]

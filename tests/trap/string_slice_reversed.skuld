@@ -1,0 +1,4 @@
+func main() {
+    let text = "abcdef"
+    print(text[4..2])
+}

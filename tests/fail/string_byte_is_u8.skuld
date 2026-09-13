@@ -1,0 +1,5 @@
+func main() {
+    let text = "abc"
+    let value: int = text[0]
+    print(value)
+}

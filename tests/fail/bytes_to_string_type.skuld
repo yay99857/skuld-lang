@@ -1,0 +1,7 @@
+func main() {
+    let numbers = [1, 2, 3]
+    match bytes_to_string(numbers) {
+        Ok(text): print(text)
+        Err(reason): print(reason)
+    }
+}

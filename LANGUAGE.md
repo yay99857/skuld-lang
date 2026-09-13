@@ -4,8 +4,9 @@ Status labels: **Implemented** means available now; **Planned** describes future
 intent, not accepted/executable programs; **Experimental** denotes provisional
 choices. The complete single-file native pipeline, Demos 0–2, loops, structs,
 reference-counted strings, interpolation, classes, weak references, arrays,
-builtin Option values and builtin `Result<T, E>` with `?` propagation are
-implemented. Self-hosting remains planned.
+builtin Option values, builtin `Result<T, E>` with `?` propagation, the sized
+integer types and byte-level string access are implemented. Self-hosting
+remains planned.
 
 ## Philosophy — Planned
 
@@ -101,11 +102,34 @@ width alignment and standalone-CR line indexing are future improvements.
 
 ## Types, variables and mutability — Implemented core
 
-Initial semantic types: `int = i64`, `float = f64`, `bool`, `string`, `void`.
-These aliases are platform independent. Later: `i8 i16 i32 i64`,
-`u8 u16 u32 u64`, `f32 f64`, `uint`, and `char`.
-`uint`'s alias is not yet specified. Semantic types use an enum, never source
-spellings; the wider numeric names and `char` are not accepted semantic types yet.
+Semantic types: `int = i64`, `float = f64`, `bool`, `string`, `void`, and the
+sized integers `i8 i16 i32 i64` and `u8 u16 u32 u64`. All are platform
+independent. `int` and `i64` are two spellings of one type rather than two
+types with a conversion between them, so a value of one is a value of the
+other. Later: `f32`, `uint` and `char`; `uint`'s alias is not yet specified.
+Semantic types use an enum, never source spellings; `f32`, `uint` and `char`
+are not accepted semantic types yet.
+
+An integer literal takes the width its context expects and is range-checked
+there, so `let b: u8 = 256` is rejected where it is written rather than
+truncated. Without a context a literal is an `int`. A signed type's most
+negative value is written as a minus applied directly to a literal
+(`let a: i8 = -128`), which is the one place a magnitude one past the positive
+range is accepted.
+
+Widths never mix implicitly, in either direction. Converting is explicit and
+spelled as a call on the target type's name:
+
+```skuld
+let byte: u8 = 200
+let wide: int = int(byte)
+let back: u8 = u8(wide)
+```
+
+Every such conversion is range-checked at run time and traps when the value
+does not fit, in keeping with trapping arithmetic. `int(x)` and `i64(x)` are
+the same conversion. Converting between integers and `float` is not part of
+this milestone.
 
 ```skuld
 let age = 27
@@ -271,9 +295,16 @@ produce HIR with resolved symbol IDs, explicit types and source spans.
 `codegen_c::emit_c` accepts only that HIR. `compile_to_c(&str)` composes these
 stages without launching tools. The CLI alone invokes clang and the executable.
 
-Numeric operators require two operands of the same numeric type. `+ - * /`
-work on int and float; `%` only on int. Numeric ordering returns bool. Equality
-and inequality work on matching int, float, bool or string values. Strings
+Numeric operators require two operands of the same numeric type, which for
+integers means the same width as well. `+ - * /` work on every integer width
+and on float; `%` works on every integer width. Arithmetic traps on overflow
+and on invalid division at every width rather than wrapping, and unary `-` is
+rejected on an unsigned type, where only zero would have a result. The left
+operand of a binary expression supplies the expected width to the right one,
+so `byte * 2` types the literal as the left operand's width; put the typed
+operand first, or annotate, when both sides could be literals. Numeric ordering
+returns bool. Equality and inequality work on matching int, float, bool or
+string values. Strings
 compare byte content, not pointer identity. `&&`, `||` and `!` require bool;
 there is no truthiness or implicit int/float conversion. Unary `+` and `-`
 require numbers. Function values, chars, invalid member accesses and unknown types produce
@@ -598,6 +629,60 @@ a standalone block: write `let value: Option<int> = (None)` before a following
 See [examples/options.skuld](examples/options.skuld) for optional values and safe
 weak promotion together.
 
+## Bytes and slices — Implemented
+
+A Skuld string is a sequence of bytes, and this milestone makes that reachable
+without adding a character or code point type.
+
+```skuld
+let text = "olá"
+print(text.len())        // 4: bytes, not characters
+print(text[0])           // 111, a u8
+print(text[0..2])        // "ol"
+let bytes = text.bytes() // []u8
+```
+
+- `text.len(): int` is the byte count, which is what indexing and slicing
+  address.
+- `text[index]` reads one byte as a `u8`. The index is an `int` and is checked;
+  an out-of-range index traps.
+- `text.bytes(): []u8` copies the bytes into an array.
+- Strings are immutable, so `text[index] = value` is rejected (`E0204`). Build a
+  `[]u8` and convert it instead.
+
+`value[start..end]` slices a string into a string or an array into an array of
+the same element type. Both endpoints are required and are `int`; the range is
+half-open, like every other range in the language, so `text[5..5]` is empty and
+`text[0..text.len()]` is the whole. A reversed or out-of-range slice traps.
+
+A slice copies rather than retaining what it came from: a three-byte view must
+not keep a large buffer alive. String literals are the exception, because their
+bytes are static and outlive every slice of them, so slicing a literal is free
+and observably identical. Slicing an array copies its elements, retaining any
+that are managed, which makes the result a genuinely separate array: pushing to
+a slice does not touch the original.
+
+Going from bytes back to a string is fallible, because arbitrary bytes are not
+text:
+
+```skuld
+match bytes_to_string(bytes) {
+    Ok(text): print(text)
+    Err(reason): print(reason)
+}
+```
+
+`bytes_to_string(bytes: []u8) -> Result<string, string>` validates strict
+UTF-8, rejecting overlong encodings, surrogate halves and anything above
+U+10FFFF. The error side is a message naming the offending byte offset. That a
+message stands in for a dedicated error type is **Experimental**: no error enum
+belongs in the language before a standard library exists to own one.
+
+Building a string is building a `[]u8` and validating it once at the end;
+`push` and the other array operations are the string builder. Encodings other
+than UTF-8, a `char` or code point type, normalization and regular expressions
+remain out of scope.
+
 ## Error handling — Implemented
 
 `Result<T, E>` is a builtin value type holding either a success payload of type
@@ -781,7 +866,8 @@ the earlier `func print(self)` sketch is superseded as a class-method model.
 Enums are sum types, e.g.
 `enum Status { Online Offline Away }`.
 `Option<T>` with `Some`/`None` and `Result<T, E>` with `Ok`/`Err` and `?`
-propagation are implemented above.
+propagation are implemented above, as are the sized integers, `[]u8` and
+string slicing.
 
 Future FFI: `extern "C" { func puts(text: *char) -> int }`.
 Future commands: `new`, `fmt`, `test`, `doc`. LLVM/Cranelift and eventual
@@ -790,8 +876,9 @@ self-hosting remain long-term possibilities.
 `ROADMAP.md` proposes the order in which these capabilities would arrive —
 enums and `match`, then `for`, then `Result` and `?`, then bytes and string
 slices, then the FFI — together with the design questions each one depends on.
-The first three have landed; the remainder is a plan, not a commitment, and
-none of it is implemented.
+Everything up to and including bytes and string slices has landed, except that
+milestone's closing marker, a JSON parser written in Skuld. The FFI and beyond
+are a plan, not a commitment, and none of it is implemented.
 
 ## Unsupported features and experimental status
 
@@ -801,7 +888,8 @@ variables, conditional execution and classes with methods/interpolation
 (Demos 0–3) are **Implemented**.
 
 Loops (`while`, `loop`, `for`), structs, classes, interpolation, weak class references, arrays, Option,
-`Result` with `?`, enums, pattern matching and reference-counted runtime behavior are **Implemented**. Interfaces,
+`Result` with `?`, enums, pattern matching, the sized integers, `[]u8`, string indexing and slicing,
+and reference-counted runtime behavior are **Implemented**. Interfaces,
 modules and the remaining capabilities above are **Planned**. No generics, macros, async/await, threads, channels,
 reflection, decorators, annotations, package registry, compiler plugins,
 compile-time execution, operator overloading or user-defined conversions will

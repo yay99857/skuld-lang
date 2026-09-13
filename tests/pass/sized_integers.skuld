@@ -1,0 +1,87 @@
+// Every width, its boundaries, its arithmetic and the explicit conversions
+// between them. `int` and `i64` are one type, not two.
+
+func widths() {
+    let a: i8 = -128
+    let b: i8 = 127
+    print(a)
+    print(b)
+
+    let c: i16 = -32768
+    let d: i16 = 32767
+    print(c)
+    print(d)
+
+    let e: i32 = -2147483648
+    let f: i32 = 2147483647
+    print(e)
+    print(f)
+
+    let g: i64 = -9223372036854775808
+    let h: int = 9223372036854775807
+    print(g)
+    print(h)
+
+    let i: u8 = 0
+    let j: u8 = 255
+    print(i)
+    print(j)
+
+    let k: u16 = 65535
+    let l: u32 = 4294967295
+    let m: u64 = 18446744073709551615
+    print(k)
+    print(l)
+    print(m)
+}
+
+func arithmetic() {
+    let small: u8 = 100
+    // The left operand supplies the expected width to the right one, so the
+    // literal is a u8 rather than defaulting to int.
+    print(small + 55)
+    print(small * 2)
+    print(small / 3)
+    print(small % 7)
+
+    let signed: i16 = -300
+    print(signed / 4)
+    print(signed % 7)
+    print(-signed)
+
+    let wide: u64 = 9223372036854775808
+    print(wide + 1)
+}
+
+func conversions() {
+    let byte: u8 = 200
+    let widened: int = int(byte)
+    print(widened + 100)
+    print(u8(255))
+    print(i8(-1))
+    print(u64(int(byte)))
+    // `i64` and `int` name the same target.
+    print(i64(byte))
+
+    let narrow: i32 = i32(widened)
+    print(narrow)
+}
+
+func comparisons() {
+    let a: u8 = 10
+    let b: u8 = 20
+    print(a < b)
+    print(a == b)
+    print(a != b)
+    print(b >= 20)
+}
+
+func main() {
+    widths()
+    arithmetic()
+    conversions()
+    comparisons()
+    let byte: u8 = 7
+    let wide: u64 = 18446744073709551615
+    print("byte ${byte}, wide ${wide}, signed ${-5}")
+}

@@ -52,3 +52,13 @@ the second `?`, the latter with an array, a class and a string alive, so the
 leak checker sees an early return that has to release them. Missing context for
 a constructor, a mismatched or absent enclosing error type, a non-Result operand
 of `?`, a non-exhaustive match and a redeclared `Result` live in `fail/`.
+
+Sized integer fixtures cover every width's boundaries, trapping arithmetic,
+explicit conversions in both directions and the refusals that keep widths from
+mixing. Byte fixtures cover `len()`, indexing, slicing of strings and arrays,
+`bytes()` and `bytes_to_string()`, including the UTF-8 sequences a lax
+validator would wave through: overlong encodings, surrogate halves, truncated
+sequences and code points above U+10FFFF. `string_bytes_and_slices` slices both
+literal and owned strings, and arrays of strings and classes, so the leak
+checker sees the copying path with managed elements. Out-of-range conversions,
+out-of-bounds indexes and reversed slices live in `trap/`.

@@ -948,15 +948,36 @@ impl Parser<'_> {
             if self.at(&TokenKind::LeftBracket) {
                 self.bump();
                 let index = self.with_struct_literals(true, |p| p.expression())?;
+                // `[a..b]` slices; `[a]` indexes. The `..` is the same token
+                // a `for` range uses.
+                let slice_end = if self.take(&TokenKind::DotDot).is_some() {
+                    Some(self.with_struct_literals(true, |p| p.expression())?)
+                } else {
+                    None
+                };
                 let end = self
-                    .expect(&TokenKind::RightBracket, "`]` after array index")?
+                    .expect(
+                        &TokenKind::RightBracket,
+                        if slice_end.is_some() {
+                            "`]` after the slice range"
+                        } else {
+                            "`]` after array index"
+                        },
+                    )?
                     .span
                     .end;
                 let span = Span::new(left.span.start, end);
                 left = Expr {
-                    kind: ExprKind::Index {
-                        object: Box::new(left),
-                        index: Box::new(index),
+                    kind: match slice_end {
+                        Some(slice_end) => ExprKind::Slice {
+                            object: Box::new(left),
+                            start: Box::new(index),
+                            end: Box::new(slice_end),
+                        },
+                        None => ExprKind::Index {
+                            object: Box::new(left),
+                            index: Box::new(index),
+                        },
                     },
                     span,
                 };

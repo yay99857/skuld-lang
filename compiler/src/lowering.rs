@@ -253,6 +253,11 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
             object: Box::new(expression(object, typed)),
             index: Box::new(expression(index, typed)),
         },
+        ast::ExprKind::Slice { object, start, end } => h::ExprKind::Slice {
+            object: Box::new(expression(object, typed)),
+            start: Box::new(expression(start, typed)),
+            end: Box::new(expression(end, typed)),
+        },
         ast::ExprKind::Weak(value) => {
             h::ExprKind::Weak(value.as_ref().map(|v| Box::new(expression(v, typed))))
         }
@@ -332,10 +337,21 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
             operand,
             op_span,
         } => {
-            if *op == ast::UnaryOp::Negative
-                && matches!(strip_groups(operand).kind, ast::ExprKind::Literal(ast::Literal::Integer(value)) if value == (1_u64 << 63))
-            {
-                h::ExprKind::Int(i64::MIN)
+            // A signed type's most negative value has no positive literal, so
+            // the minus and its operand fold into one constant at every width.
+            let minimum = typed
+                .expression_type(source.span)
+                .and_then(Type::int_type)
+                .filter(|kind| *op == ast::UnaryOp::Negative && kind.signed())
+                .filter(|kind| {
+                    matches!(
+                        strip_groups(operand).kind,
+                        ast::ExprKind::Literal(ast::Literal::Integer(value))
+                            if value == kind.min_magnitude()
+                    )
+                });
+            if let Some(kind) = minimum {
+                h::ExprKind::Int(-(kind.min_magnitude() as i128) as i64)
             } else {
                 h::ExprKind::Unary {
                     op: match op {
@@ -432,6 +448,12 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
                     (Some(Type::Array(_)), "len") => {
                         Some(h::ExprKind::ArrayLen(Box::new(expression(object, typed))))
                     }
+                    (Some(Type::String), "len") => {
+                        Some(h::ExprKind::StringLen(Box::new(expression(object, typed))))
+                    }
+                    (Some(Type::String), "bytes") => Some(h::ExprKind::StringBytes(Box::new(
+                        expression(object, typed),
+                    ))),
                     (Some(Type::Weak(_)), "alive") => {
                         Some(h::ExprKind::WeakAlive(Box::new(expression(object, typed))))
                     }
@@ -472,6 +494,25 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
                 unreachable!("internal compiler bug: indirect checked call")
             };
             let id = typed.resolution.references[&name.span.start];
+            if typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::BytesToString) {
+                return h::Expr {
+                    kind: h::ExprKind::BytesToString(Box::new(expression(&arguments[0], typed))),
+                    ty: typed.expressions[&(source.span.start, source.span.end)],
+                    span: source.span,
+                };
+            }
+            if let SymbolKind::Builtin(Builtin::IntConvert(target)) =
+                typed.resolution.symbols[id.0].kind
+            {
+                return h::Expr {
+                    kind: h::ExprKind::IntConvert {
+                        value: Box::new(expression(&arguments[0], typed)),
+                        target,
+                    },
+                    ty: typed.expressions[&(source.span.start, source.span.end)],
+                    span: source.span,
+                };
+            }
             let constructor = match typed.resolution.symbols[id.0].kind {
                 SymbolKind::Builtin(Builtin::Some) => Some(h::ExprKind::Some as fn(_) -> _),
                 SymbolKind::Builtin(Builtin::Ok) => Some(h::ExprKind::Ok as fn(_) -> _),
@@ -550,7 +591,7 @@ mod tests {
             panic!("variable")
         };
         assert!(matches!(initializer.kind, h::ExprKind::Int(i64::MIN)));
-        assert_eq!(initializer.ty, crate::types::Type::Int);
+        assert_eq!(initializer.ty, crate::types::Type::INT);
         let h::StatementKind::Expression(h::Expr {
             kind:
                 h::ExprKind::Call {

@@ -267,10 +267,17 @@ pub enum ExprKind {
     Weak(Option<Box<Expr>>),
     /// `value?`. Unwraps a `Result`, returning its `Err` from the function.
     Try(Box<Expr>),
-    /// `arr[index]`. Reads an element from an array.
+    /// `arr[index]`. Reads an element from an array, or a byte from a string.
     Index {
         object: Box<Expr>,
         index: Box<Expr>,
+    },
+    /// `value[start..end]`. Both endpoints are required, and the range is
+    /// half-open like every other range in the language.
+    Slice {
+        object: Box<Expr>,
+        start: Box<Expr>,
+        end: Box<Expr>,
     },
 }
 

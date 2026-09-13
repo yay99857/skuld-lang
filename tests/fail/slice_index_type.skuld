@@ -1,0 +1,5 @@
+func main() {
+    let text = "abcdef"
+    let start: u8 = 1
+    print(text[start..3])
+}

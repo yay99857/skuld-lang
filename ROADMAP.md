@@ -83,26 +83,37 @@ The error mechanism has to exist before anything that can fail exists.
   the latter with an array, a class and a string alive, and runs under the
   address, leak and UB sanitizers with the rest of `tests/pass`.
 
-## M4 — Bytes, sized integers and string slices
+## M4 — Bytes, sized integers and string slices — Primitives implemented
 
 Being able to look inside a string and build one from bytes.
 
-- **In scope:** `u8` and probably the rest of the sized integers at once, since
-  the machinery is shared; `[]u8`; byte indexing into a string; slicing;
-  `bytes_to_string()` returning a `Result` with UTF-8 validation; efficient
-  string building, possibly just `[]u8` plus the growth operations.
+- **Implemented:** the full set of sized integers `i8 i16 i32 i64` and
+  `u8 u16 u32 u64`, taken at once because the machinery is shared; `[]u8`; byte
+  indexing into a string; `[a..b]` slicing of strings and arrays;
+  `bytes_to_string()` returning `Result<string, string>` after strict UTF-8
+  validation; string building as a `[]u8` plus the existing growth operations.
+- **Decision taken:** converting between widths is an explicit call on the
+  target type's name (`u8(v)`, `int(v)`), trapping when the value does not fit.
+  The roadmap had not settled this, and Skuld has no implicit coercions to fall
+  back on. A literal instead takes the width its context expects and is
+  range-checked where it is written.
 - **Why after M3:** converting bytes to a string must fail on invalid UTF-8.
   Without `Result` the only option is a trap, which is wrong for network data.
-- **Out of scope:** encodings other than UTF-8, a `char` or code point type,
-  normalization, regular expressions.
-- **Open risk:** strings are currently length-aware views of static literal
-  bytes, with reference-counted concatenation. Slices pointing into a
-  reference-counted string require deciding whether a slice retains its owner or
-  copies. Retaining is faster and more dangerous, since a three-byte slice can
-  hold a large buffer alive. Default to copying and revisit with a benchmark.
-- **Closing marker:** a complete JSON parser written in **pure Skuld** over
-  `[]u8`, returning `Result<JsonValue, JsonError>`, as a `tests/pass` fixture.
-  That is the whole of `res.json()` except for where the bytes come from.
+- **Out of scope, and still out:** encodings other than UTF-8, a `char` or code
+  point type, normalization, regular expressions. Integer/float conversion was
+  not part of this milestone either.
+- **Risk resolved:** slices copy. A three-byte view must not hold a large buffer
+  alive, and a benchmark can revisit that later. The one exception is a slice of
+  a string literal, whose bytes are static and outlive every slice of them, so
+  no copy is needed and none is observable.
+- **Still provisional:** the error side of `bytes_to_string` is a message rather
+  than a dedicated error type. No error enum belongs in the language before a
+  standard library exists to own one.
+- **Closing marker — outstanding:** a complete JSON parser written in **pure
+  Skuld** over `[]u8`, returning `Result<JsonValue, JsonError>`, as a
+  `tests/pass` fixture. That is the whole of `res.json()` except for where the
+  bytes come from. The primitives above were delivered first, by explicit
+  decision, so this marker still closes the milestone.
 
 ## M5 — `extern "C"` FFI and linking
 
@@ -143,8 +154,9 @@ above.
 1. ~~Builtin `Result` or general generics?~~ Answered: M3 shipped `Result` as a
    builtin. Whether general generics ever enter the project, and how they would
    reconcile with the builtin `Option` and `Result`, remains open.
-2. Do string slices retain their owner or copy? Determines the memory profile of
-   all parsing.
+2. ~~Do string slices retain their owner or copy?~~ Answered: they copy, except
+   for slices of string literals, whose bytes are static. Whether a retaining
+   slice earns its danger is a question for a benchmark, not for this document.
 3. Recursive enum variants: automatic boxing, or the user's responsibility?
 4. Callback and lambda syntax, deferred by M2 but eventually demanded by
    sorting. The current sketch in `test.skuld` is marked unsatisfactory by the

@@ -165,6 +165,16 @@ pub(crate) enum ExprKind {
         object: Box<Expr>,
         index: Box<Expr>,
     },
+    /// `value[start..end]` over a string or an array. Always copies.
+    Slice {
+        object: Box<Expr>,
+        start: Box<Expr>,
+        end: Box<Expr>,
+    },
+    StringLen(Box<Expr>),
+    StringBytes(Box<Expr>),
+    /// `bytes_to_string(bytes)`. Yields `Result<string, string>`.
+    BytesToString(Box<Expr>),
     Weak(Option<Box<Expr>>),
     ArrayLen(Box<Expr>),
     ArrayCall {
@@ -181,6 +191,11 @@ pub(crate) enum ExprKind {
     IsNone(Box<Expr>),
     Ok(Box<Expr>),
     Err(Box<Expr>),
+    /// `u8(value)`. Traps when the value does not fit the target width.
+    IntConvert {
+        value: Box<Expr>,
+        target: crate::types::IntType,
+    },
     IsOk(Box<Expr>),
     IsErr(Box<Expr>),
     /// `value?`. Yields the success payload, or returns the error from the

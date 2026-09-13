@@ -1,0 +1,4 @@
+func main() {
+    let negative: int = -1
+    print(u32(negative))
+}

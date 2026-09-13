@@ -1,0 +1,5 @@
+func main() {
+    var limit: u8 = 255
+    limit = limit + 1
+    print(limit)
+}

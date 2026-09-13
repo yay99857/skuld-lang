@@ -20,7 +20,7 @@ fn checks_demos_and_infers_types() {
     let typed = check(source).expect("checked");
     assert_eq!(
         typed.expression_type(crate::span::Span::new(22, 27)),
-        Some(Type::Int)
+        Some(Type::INT)
     );
 }
 #[test]
@@ -608,6 +608,114 @@ fn result_type_checking() {
     fails(
         "struct Node { next: Result<Node, string> }\nfunc main() {}",
         DiagnosticCode::InvalidValueType,
+    );
+}
+
+#[test]
+fn sized_integer_type_checking() {
+    valid(
+        "func main() {\n    let a: i8 = -128\n    let b: u8 = 255\n    let c: i16 = -32768\n    let d: u16 = 65535\n    let e: i32 = -2147483648\n    let f: u32 = 4294967295\n    let g: i64 = -9223372036854775808\n    let h: u64 = 18446744073709551615\n    print(a)\n    print(b)\n    print(c)\n    print(d)\n    print(e)\n    print(f)\n    print(g)\n    print(h)\n}",
+    );
+    // `int` and `i64` name one type, so neither needs converting to the other.
+    valid("func f(x: i64) -> int { return x }\nfunc main() { print(f(1)) }");
+    let typed = check("func main() { let x: u8 = 1 }").expect("checked");
+    assert_eq!(
+        typed.expression_type(crate::span::Span::new(26, 27)),
+        Some(Type::Int(crate::types::IntType::U8))
+    );
+
+    // A literal takes the width the context expects and is range-checked there.
+    for source in [
+        "func main() { let x: u8 = 256 }",
+        "func main() { let x: i8 = 128 }",
+        "func main() { let x: i32 = 2147483648 }",
+        "func main() { let x: u16 = 65536 }",
+        "func main() { let x: int = 9223372036854775808 }",
+    ] {
+        fails(source, DiagnosticCode::IntegerRange);
+    }
+    valid("func main() { let x: i8 = -128\nprint(x) }");
+
+    // Widths never mix implicitly, in either direction.
+    fails(
+        "func main() { let a: u8 = 1\nlet b: int = 2\nprint(a + b) }",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "func main() { let a: u8 = 1\nlet b: i32 = a }",
+        DiagnosticCode::TypeMismatch,
+    );
+    // Negating an unsigned value has a result only for zero.
+    fails(
+        "func main() { let a: u8 = 5\nprint(-a) }",
+        DiagnosticCode::InvalidOperator,
+    );
+
+    // Conversions are explicit, take one integer and yield the named width.
+    valid("func main() { let a: u8 = 200\nprint(int(a) + 100) }");
+    fails(
+        "func main() { print(u8(\"text\")) }",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "func main() { print(u8(1, 2)) }",
+        DiagnosticCode::ArgumentCount,
+    );
+    fails("func main() { let f = u8 }", DiagnosticCode::ArgumentCount);
+    // A literal argument is range-checked where it is written, not at run time.
+    fails(
+        "func main() { print(u8(256)) }",
+        DiagnosticCode::IntegerRange,
+    );
+}
+
+#[test]
+fn string_bytes_and_slice_type_checking() {
+    valid(
+        "func main() {\n    let t = \"abc\"\n    print(t.len())\n    print(t[0])\n    print(t[0..2])\n    let b = t.bytes()\n    print(b.len())\n    print(b[0])\n    print(b[0..1].len())\n}",
+    );
+    let typed = check("func main() { let t = \"abc\"\nlet b = t[0] }").expect("checked");
+    assert_eq!(
+        typed.expression_type(crate::span::Span::new(36, 40)),
+        Some(Type::Int(crate::types::IntType::U8))
+    );
+
+    // Indexing a string reads a byte, and slicing one yields a string.
+    fails(
+        "func main() { let t = \"abc\"\nlet v: int = t[0] }",
+        DiagnosticCode::TypeMismatch,
+    );
+    // Endpoints and indexes are `int`, not some other width.
+    fails(
+        "func main() { let t = \"abc\"\nlet i: u8 = 1\nprint(t[i..2]) }",
+        DiagnosticCode::TypeMismatch,
+    );
+    // Only arrays and strings index or slice.
+    fails(
+        "func main() { print((42)[0..1]) }",
+        DiagnosticCode::InvalidOperator,
+    );
+    fails(
+        "func main() { print((42)[0]) }",
+        DiagnosticCode::InvalidOperator,
+    );
+    // Strings are immutable, so an indexed write into one has no meaning.
+    fails(
+        "func main() { var t = \"abc\"\nt[0] = u8(65) }",
+        DiagnosticCode::InvalidAssignment,
+    );
+
+    // Decoding bytes can fail, so it hands back a Result.
+    valid(
+        "func main() {\n    let b = \"abc\".bytes()\n    match bytes_to_string(b) {\n        Ok(t): print(t)\n        Err(e): print(e)\n    }\n}",
+    );
+    fails(
+        "func main() { let n = [1, 2]\nmatch bytes_to_string(n) { Ok(t): print(t)\n Err(e): print(e) } }",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "func main() { let f = bytes_to_string }",
+        DiagnosticCode::ArgumentCount,
     );
 }
 

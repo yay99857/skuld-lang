@@ -92,6 +92,17 @@ static inline skuld_string skuld_string_from_int(int64_t value) {
     return skuld_string_from_bytes(digits, (size_t)len);
 }
 
+/* Unsigned values are formatted through their own width so a u64 above
+ * INT64_MAX still reads as itself rather than as a negative number. */
+static inline skuld_string skuld_string_from_uint(uint64_t value) {
+    char digits[32];
+    int len = snprintf(digits, sizeof digits, "%" PRIu64, value);
+    if (len < 0) {
+        skuld_fail("could not format an integer", 0);
+    }
+    return skuld_string_from_bytes(digits, (size_t)len);
+}
+
 /* Matches `print`, so a value reads the same interpolated or printed. */
 static inline skuld_string skuld_string_from_float(double value) {
     char digits[64];
@@ -171,6 +182,78 @@ static inline void *skuld_allocate(size_t base, size_t count, size_t element, si
 static inline size_t skuld_index(int64_t index, size_t length, size_t byte) {
     if (index < 0 || (uint64_t)index >= length) skuld_fail("array index out of bounds", byte);
     return (size_t)index;
+}
+
+/* A half-open range, like every other range in the language: `start == end`
+ * is the empty slice and `end == length` is the whole of it. */
+static inline void skuld_slice_range(int64_t start, int64_t end, size_t length, size_t byte) {
+    if (start < 0 || end < start || (uint64_t)end > length)
+        skuld_fail("slice out of bounds", byte);
+}
+
+static inline unsigned char skuld_string_byte(skuld_string value, int64_t index, size_t byte) {
+    if (index < 0 || (uint64_t)index >= value.len)
+        skuld_fail("string index out of bounds", byte);
+    return value.data[(size_t)index];
+}
+
+/* Slicing copies rather than retaining the owner: a three-byte view must not
+ * keep a large buffer alive. Literal bytes are static and outlive every slice
+ * of them, so those need no copy and no owner. */
+static inline skuld_string skuld_string_slice(skuld_string value, int64_t start, int64_t end,
+                                              size_t byte) {
+    skuld_slice_range(start, end, value.len, byte);
+    size_t len = (size_t)(end - start);
+    if (value.owner == NULL) {
+        return (skuld_string){value.data + start, len, NULL};
+    }
+    return skuld_string_from_bytes((const char *)(value.data + start), len);
+}
+
+/* Strict UTF-8: overlong encodings, surrogates and anything above U+10FFFF are
+ * rejected, so a validated string really is what its consumers assume. */
+static bool skuld_utf8_valid(const unsigned char *data, size_t len, size_t *offset) {
+    size_t i = 0;
+    while (i < len) {
+        unsigned char lead = data[i];
+        size_t extra;
+        uint32_t code;
+        if (lead < 0x80) {
+            i += 1;
+            continue;
+        } else if ((lead & 0xE0) == 0xC0) {
+            extra = 1;
+            code = lead & 0x1Fu;
+        } else if ((lead & 0xF0) == 0xE0) {
+            extra = 2;
+            code = lead & 0x0Fu;
+        } else if ((lead & 0xF8) == 0xF0) {
+            extra = 3;
+            code = lead & 0x07u;
+        } else {
+            *offset = i;
+            return false;
+        }
+        if (len - i <= extra) {
+            *offset = i;
+            return false;
+        }
+        for (size_t k = 1; k <= extra; ++k) {
+            unsigned char next = data[i + k];
+            if ((next & 0xC0) != 0x80) {
+                *offset = i;
+                return false;
+            }
+            code = (code << 6) | (next & 0x3Fu);
+        }
+        uint32_t lowest = extra == 1 ? 0x80u : (extra == 2 ? 0x800u : 0x10000u);
+        if (code < lowest || code > 0x10FFFFu || (code >= 0xD800u && code <= 0xDFFFu)) {
+            *offset = i;
+            return false;
+        }
+        i += extra + 1;
+    }
+    return true;
 }
 
 /* Shared array identity stays fixed; only its separate element buffer moves.

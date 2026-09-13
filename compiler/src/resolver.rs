@@ -3,6 +3,7 @@ use crate::{
     ast::*,
     diagnostic::{Diagnostic, DiagnosticCode},
     span::Span,
+    types::IntType,
 };
 use std::collections::BTreeMap;
 
@@ -17,6 +18,11 @@ pub enum Builtin {
     None,
     Ok,
     Err,
+    /// `u8(value)` and friends. The width travels with the symbol so the
+    /// checker never has to read the identifier's spelling back.
+    IntConvert(IntType),
+    /// `bytes_to_string(bytes)`, which validates UTF-8 and can fail.
+    BytesToString,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
@@ -79,6 +85,24 @@ pub fn resolve(program: &Program) -> ResolveOutput {
     resolver.insert("null", SymbolKind::Builtin(Builtin::None), None);
     resolver.insert("Ok", SymbolKind::Builtin(Builtin::Ok), None);
     resolver.insert("Err", SymbolKind::Builtin(Builtin::Err), None);
+    resolver.insert(
+        "bytes_to_string",
+        SymbolKind::Builtin(Builtin::BytesToString),
+        None,
+    );
+    // `int` and `i64` name one type, so both spellings convert to it.
+    for kind in IntType::ALL {
+        resolver.insert(
+            kind.name(),
+            SymbolKind::Builtin(Builtin::IntConvert(kind)),
+            None,
+        );
+        resolver.insert(
+            kind.suffix(),
+            SymbolKind::Builtin(Builtin::IntConvert(kind)),
+            None,
+        );
+    }
     resolver.enter(program.span);
     for declaration in &program.enums {
         resolver.declare(&declaration.name, SymbolKind::Enum);
@@ -352,6 +376,11 @@ impl Resolver {
             ExprKind::Index { object, index } => {
                 self.expression(object);
                 self.expression(index);
+            }
+            ExprKind::Slice { object, start, end } => {
+                self.expression(object);
+                self.expression(start);
+                self.expression(end);
             }
         }
     }

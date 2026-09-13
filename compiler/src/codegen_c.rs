@@ -267,7 +267,7 @@ struct Emitter {
 }
 fn type_name(structs: &[StructInfo], ty: Type) -> String {
     match ty {
-        Type::Int => "int64_t".into(),
+        Type::Int(kind) => kind.c_type().into(),
         Type::Float => "double".into(),
         Type::Bool => "bool".into(),
         Type::String => "skuld_string".into(),
@@ -509,7 +509,7 @@ impl Emitter {
         self.indent -= 1;
         self.line("}");
     }
-    fn allocate(&mut self, ty: Type, count: usize, byte: usize) -> String {
+    fn allocate(&mut self, ty: Type, count: &str, byte: usize) -> String {
         let prefix = self.aggregate_prefix(ty);
         let name = self.store(
             ty,
@@ -546,14 +546,14 @@ impl Emitter {
             ArrayMethod::Push | ArrayMethod::Insert => {
                 let index = if matches!(method, ArrayMethod::Insert) {
                     self.temporary(
-                        Type::Int,
+                        Type::INT,
                         &format!(
                             "(int64_t)skuld_insert_index({}, {array}->len, {byte})",
                             arguments[0]
                         ),
                     )
                 } else {
-                    self.temporary(Type::Int, &format!("(int64_t){array}->len"))
+                    self.temporary(Type::INT, &format!("(int64_t){array}->len"))
                 };
                 self.line(&format!("{array}->data = skuld_array_reserve({array}->data, &{array}->capacity, skuld_array_next_length({array}->len, {byte}), sizeof({}), {byte});", self.c_type(element)));
                 self.line(&format!("if ((size_t){index} < {array}->len) memmove(&{array}->data[{index} + 1], &{array}->data[{index}], ({array}->len - (size_t){index}) * sizeof({}));", self.c_type(element)));
@@ -584,7 +584,7 @@ impl Emitter {
                 };
                 self.line(&format!("if ({condition}) {{"));
                 self.indent += 1;
-                let index = self.temporary(Type::Int, &format!("(int64_t)({index})"));
+                let index = self.temporary(Type::INT, &format!("(int64_t)({index})"));
                 // Move ownership out; the removed slot no longer owns it.
                 self.line(&format!(
                     "{result}.some = true; {result}.value = {array}->data[{index}];"
@@ -605,7 +605,7 @@ impl Emitter {
         let value = self.expression(object);
         let subscript = self.expression(index);
         let checked = self.temporary(
-            Type::Int,
+            Type::INT,
             &format!(
                 "(int64_t)skuld_index({subscript}, {value}->len, {})",
                 index.span.start
@@ -1016,7 +1016,12 @@ impl Emitter {
     fn expression(&mut self, expr: &Expr) -> String {
         match &expr.kind {
             ExprKind::Int(value) => {
-                if *value == i64::MIN {
+                // An unsigned literal is emitted through its own family, so a
+                // u64 above INT64_MAX never has to round-trip through a
+                // negative constant to reach its own value.
+                if expr.ty.int_type().is_some_and(|kind| !kind.signed()) {
+                    format!("UINT64_C({})", *value as u64)
+                } else if *value == i64::MIN {
                     "INT64_MIN".into()
                 } else if *value < 0 {
                     format!("(-INT64_C({}))", value.unsigned_abs())
@@ -1059,7 +1064,7 @@ impl Emitter {
                         true,
                     );
                 }
-                let name = self.allocate(expr.ty, 0, expr.span.start);
+                let name = self.allocate(expr.ty, "0", expr.span.start);
                 for (position, value) in values {
                     self.line(&format!("{name}->f{position} = {value};"));
                 }
@@ -1074,7 +1079,7 @@ impl Emitter {
                     .iter()
                     .map(|element| self.expression(element))
                     .collect();
-                let name = self.allocate(expr.ty, elements.len(), expr.span.start);
+                let name = self.allocate(expr.ty, &elements.len().to_string(), expr.span.start);
                 for (position, value) in values.iter().enumerate() {
                     self.line(&format!(
                         "{name}->data[{position}] = {};",
@@ -1082,6 +1087,100 @@ impl Emitter {
                     ));
                 }
                 name
+            }
+            ExprKind::Index { object, index } if object.ty == Type::String => {
+                let value = self.expression(object);
+                let subscript = self.expression(index);
+                self.temporary(
+                    expr.ty,
+                    &format!(
+                        "skuld_string_byte({value}, {subscript}, {})",
+                        index.span.start
+                    ),
+                )
+            }
+            ExprKind::Slice { object, start, end } => {
+                let value = self.expression(object);
+                let from = self.expression(start);
+                let to = self.expression(end);
+                let byte = expr.span.start;
+                if object.ty == Type::String {
+                    return self.store(
+                        expr.ty,
+                        &format!("skuld_string_slice({value}, {from}, {to}, {byte})"),
+                        true,
+                    );
+                }
+                let Type::Array(id) = object.ty else {
+                    unreachable!("checked slice")
+                };
+                let element = self.arrays[id.0].element;
+                let low = self.temporary(Type::INT, &format!("(int64_t)({from})"));
+                let high = self.temporary(Type::INT, &format!("(int64_t)({to})"));
+                self.line(&format!(
+                    "skuld_slice_range({low}, {high}, {value}->len, {byte});"
+                ));
+                let result = self.allocate(expr.ty, &format!("(size_t)({high} - {low})"), byte);
+                self.line(&format!("for (size_t i = 0; i < {result}->len; ++i) {{"));
+                self.indent += 1;
+                let source = format!("{value}->data[(size_t){low} + i]");
+                self.line(&format!(
+                    "{result}->data[i] = {};",
+                    self.retained(element, &source)
+                ));
+                self.indent -= 1;
+                self.line("}");
+                result
+            }
+            ExprKind::BytesToString(value) => {
+                let bytes = self.expression(value);
+                let byte = expr.span.start;
+                let result = self.store(expr.ty, &format!("({}){{0}}", self.c_type(expr.ty)), true);
+                let offset = format!("skuld_t{}", self.next_temp);
+                self.next_temp += 1;
+                self.line(&format!("size_t {offset} = 0;"));
+                self.line(&format!(
+                    "if (skuld_utf8_valid({bytes}->data, {bytes}->len, &{offset})) {{"
+                ));
+                self.indent += 1;
+                self.line(&format!("{result}.tag = {};", crate::types::ResultInfo::OK));
+                self.line(&format!(
+                    "{result}.payload.v{} = skuld_string_from_bytes((const char *){bytes}->data, {bytes}->len);",
+                    crate::types::ResultInfo::OK
+                ));
+                self.indent -= 1;
+                self.line("} else {");
+                self.indent += 1;
+                let position = self.store(
+                    Type::String,
+                    &format!("skuld_string_from_uint({offset})"),
+                    true,
+                );
+                self.line(&format!(
+                    "{result}.tag = {};",
+                    crate::types::ResultInfo::ERR
+                ));
+                self.line(&format!(
+                    "{result}.payload.v{} = skuld_string_concat({}, {position}, {byte});",
+                    crate::types::ResultInfo::ERR,
+                    string_literal("invalid UTF-8 at byte ")
+                ));
+                self.indent -= 1;
+                self.line("}");
+                result
+            }
+            ExprKind::StringLen(value) => {
+                let value = self.expression(value);
+                self.temporary(Type::INT, &format!("(int64_t){value}.len"))
+            }
+            ExprKind::StringBytes(value) => {
+                let value = self.expression(value);
+                let byte = expr.span.start;
+                let result = self.allocate(expr.ty, &format!("{value}.len"), byte);
+                self.line(&format!(
+                    "if ({value}.len != 0) memcpy({result}->data, {value}.data, {value}.len);"
+                ));
+                result
             }
             ExprKind::Index { object, index } => {
                 let place = self.index_place(object, index);
@@ -1094,7 +1193,7 @@ impl Emitter {
             } => self.array_call(object, *method, arguments, expr),
             ExprKind::ArrayLen(object) => {
                 let value = self.expression(object);
-                self.temporary(Type::Int, &format!("(int64_t){value}->len"))
+                self.temporary(Type::INT, &format!("(int64_t){value}->len"))
             }
             ExprKind::Weak(value) => {
                 let value = match value {
@@ -1138,6 +1237,24 @@ impl Emitter {
                     expr.ty,
                     &format!("({c_ty}){{.tag = {tag}, .payload = {{.v{tag} = {retained}}}}}"),
                     true,
+                )
+            }
+            ExprKind::IntConvert { value, target } => {
+                let source = value.ty.int_type().expect("checked integer conversion");
+                let rendered = self.expression(value);
+                if source == *target {
+                    return self.temporary(expr.ty, &rendered);
+                }
+                // A signed source widens to int64_t and an unsigned one to
+                // uint64_t, so one helper per pair of families covers all.
+                let family = if source.signed() { "i" } else { "u" };
+                self.temporary(
+                    expr.ty,
+                    &format!(
+                        "skuld_{family}_to_{}({rendered}, {})",
+                        target.suffix(),
+                        expr.span.start
+                    ),
                 )
             }
             ExprKind::IsOk(value) | ExprKind::IsErr(value) => {
@@ -1235,11 +1352,14 @@ impl Emitter {
                             let rendered = self.expression(value);
                             match value.ty {
                                 Type::String => rendered,
-                                Type::Int => self.store(
-                                    Type::String,
-                                    &format!("skuld_string_from_int({rendered})"),
-                                    true,
-                                ),
+                                Type::Int(kind) => {
+                                    let from = if kind.signed() { "int" } else { "uint" };
+                                    self.store(
+                                        Type::String,
+                                        &format!("skuld_string_from_{from}({rendered})"),
+                                        true,
+                                    )
+                                }
                                 Type::Float => self.store(
                                     Type::String,
                                     &format!("skuld_string_from_float({rendered})"),
@@ -1289,8 +1409,10 @@ impl Emitter {
                 let value = self.expression(operand);
                 let result = match op {
                     UnaryOp::Positive => value,
-                    UnaryOp::Negative if expr.ty == Type::Int => {
-                        format!("skuld_neg({value}, {})", op_span.start)
+                    // Unsigned types never reach here: the checker rejects
+                    // negating one, since only zero would have a result.
+                    UnaryOp::Negative if let Type::Int(kind) = expr.ty => {
+                        format!("skuld_neg_{}({value}, {})", kind.suffix(), op_span.start)
                     }
                     UnaryOp::Negative => format!("(-{value})"),
                     UnaryOp::Not => format!("(!{value})"),
@@ -1379,7 +1501,8 @@ impl Emitter {
                     ),
                     CallTarget::Print => {
                         let suffix = match arguments[0].ty {
-                            Type::Int => "int",
+                            Type::Int(kind) if kind.signed() => "int",
+                            Type::Int(_) => "uint",
                             Type::Float => "float",
                             Type::Bool => "bool",
                             Type::String => "string",
@@ -1401,20 +1524,18 @@ impl Emitter {
 }
 fn binary_value(op: BinaryOp, ty: Type, left: &str, right: &str, byte: usize) -> String {
     use BinaryOp::*;
-    let helper = if ty == Type::Int {
-        match op {
-            Add => Some("add"),
-            Subtract => Some("sub"),
-            Multiply => Some("mul"),
-            Divide => Some("div"),
-            Modulo => Some("rem"),
-            _ => None,
-        }
-    } else {
-        None
+    // Every integer width traps on overflow and on invalid division rather
+    // than wrapping, so arithmetic goes through a per-width helper.
+    let helper = match (ty.int_type(), op) {
+        (Some(kind), Add) => Some(("add", kind)),
+        (Some(kind), Subtract) => Some(("sub", kind)),
+        (Some(kind), Multiply) => Some(("mul", kind)),
+        (Some(kind), Divide) => Some(("div", kind)),
+        (Some(kind), Modulo) => Some(("rem", kind)),
+        _ => None,
     };
-    if let Some(helper) = helper {
-        return format!("skuld_{helper}({left}, {right}, {byte})");
+    if let Some((helper, kind)) = helper {
+        return format!("skuld_{helper}_{}({left}, {right}, {byte})", kind.suffix());
     }
     if ty == Type::String && op == Add {
         return format!("skuld_string_concat({left}, {right}, {byte})");
@@ -1463,40 +1584,95 @@ static inline void skuld_fail(const char *message, size_t byte) {
 const RUNTIME: &str = include_str!("../../runtime/strings.c");
 
 const PRELUDE_TAIL: &str = r#"
-static inline int64_t skuld_add(int64_t a, int64_t b, size_t byte) {
-    int64_t result;
-    if (__builtin_add_overflow(a, b, &result)) skuld_fail("integer overflow", byte);
-    return result;
-}
-static inline int64_t skuld_sub(int64_t a, int64_t b, size_t byte) {
-    int64_t result;
-    if (__builtin_sub_overflow(a, b, &result)) skuld_fail("integer overflow", byte);
-    return result;
-}
-static inline int64_t skuld_mul(int64_t a, int64_t b, size_t byte) {
-    int64_t result;
-    if (__builtin_mul_overflow(a, b, &result)) skuld_fail("integer overflow", byte);
-    return result;
-}
-static inline int64_t skuld_div(int64_t a, int64_t b, size_t byte) {
-    if (b == 0) skuld_fail("integer division by zero", byte);
-    if (a == INT64_MIN && b == -1) skuld_fail("integer overflow", byte);
-    return a / b;
-}
-static inline int64_t skuld_rem(int64_t a, int64_t b, size_t byte) {
-    if (b == 0) skuld_fail("integer remainder by zero", byte);
-    if (a == INT64_MIN && b == -1) return 0;
-    return a % b;
-}
-static inline int64_t skuld_neg(int64_t a, size_t byte) {
-    if (a == INT64_MIN) skuld_fail("integer overflow", byte);
-    return -a;
-}
+/* Arithmetic traps on overflow and on invalid division at every width, rather
+ * than wrapping or leaving signed overflow to C's undefined behavior. The two
+ * macros differ only where signedness does: an unsigned type has no negation
+ * and no INT_MIN / -1 case. */
+#define SKULD_INT_OPS(S, T)                                                        \
+    static inline T skuld_add_##S(T a, T b, size_t byte) {                         \
+        T r;                                                                       \
+        if (__builtin_add_overflow(a, b, &r)) skuld_fail("integer overflow", byte); \
+        return r;                                                                  \
+    }                                                                              \
+    static inline T skuld_sub_##S(T a, T b, size_t byte) {                         \
+        T r;                                                                       \
+        if (__builtin_sub_overflow(a, b, &r)) skuld_fail("integer overflow", byte); \
+        return r;                                                                  \
+    }                                                                              \
+    static inline T skuld_mul_##S(T a, T b, size_t byte) {                         \
+        T r;                                                                       \
+        if (__builtin_mul_overflow(a, b, &r)) skuld_fail("integer overflow", byte); \
+        return r;                                                                  \
+    }
+
+#define SKULD_INT_OPS_SIGNED(S, T, MIN)                                            \
+    SKULD_INT_OPS(S, T)                                                            \
+    static inline T skuld_div_##S(T a, T b, size_t byte) {                         \
+        if (b == 0) skuld_fail("integer division by zero", byte);                  \
+        if (a == MIN && b == -1) skuld_fail("integer overflow", byte);             \
+        return (T)(a / b);                                                         \
+    }                                                                              \
+    static inline T skuld_rem_##S(T a, T b, size_t byte) {                         \
+        if (b == 0) skuld_fail("integer remainder by zero", byte);                 \
+        if (a == MIN && b == -1) return 0;                                         \
+        return (T)(a % b);                                                         \
+    }                                                                              \
+    static inline T skuld_neg_##S(T a, size_t byte) {                              \
+        if (a == MIN) skuld_fail("integer overflow", byte);                        \
+        return (T)(-a);                                                            \
+    }
+
+#define SKULD_INT_OPS_UNSIGNED(S, T)                                               \
+    SKULD_INT_OPS(S, T)                                                            \
+    static inline T skuld_div_##S(T a, T b, size_t byte) {                         \
+        if (b == 0) skuld_fail("integer division by zero", byte);                  \
+        return (T)(a / b);                                                         \
+    }                                                                              \
+    static inline T skuld_rem_##S(T a, T b, size_t byte) {                         \
+        if (b == 0) skuld_fail("integer remainder by zero", byte);                 \
+        return (T)(a % b);                                                         \
+    }
+
+SKULD_INT_OPS_SIGNED(i8, int8_t, INT8_MIN)
+SKULD_INT_OPS_SIGNED(i16, int16_t, INT16_MIN)
+SKULD_INT_OPS_SIGNED(i32, int32_t, INT32_MIN)
+SKULD_INT_OPS_SIGNED(i64, int64_t, INT64_MIN)
+SKULD_INT_OPS_UNSIGNED(u8, uint8_t)
+SKULD_INT_OPS_UNSIGNED(u16, uint16_t)
+SKULD_INT_OPS_UNSIGNED(u32, uint32_t)
+SKULD_INT_OPS_UNSIGNED(u64, uint64_t)
+
+/* Conversions between widths are explicit in Skuld and trap when the value
+ * does not fit. A signed source widens to int64_t and an unsigned one to
+ * uint64_t, so two helpers per target cover every source. */
+#define SKULD_INT_CONVERT(S, T, LO, HI)                                            \
+    static inline T skuld_i_to_##S(int64_t v, size_t byte) {                       \
+        if (v < (int64_t)(LO) || (v > 0 && (uint64_t)v > (uint64_t)(HI)))          \
+            skuld_fail("integer conversion out of range", byte);                   \
+        return (T)v;                                                               \
+    }                                                                              \
+    static inline T skuld_u_to_##S(uint64_t v, size_t byte) {                      \
+        if (v > (uint64_t)(HI)) skuld_fail("integer conversion out of range", byte); \
+        return (T)v;                                                               \
+    }
+
+SKULD_INT_CONVERT(i8, int8_t, INT8_MIN, INT8_MAX)
+SKULD_INT_CONVERT(i16, int16_t, INT16_MIN, INT16_MAX)
+SKULD_INT_CONVERT(i32, int32_t, INT32_MIN, INT32_MAX)
+SKULD_INT_CONVERT(i64, int64_t, INT64_MIN, INT64_MAX)
+SKULD_INT_CONVERT(u8, uint8_t, 0, UINT8_MAX)
+SKULD_INT_CONVERT(u16, uint16_t, 0, UINT16_MAX)
+SKULD_INT_CONVERT(u32, uint32_t, 0, UINT32_MAX)
+SKULD_INT_CONVERT(u64, uint64_t, 0, UINT64_MAX)
+
 static inline bool skuld_string_equal(skuld_string a, skuld_string b) {
     return a.len == b.len && memcmp(a.data, b.data, a.len) == 0;
 }
 static inline void skuld_print_int(int64_t value, size_t byte) {
     if (printf("%" PRId64 "\n", value) < 0) skuld_fail("stdout write failed", byte);
+}
+static inline void skuld_print_uint(uint64_t value, size_t byte) {
+    if (printf("%" PRIu64 "\n", value) < 0) skuld_fail("stdout write failed", byte);
 }
 static inline void skuld_print_float(double value, size_t byte) {
     if (printf("%.17g\n", value) < 0) skuld_fail("stdout write failed", byte);

@@ -12,7 +12,8 @@ Skuld now checks and runs small native programs through the complete pipeline:
 lexer → parser → AST → resolver → type checker → HIR → C → clang → executable.
 Demos 0–3 work: hello, typed functions/variables, conditional flow and classes
 with methods and interpolation. Loops, structs, weak references, arrays,
-Option values and `Result<T, E>` with `?` propagation work too.
+Option values, `Result<T, E>` with `?` propagation, the sized integer types and
+byte-level string access work too.
 
 Skuld is an independent language with its own syntax, semantics and identity.
 TypeScript is only one reference for readability, alongside Go, V and Rust;
@@ -177,6 +178,7 @@ cargo run -p skuld-cli -- run examples/options.skuld
 cargo run -p skuld-cli -- run examples/enums.skuld
 cargo run -p skuld-cli -- run examples/for_loops.skuld
 cargo run -p skuld-cli -- run examples/results.skuld
+cargo run -p skuld-cli -- run examples/bytes.skuld
 ```
 
 `Option<T>`, `Some(value)` and `None` represent optional values without null.
@@ -207,10 +209,34 @@ func port() -> Result<int, ConfigError> {
 }
 ```
 
-This closes the M3 (`Result<T, E>` and propagation) milestone as well as
-M2 (`for` and iteration), M1 (Enums and `match`), Option, classes,
-weak references and arrays. Bytes and string slices (M4),
-modules, a standard library, the official
+The sized integers `i8 i16 i32 i64` and `u8 u16 u32 u64` join `int`, which is a
+spelling of `i64`. A literal takes the width its context expects and is
+range-checked there; widths never mix implicitly, and converting is an explicit
+call that traps out of range (`int(byte)`, `u8(wide)`). Arithmetic traps on
+overflow at every width.
+
+Strings are byte sequences: `text.len()` counts bytes, `text[i]` reads a `u8`,
+`text[a..b]` slices, and `text.bytes()` yields `[]u8`. Arrays slice the same
+way. Slices copy, so a short view never keeps a large buffer alive.
+`bytes_to_string(bytes)` validates strict UTF-8 and returns
+`Result<string, string>`, which is how a `[]u8` built with `push` becomes a
+string.
+
+```skuld
+func shout(text: string) -> Result<string, string> {
+    var out: []u8 = []
+    for byte in text.bytes() {
+        if byte >= 97 && byte <= 122 { out.push(byte - 32) } else { out.push(byte) }
+    }
+    return Ok(bytes_to_string(out)?)
+}
+```
+
+This closes M3 (`Result<T, E>` and propagation), M2 (`for` and iteration),
+M1 (Enums and `match`), Option, classes, weak references and arrays, and
+delivers the primitives of M4 (bytes, sized integers and string slices); that
+milestone's closing marker, a JSON parser written in Skuld, is still outstanding.
+Modules, a standard library, the official
 formatter, broader tooling, portability and eventual self-hosting remain ahead;
 `ROADMAP.md` proposes an ordering for those milestones and records the design
 questions they depend on.

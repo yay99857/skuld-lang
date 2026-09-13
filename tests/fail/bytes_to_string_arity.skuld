@@ -1,0 +1,7 @@
+func main() {
+    var bytes: []u8 = []
+    match bytes_to_string(bytes, bytes) {
+        Ok(text): print(text)
+        Err(reason): print(reason)
+    }
+}

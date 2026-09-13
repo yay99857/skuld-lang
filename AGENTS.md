@@ -46,9 +46,10 @@ accurate; documenting a future feature is not a request to implement it.
   explicitly typed function signatures and actionable diagnostics.
 - Target native performance in the Go/Rust range. Treat this as a goal requiring
   comparable benchmarks, not a guarantee provided by the C backend.
-- Initial semantic numeric aliases are platform-independent `int = i64` and
-  `float = f64`. Avoid implicit coercions. Lexical integer magnitudes use `u64`
-  so the signed minimum can later be handled correctly by semantic analysis.
+- Semantic numeric types are platform-independent: `int = i64`, `float = f64`,
+  and the sized integers `i8 i16 i32 i64` / `u8 u16 u32 u64`. Avoid implicit
+  coercions, between widths included. Lexical integer magnitudes use `u64` so
+  the signed minimum is handled correctly by semantic analysis.
 - Prefer composition over inheritance. Structs have value/copy semantics;
   classes have reference semantics with reference counting. Do not introduce
   inheritance, GC, a borrow checker or Rust's ownership system.
@@ -66,8 +67,9 @@ accurate; documenting a future feature is not a request to implement it.
   are int, float, bool, string and void; functions, locals, calls, returns,
   conditionals, `while`, `loop`, `break`, `continue`, structs, classes and
   reference-counted string concatenation and interpolation execute. Weak class
-  references, homogeneous arrays, builtin Option values and builtin `Result<T, E>`
-  with `?` propagation execute too. Parameters and `let` bindings are immutable.
+  references, homogeneous arrays, builtin Option values, builtin `Result<T, E>`
+  with `?` propagation, the sized integers and byte-level string access execute
+  too. Parameters and `let` bindings are immutable.
 - `lex`, `parse`, `resolve` inspect individual stages. `check` performs full
   static checking without clang; `emit-c` emits checked C; `run` builds and
   executes in a private temporary directory, keeping nothing; `build` keeps the
@@ -75,15 +77,18 @@ accurate; documenting a future feature is not a request to implement it.
 - The resolver uses single-source declaration/use tables; keep them with their
   exact AST revision. Functions are predeclared; parameters share the function
   body scope; locals become visible after initializers; child scopes shadow.
-  The `print`, `Some` and `None` prelude bindings may be shadowed. Use resolved symbols, not
-  spelling, to identify builtins. Only direct calls are supported currently.
+  The prelude bindings — `print`, `Some`, `None`, `null`, `Ok`, `Err`, the width
+  conversions and `bytes_to_string` — may all be shadowed. Use resolved symbols,
+  not spelling, to identify builtins. Only direct calls are supported currently.
 - HIR lowering is separate from checking. Only successful checking constructs
   a TypedProgram, and only lowering constructs backend HIR. Do not expose
   mutation that can invalidate these invariants.
 - Preserve left-to-right evaluation and short-circuit boolean operations.
-  Compound assignments snapshot the old value before the RHS. Integer overflow
-  and invalid integer division trap; never introduce signed C overflow UB.
-  Strings are length-aware views of static literal bytes, including NUL.
+  Compound assignments snapshot the old value before the RHS. Integer overflow,
+  invalid integer division and out-of-range width conversion trap at every
+  width; never introduce signed C overflow UB. Strings are length-aware views of
+  static literal bytes, including NUL; a slice of owned bytes copies, while a
+  slice of literal bytes stays a view.
 - Structs are implemented with value/copy semantics: fields, record
   construction, field access and field assignment through places. Methods are
   declared without `func`, take an implicit immutable `this`, and lower to
@@ -118,9 +123,24 @@ accurate; documenting a future feature is not a request to implement it.
   between error types. `Result` is a reserved type name; `Ok` and `Err` are
   shadowable prelude bindings.
 - Arrays use `[]T`, literals, checked int indexes, `len()`, `push()`, `insert()`,
-  `pop()` and `remove()`. Capacity grows geometrically; references share element
-  mutations even through `let`. Managed elements are retained and released. Slicing,
-  sorting and callbacks remain future work.
+  `pop()`, `remove()` and `[a..b]` slicing. Capacity grows geometrically; references
+  share element mutations even through `let`. Managed elements are retained and
+  released. Sorting and callbacks remain future work.
+- Sized integers are `i8 i16 i32 i64` and `u8 u16 u32 u64`; `int` is a spelling of
+  `i64`, not a separate type. A literal takes the width its context expects and is
+  range-checked there, defaulting to `int`; a signed minimum is written as a minus
+  on a literal. Widths never mix implicitly. `u8(v)`, `int(v)` and the rest are
+  explicit conversions that trap out of range, are prelude bindings like `print`,
+  and carry their width on the resolved symbol rather than in the spelling.
+  Arithmetic traps on overflow and invalid division at every width; unary `-` is
+  rejected on unsigned types. Integer/float conversion is not implemented.
+- Strings are byte sequences: `len()` counts bytes, `text[i]` reads a `u8`,
+  `text[a..b]` slices, `text.bytes()` yields `[]u8`, and strings stay immutable,
+  so an indexed write is rejected. Slices copy rather than retaining their source,
+  except that slicing a literal is a view, since literal bytes are static.
+  `bytes_to_string([]u8) -> Result<string, string>` validates strict UTF-8; its
+  string error side is provisional and awaits a standard library to own a real
+  error type.
 - Enums are user-declared sum types with unit and payload variants: `enum Name { Variant, Variant(Type) }`.
   Pattern matching uses `match value { Pattern: stmt, Pattern: { ... }, _: ... }` with exhaustiveness
   checking, immutable payload arm bindings, and C codegen retaining/releasing managed variant payloads.
@@ -132,8 +152,12 @@ accurate; documenting a future feature is not a request to implement it.
   colon return type syntax, Option with null, safe weak promotion, M1 (Enums and match),
   M2 (`for` and iteration), and M3 (`Result<T, E>` and propagation), which the user
   authorized as a builtin following the Option precedent rather than through general
-  generics. The next milestone would be M4 (bytes, sized integers and string slices);
-  do not infer authorization for further features without explicit decision.
+  generics. M4 (bytes, sized integers and string slices) has its primitives
+  implemented — the user authorized the full set of sized integers, type-name
+  conversion calls, and delivering the primitives before the milestone's closing
+  marker. That marker, a JSON parser written in pure Skuld over `[]u8` as a
+  `tests/pass` fixture, is still outstanding and closes M4. Do not infer
+  authorization for further features without explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
   and string slices → `extern "C"` FFI, with modules and networking beyond it.
   It is a plan, not a selection: a remaining entry is Planned, and starting one
@@ -194,10 +218,12 @@ unless explicitly included in the active task.
 Do not build a standard library or memory-management runtime ahead of need.
 
 The milestones proposed in `ROADMAP.md` do not relax any of the above.
-Sized integers, `[]u8`, string slices, `extern "C"`, modules, `import`, HTTP and
-JSON are all Planned and each needs its own authorization. `Result` arrived as a
-builtin, which settles that roadmap question; general generics remain excluded
-and still need their own explicit decision. Nothing in that document
+`extern "C"`, modules, `import`, HTTP and JSON are all Planned and each needs its
+own authorization. `Result` arrived as a builtin, which settles that roadmap
+question; general generics remain excluded and still need their own explicit
+decision. The sized integers, `[]u8` and string slicing are implemented, but a
+JSON parser is not authorized by that: M4's closing marker is a `tests/pass`
+fixture written in Skuld, never a JSON facility in the compiler. Nothing in that document
 authorizes a standard library, a networking runtime or process execution from
 the compiler library.
 

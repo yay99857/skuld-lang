@@ -1,0 +1,83 @@
+// Byte-level access to strings, and slicing of both strings and arrays.
+// Slices copy, so a short view never keeps a large buffer alive.
+
+class Label {
+    text: string
+
+    show() -> string {
+        return "label ${this.text}"
+    }
+}
+
+func literal_slices() {
+    let text = "Hello, Skuld!"
+    print(text.len())
+    print(text[0])
+    print(text[12])
+    print(text[0..5])
+    print(text[7..12])
+    // A half-open range: equal endpoints are empty, `len()` is the whole.
+    print(text[5..5].len())
+    print(text[0..text.len()])
+}
+
+func owned_slices() {
+    // A concatenation owns its bytes, so slicing it must copy rather than
+    // retain the whole buffer.
+    let joined = "Hello" + ", " + "Skuld"
+    print(joined[0..5])
+    print(joined[7..12])
+    let inner = joined[2..8]
+    print(inner)
+    print(inner.len())
+}
+
+func byte_round_trip() {
+    let original = "olá, mundo"
+    // A multi-byte character costs more bytes than it looks.
+    print(original.len())
+    let bytes = original.bytes()
+    print(bytes.len())
+    print(bytes[0])
+
+    var copy: []u8 = []
+    for b in bytes {
+        copy.push(b)
+    }
+    match bytes_to_string(copy) {
+        Ok(text): print(text)
+        Err(reason): print(reason)
+    }
+}
+
+func array_slices() {
+    let numbers = [10, 20, 30, 40, 50]
+    let middle = numbers[1..4]
+    print(middle.len())
+    for n in middle {
+        print(n)
+    }
+    // A slice is a new array: pushing to it leaves the original alone.
+    var tail = numbers[3..5]
+    tail.push(60)
+    print(tail.len())
+    print(numbers.len())
+
+    // Managed elements are retained by the copy and released with it.
+    let words = ["alpha", "beta", "gamma", "delta"]
+    for w in words[1..3] {
+        print(w)
+    }
+    let labels = [new Label(text: "one"), new Label(text: "two")]
+    for label in labels[0..1] {
+        print(label.show())
+    }
+    print(numbers[2..2].len())
+}
+
+func main() {
+    literal_slices()
+    owned_slices()
+    byte_round_trip()
+    array_slices()
+}

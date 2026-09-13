@@ -1,0 +1,4 @@
+func main() {
+    let wide: int = 300
+    print(u8(wide))
+}

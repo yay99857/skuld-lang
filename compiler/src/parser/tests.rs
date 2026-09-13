@@ -637,6 +637,51 @@ fn result_types_patterns_and_try_parse() {
 }
 
 #[test]
+fn slices_and_indexes_are_distinguished() {
+    // The same brackets index or slice depending on whether `..` appears.
+    let program = program("func main() { let a = xs[1]\nlet b = xs[1..2] }");
+    let statements = &program.functions[0].body.statements;
+    let StatementKind::Variable(first) = &statements[0].kind else {
+        panic!("variable")
+    };
+    assert!(matches!(first.initializer.kind, ExprKind::Index { .. }));
+    let StatementKind::Variable(second) = &statements[1].kind else {
+        panic!("variable")
+    };
+    let ExprKind::Slice { object, start, end } = &second.initializer.kind else {
+        panic!("slice")
+    };
+    assert!(matches!(object.kind, ExprKind::Identifier(_)));
+    assert!(matches!(start.kind, ExprKind::Literal(Literal::Integer(1))));
+    assert!(matches!(end.kind, ExprKind::Literal(Literal::Integer(2))));
+
+    // A slice is a postfix step like any other, so it chains and nests.
+    let expr = expr("a[i..j][0].field");
+    let ExprKind::Member { object, .. } = &expr.kind else {
+        panic!("member")
+    };
+    let ExprKind::Index { object, .. } = &object.kind else {
+        panic!("index")
+    };
+    assert!(matches!(object.kind, ExprKind::Slice { .. }));
+
+    for source in [
+        "func main() { let a = xs[1..] }",
+        "func main() { let a = xs[..2] }",
+        "func main() { let a = xs[1..2 }",
+    ] {
+        let result = parse(source);
+        assert!(result.program.is_none(), "{source}");
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .all(|d| d.span.start <= d.span.end && d.span.end <= source.len())
+        );
+    }
+}
+
+#[test]
 fn colon_return_and_direct_if_let_parse() {
     let source = "struct Calc { compute(x: int): int { return x } }\nfunc add(a: int, b: int): int { return a + b }\nfunc main() { if let ans = None {} }";
     let result = parse(source);

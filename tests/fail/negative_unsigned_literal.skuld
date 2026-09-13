@@ -1,0 +1,4 @@
+func main() {
+    let byte: u8 = -1
+    print(byte)
+}

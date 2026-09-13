@@ -1,0 +1,84 @@
+// Demonstrates sized integers, []u8, byte indexing, slicing and the UTF-8
+// validation that turns bytes back into a string.
+
+// Splits on a byte without ever leaving the byte level, which is what parsing
+// network or file data looks like before it is known to be text. The left
+// operand supplies the width, so the literal below is a u8, not an int.
+func fields(line: string) -> []string {
+    var parts: []string = []
+    var start = 0
+    for i in 0..line.len() {
+        if line[i] == 44 {
+            parts.push(trim(line[start..i]))
+            start = i + 1
+        }
+    }
+    parts.push(trim(line[start..line.len()]))
+    return parts
+}
+
+func trim(text: string) -> string {
+    var start = 0
+    var end = text.len()
+    while start < end && text[start] == 32 {
+        start = start + 1
+    }
+    while end > start && text[end - 1] == 32 {
+        end = end - 1
+    }
+    return text[start..end]
+}
+
+// Building a string is building a []u8 and validating it once at the end.
+func shout(text: string) -> Result<string, string> {
+    var out: []u8 = []
+    for byte in text.bytes() {
+        if byte >= 97 && byte <= 122 {
+            out.push(byte - 32)
+        } else {
+            out.push(byte)
+        }
+    }
+    let upper = bytes_to_string(out)?
+    return Ok("${upper}!")
+}
+
+// A narrower accumulator than `int`, chosen deliberately: conversions between
+// widths are explicit in both directions.
+func checksum(bytes: []u8) -> u32 {
+    var total: u32 = 0
+    for byte in bytes {
+        total = total + u32(int(byte))
+    }
+    return total
+}
+
+func main() {
+    for field in fields("alpha, beta ,gamma") {
+        print("[${field}]")
+    }
+
+    match shout("hello there") {
+        Ok(text): print(text)
+        Err(reason): print("failed: ${reason}")
+    }
+
+    let text = "olá"
+    // Bytes, not characters: an accented letter costs two of them.
+    print(text.len())
+    print(text.bytes().len())
+    print(checksum(text.bytes()))
+
+    // Bytes that are not UTF-8 do not become a string by wishing.
+    var invalid: []u8 = []
+    invalid.push(u8(104))
+    invalid.push(u8(255))
+    match bytes_to_string(invalid) {
+        Ok(decoded): print(decoded)
+        Err(reason): print(reason)
+    }
+
+    let widest: u64 = 18446744073709551615
+    let smallest: i8 = -128
+    print("u64 max ${widest}, i8 min ${smallest}")
+}

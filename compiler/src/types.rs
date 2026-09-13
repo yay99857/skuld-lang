@@ -69,9 +69,99 @@ pub struct VariantInfo {
     pub payload: Option<Type>,
 }
 
+/// A machine integer width and signedness. `int` is a spelling of `I64`, so
+/// both name the same type rather than one converting to the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum IntType {
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+}
+
+impl IntType {
+    pub const ALL: [Self; 8] = [
+        Self::I8,
+        Self::I16,
+        Self::I32,
+        Self::I64,
+        Self::U8,
+        Self::U16,
+        Self::U32,
+        Self::U64,
+    ];
+    /// The canonical name used in diagnostics. `I64` renders as `int`, the
+    /// spelling the language leads with.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::I8 => "i8",
+            Self::I16 => "i16",
+            Self::I32 => "i32",
+            Self::I64 => "int",
+            Self::U8 => "u8",
+            Self::U16 => "u16",
+            Self::U32 => "u32",
+            Self::U64 => "u64",
+        }
+    }
+    /// The suffix used to build generated C helper names.
+    pub fn suffix(self) -> &'static str {
+        match self {
+            Self::I64 => "i64",
+            other => other.name(),
+        }
+    }
+    pub fn c_type(self) -> &'static str {
+        match self {
+            Self::I8 => "int8_t",
+            Self::I16 => "int16_t",
+            Self::I32 => "int32_t",
+            Self::I64 => "int64_t",
+            Self::U8 => "uint8_t",
+            Self::U16 => "uint16_t",
+            Self::U32 => "uint32_t",
+            Self::U64 => "uint64_t",
+        }
+    }
+    pub fn signed(self) -> bool {
+        matches!(self, Self::I8 | Self::I16 | Self::I32 | Self::I64)
+    }
+    pub fn bits(self) -> u32 {
+        match self {
+            Self::I8 | Self::U8 => 8,
+            Self::I16 | Self::U16 => 16,
+            Self::I32 | Self::U32 => 32,
+            Self::I64 | Self::U64 => 64,
+        }
+    }
+    /// The largest literal magnitude this type accepts without a leading `-`.
+    pub fn max_magnitude(self) -> u64 {
+        if self.signed() {
+            (1_u64 << (self.bits() - 1)) - 1
+        } else if self.bits() == 64 {
+            u64::MAX
+        } else {
+            (1_u64 << self.bits()) - 1
+        }
+    }
+    /// The magnitude of the most negative value, which only a unary minus
+    /// applied directly to a literal may name.
+    pub fn min_magnitude(self) -> u64 {
+        if self.signed() {
+            1_u64 << (self.bits() - 1)
+        } else {
+            0
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
-    Int,
+    Int(IntType),
     Float,
     Bool,
     String,
@@ -92,14 +182,22 @@ pub enum Type {
     Error,
 }
 impl Type {
+    /// The platform-independent default integer, `int`, which is `i64`.
+    pub const INT: Self = Self::Int(IntType::I64);
     pub fn is_numeric(self) -> bool {
-        matches!(self, Self::Int | Self::Float)
+        matches!(self, Self::Int(_) | Self::Float)
+    }
+    pub fn int_type(self) -> Option<IntType> {
+        match self {
+            Self::Int(kind) => Some(kind),
+            _ => None,
+        }
     }
 }
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Int => "int",
+            Self::Int(kind) => kind.name(),
             Self::Float => "float",
             Self::Bool => "bool",
             Self::String => "string",

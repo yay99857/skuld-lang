@@ -1,0 +1,5 @@
+func main() {
+    let byte: u8 = 10
+    let wide: int = 20
+    print(byte + wide)
+}

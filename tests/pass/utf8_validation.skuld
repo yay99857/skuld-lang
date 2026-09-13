@@ -1,0 +1,54 @@
+// `bytes_to_string` is the only way from bytes back to a string, and it can
+// fail: network and file data is not UTF-8 just because someone hoped it was.
+
+func show(label: string, bytes: []u8) {
+    match bytes_to_string(bytes) {
+        Ok(text): print("${label}: ok ${text}")
+        Err(reason): print("${label}: ${reason}")
+    }
+}
+
+func of(values: []int) -> []u8 {
+    var bytes: []u8 = []
+    for value in values {
+        bytes.push(u8(value))
+    }
+    return bytes
+}
+
+func main() {
+    show("ascii", "hello".bytes())
+    show("two byte", "olá".bytes())
+    show("three byte", "日本".bytes())
+    show("four byte", "𝄞".bytes())
+    var empty: []u8 = []
+    show("empty", empty)
+
+    // A lone continuation byte has no lead.
+    show("stray", of([104, 255]))
+    // Overlong encoding of `/`, which strict UTF-8 rejects.
+    show("overlong", of([192, 175]))
+    // A three-byte lead with only one continuation byte following.
+    show("truncated", of([226, 130]))
+    // A surrogate half, which is not a scalar value.
+    show("surrogate", of([237, 160, 128]))
+    // Above U+10FFFF.
+    show("too large", of([244, 144, 128, 128]))
+    // Valid prefix, then a bad byte, so the offset is not zero.
+    show("late", of([104, 105, 200, 65]))
+
+    // `?` carries the failure out unchanged.
+    match decode(of([104, 105])) {
+        Ok(text): print("decoded ${text}")
+        Err(reason): print("failed ${reason}")
+    }
+    match decode(of([104, 255])) {
+        Ok(text): print("decoded ${text}")
+        Err(reason): print("failed ${reason}")
+    }
+}
+
+func decode(bytes: []u8) -> Result<string, string> {
+    let text = bytes_to_string(bytes)?
+    return Ok("<${text}>")
+}

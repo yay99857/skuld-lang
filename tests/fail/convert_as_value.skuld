@@ -1,0 +1,4 @@
+func main() {
+    let f = u8
+    print(f)
+}

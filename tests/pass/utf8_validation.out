@@ -1,0 +1,13 @@
+ascii: ok hello
+two byte: ok olá
+three byte: ok 日本
+four byte: ok 𝄞
+empty: ok 
+stray: invalid UTF-8 at byte 1
+overlong: invalid UTF-8 at byte 0
+truncated: invalid UTF-8 at byte 0
+surrogate: invalid UTF-8 at byte 0
+too large: invalid UTF-8 at byte 0
+late: invalid UTF-8 at byte 2
+decoded <hi>
+failed invalid UTF-8 at byte 1

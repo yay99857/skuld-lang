@@ -5,8 +5,8 @@ use crate::{
     resolver::{Builtin, Resolution, SymbolId, SymbolKind},
     span::Span,
     types::{
-        ArrayId, ArrayInfo, EnumId, EnumInfo, OptionId, OptionInfo, ResultId, ResultInfo, StructId,
-        Type, VariantInfo,
+        ArrayId, ArrayInfo, EnumId, EnumInfo, IntType, OptionId, OptionInfo, ResultId, ResultInfo,
+        StructId, Type, VariantInfo,
     },
 };
 use std::collections::BTreeMap;
@@ -577,7 +577,15 @@ impl Checker<'_> {
             }
             TypeRef::Named(name) => {
                 let ty = match name.text.as_str() {
-                    "int" => Type::Int,
+                    // `int` and `i64` are two spellings of one type, not two
+                    // types with a conversion between them.
+                    "int" => Type::INT,
+                    other if IntType::ALL.iter().any(|k| k.suffix() == other) => Type::Int(
+                        *IntType::ALL
+                            .iter()
+                            .find(|k| k.suffix() == other)
+                            .expect("matched width"),
+                    ),
                     "float" => Type::Float,
                     "bool" => Type::Bool,
                     "string" => Type::String,
@@ -932,13 +940,13 @@ impl Checker<'_> {
                 let elem_ty = match iterable {
                     ForIterable::Range { start, end } => {
                         let previous = self.expected_context;
-                        self.expected_context = Some(Type::Int);
+                        self.expected_context = Some(Type::INT);
                         let start_ty = self.expression(start);
                         let end_ty = self.expression(end);
                         self.expected_context = previous;
-                        self.expect_type(Type::Int, start_ty, start.span);
-                        self.expect_type(Type::Int, end_ty, end.span);
-                        Type::Int
+                        self.expect_type(Type::INT, start_ty, start.span);
+                        self.expect_type(Type::INT, end_ty, end.span);
+                        Type::INT
                     }
                     ForIterable::Expr(collection) => {
                         let collection_ty = self.expression(collection);
@@ -1049,20 +1057,30 @@ impl Checker<'_> {
         }
         Type::Struct(id)
     }
+    /// The type already recorded for an expression this pass has walked.
+    fn expression_type_of(&self, expr: &Expr) -> Option<Type> {
+        self.expressions
+            .get(&(expr.span.start, expr.span.end))
+            .copied()
+    }
     fn record(&mut self, expr: &Expr, ty: Type) -> Type {
         self.expressions
             .insert((expr.span.start, expr.span.end), ty);
         ty
     }
-    // Only unary minus may consume the positive magnitude of i64::MIN.
-    fn minimum_magnitude(&mut self, expr: &Expr) -> bool {
+    /// Only unary minus may consume the positive magnitude of a signed type's
+    /// most negative value, which is one past what the literal alone accepts.
+    fn minimum_magnitude(&mut self, expr: &Expr, kind: IntType) -> bool {
+        if !kind.signed() {
+            return false;
+        }
         let is_min = match &expr.kind {
-            ExprKind::Literal(Literal::Integer(value)) => *value == (1_u64 << 63),
-            ExprKind::Group(inner) => self.minimum_magnitude(inner),
+            ExprKind::Literal(Literal::Integer(value)) => *value == kind.min_magnitude(),
+            ExprKind::Group(inner) => self.minimum_magnitude(inner, kind),
             _ => false,
         };
         if is_min {
-            self.record(expr, Type::Int);
+            self.record(expr, Type::Int(kind));
         }
         is_min
     }
@@ -1071,15 +1089,18 @@ impl Checker<'_> {
         let ty = match &expr.kind {
             ExprKind::Literal(literal) => match literal {
                 Literal::Integer(value) => {
-                    if *value > i64::MAX as u64 {
+                    // An integer literal takes the width the context expects,
+                    // defaulting to `int`. Nothing converts afterwards.
+                    let kind = expected.and_then(Type::int_type).unwrap_or(IntType::I64);
+                    if *value > kind.max_magnitude() {
                         self.error(
                             DiagnosticCode::IntegerRange,
                             expr.span,
-                            "integer literal is outside the signed 64-bit `int` range",
+                            format!("integer literal is outside the `{}` range", kind.name()),
                         );
                         Type::Error
                     } else {
-                        Type::Int
+                        Type::Int(kind)
                     }
                 }
                 Literal::Float(_) => Type::Float,
@@ -1119,6 +1140,22 @@ impl Checker<'_> {
                                 "`{}` is a Result constructor; call it with a value",
                                 name.text
                             ),
+                        );
+                        Type::Error
+                    }
+                    SymbolKind::Builtin(Builtin::BytesToString) => {
+                        self.error(
+                            DiagnosticCode::ArgumentCount,
+                            expr.span,
+                            "`bytes_to_string` is a function; call it with a `[]u8`",
+                        );
+                        Type::Error
+                    }
+                    SymbolKind::Builtin(Builtin::IntConvert(_)) => {
+                        self.error(
+                            DiagnosticCode::ArgumentCount,
+                            expr.span,
+                            format!("`{}` is a conversion; call it with a value", name.text),
                         );
                         Type::Error
                     }
@@ -1191,14 +1228,22 @@ impl Checker<'_> {
                 operand,
                 op_span,
             } => {
-                if *op == UnaryOp::Negative && self.minimum_magnitude(operand) {
-                    Type::Int
+                let width = expected.and_then(Type::int_type).unwrap_or(IntType::I64);
+                if *op == UnaryOp::Negative && self.minimum_magnitude(operand, width) {
+                    Type::Int(width)
                 } else {
+                    if *op != UnaryOp::Not {
+                        self.expected_context = expected;
+                    }
                     let ty = self.expression(operand);
-                    let valid = if *op == UnaryOp::Not {
-                        ty == Type::Bool
-                    } else {
-                        ty.is_numeric()
+                    let valid = match op {
+                        UnaryOp::Not => ty == Type::Bool,
+                        // Negating an unsigned value has a result only for
+                        // zero, so it is rejected rather than trapped.
+                        UnaryOp::Negative => {
+                            ty == Type::Float || ty.int_type().is_some_and(IntType::signed)
+                        }
+                        UnaryOp::Positive => ty.is_numeric(),
                     };
                     if !valid && ty != Type::Error {
                         self.error(
@@ -1218,8 +1263,14 @@ impl Checker<'_> {
                 right,
                 op_span,
             } => {
+                // The left operand takes the surrounding expectation and then
+                // supplies it to the right, so `byte * 2` types the literal as
+                // the left operand's width instead of defaulting to `int`.
+                self.expected_context = expected;
                 let left = self.expression(left);
+                self.expected_context = Some(left);
                 let right = self.expression(right);
+                self.expected_context = None;
                 self.binary(*op, left, right, *op_span)
             }
             ExprKind::Assignment {
@@ -1229,6 +1280,15 @@ impl Checker<'_> {
                 op_span,
             } => {
                 let target_type = self.expression(target);
+                if let ExprKind::Index { object, .. } = &strip_groups_ref(target).kind
+                    && self.expression_type_of(object) == Some(Type::String)
+                {
+                    self.error(
+                        DiagnosticCode::InvalidAssignment,
+                        target.span,
+                        "strings are immutable; build a `[]u8` and convert it instead",
+                    );
+                }
                 if assignment_root(target).is_none()
                     && !self.through_reference(target)
                     && target_type != Type::Error
@@ -1452,30 +1512,62 @@ impl Checker<'_> {
                     }
                 }
             }
-            ExprKind::Index { object, index } => {
+            ExprKind::Slice { object, start, end } => {
                 let object_type = self.expression(object);
                 let previous_expected = self.expected_context;
-                self.expected_context = Some(Type::Int);
-                let index_type = self.expression(index);
+                self.expected_context = Some(Type::INT);
+                let start_type = self.expression(start);
+                self.expected_context = Some(Type::INT);
+                let end_type = self.expression(end);
                 self.expected_context = previous_expected;
-                if index_type != Type::Error {
-                    self.expect_type(Type::Int, index_type, index.span);
+                let mut usable = true;
+                for (ty, span) in [(start_type, start.span), (end_type, end.span)] {
+                    if ty == Type::Error || !self.expect_type(Type::INT, ty, span) {
+                        usable = false;
+                    }
                 }
                 match object_type {
-                    Type::Array(id) => {
-                        if index_type == Type::Error || index_type != Type::Int {
-                            Type::Error
-                        } else {
-                            self.arrays[id.0].element
-                        }
-                    }
-                    Type::Error => Type::Error,
+                    // A slice copies, so it never keeps a larger buffer alive
+                    // through a short view of it.
+                    Type::String if usable => Type::String,
+                    Type::Array(id) if usable => Type::Array(id),
+                    Type::String | Type::Array(_) | Type::Error => Type::Error,
                     other => {
                         self.error(
                             DiagnosticCode::InvalidOperator,
                             expr.span,
                             format!(
-                                "cannot index into `{}`; only arrays support indexing",
+                                "cannot slice `{}`; only arrays and strings support slicing",
+                                self.type_name(other)
+                            ),
+                        );
+                        Type::Error
+                    }
+                }
+            }
+            ExprKind::Index { object, index } => {
+                let object_type = self.expression(object);
+                let previous_expected = self.expected_context;
+                self.expected_context = Some(Type::INT);
+                let index_type = self.expression(index);
+                self.expected_context = previous_expected;
+                if index_type != Type::Error {
+                    self.expect_type(Type::INT, index_type, index.span);
+                }
+                let usable = index_type == Type::INT;
+                match object_type {
+                    Type::Array(id) if usable => self.arrays[id.0].element,
+                    // Indexing a string reads one byte, not one character:
+                    // Skuld strings are byte sequences and this milestone adds
+                    // no code point type.
+                    Type::String if usable => Type::Int(IntType::U8),
+                    Type::Array(_) | Type::String | Type::Error => Type::Error,
+                    other => {
+                        self.error(
+                            DiagnosticCode::InvalidOperator,
+                            expr.span,
+                            format!(
+                                "cannot index into `{}`; only arrays and strings support indexing",
                                 self.type_name(other)
                             ),
                         );
@@ -1495,7 +1587,7 @@ impl Checker<'_> {
                     // textual form, and no implicit conversion beyond that.
                     if !matches!(
                         ty,
-                        Type::Int | Type::Float | Type::Bool | Type::String | Type::Error
+                        Type::Int(_) | Type::Float | Type::Bool | Type::String | Type::Error
                     ) {
                         self.error(
                             DiagnosticCode::InvalidValueType,
@@ -1527,9 +1619,11 @@ impl Checker<'_> {
             Subtract | Multiply | Divide | Less | Greater | LessEqual | GreaterEqual => {
                 left.is_numeric()
             }
-            Modulo => left == Type::Int,
+            Modulo => left.int_type().is_some(),
             And | Or => left == Type::Bool,
-            Equal | NotEqual => matches!(left, Type::Int | Type::Float | Type::Bool | Type::String),
+            Equal | NotEqual => {
+                matches!(left, Type::Int(_) | Type::Float | Type::Bool | Type::String)
+            }
         };
         if !valid {
             self.error(
@@ -1556,9 +1650,9 @@ impl Checker<'_> {
             let element = self.arrays[id.0].element;
             let parameters = match member.text.as_str() {
                 "push" => Some(vec![element]),
-                "insert" => Some(vec![Type::Int, element]),
+                "insert" => Some(vec![Type::INT, element]),
                 "pop" => Some(vec![]),
-                "remove" => Some(vec![Type::Int]),
+                "remove" => Some(vec![Type::INT]),
                 _ => None,
             };
             if let Some(parameters) = parameters {
@@ -1591,7 +1685,14 @@ impl Checker<'_> {
             }
         }
         let builtin = match (receiver, member.text.as_str()) {
-            (Type::Array(_), "len") => Some(Type::Int),
+            (Type::Array(_), "len") => Some(Type::INT),
+            // A string's length is its byte count, matching what indexing and
+            // slicing address.
+            (Type::String, "len") => Some(Type::INT),
+            (Type::String, "bytes") => {
+                let byte = Type::Int(IntType::U8);
+                Some(self.array_type(byte))
+            }
             (Type::Weak(_), "alive") => Some(Type::Bool),
             (Type::Weak(id), "get") => Some(Type::Struct(id)),
             (Type::Weak(id), "upgrade") => Some(self.option_type(Type::Struct(id))),
@@ -1786,6 +1887,75 @@ impl Checker<'_> {
                     self.option_type(element)
                 }
             }
+            Some((_, SymbolKind::Builtin(Builtin::BytesToString))) => {
+                if arguments.len() != 1 {
+                    for argument in arguments {
+                        self.expression(argument);
+                    }
+                    self.error(
+                        DiagnosticCode::ArgumentCount,
+                        span,
+                        "`bytes_to_string` expects exactly one argument",
+                    );
+                    return Type::Error;
+                }
+                let bytes = self.array_type(Type::Int(IntType::U8));
+                self.expected_context = Some(bytes);
+                let found = self.expression(&arguments[0]);
+                self.expected_context = None;
+                if found == Type::Error {
+                    Type::Error
+                } else if found != bytes {
+                    self.error(
+                        DiagnosticCode::TypeMismatch,
+                        arguments[0].span,
+                        format!(
+                            "`bytes_to_string` expects `[]u8`, found `{}`",
+                            self.type_name(found)
+                        ),
+                    );
+                    Type::Error
+                } else {
+                    // The error side is a message rather than a dedicated type:
+                    // no error enum belongs in the language before a standard
+                    // library exists to own one.
+                    self.result_type(Type::String, Type::String)
+                }
+            }
+            Some((_, SymbolKind::Builtin(Builtin::IntConvert(kind)))) => {
+                if arguments.len() != 1 {
+                    for argument in arguments {
+                        self.expression(argument);
+                    }
+                    self.error(
+                        DiagnosticCode::ArgumentCount,
+                        span,
+                        format!("`{}` converts exactly one value", kind.name()),
+                    );
+                    return Type::Error;
+                }
+                // Expecting the target width lets a literal argument be
+                // range-checked here instead of trapping at run time.
+                self.expected_context = Some(Type::Int(kind));
+                let found = self.expression(&arguments[0]);
+                self.expected_context = None;
+                if found == Type::Error {
+                    Type::Error
+                } else if found.int_type().is_none() {
+                    self.error(
+                        DiagnosticCode::TypeMismatch,
+                        arguments[0].span,
+                        format!(
+                            "`{}` converts an integer, found `{}`",
+                            kind.name(),
+                            self.type_name(found)
+                        ),
+                    );
+                    Type::Error
+                } else {
+                    Type::Int(kind)
+                }
+            }
             Some((_, SymbolKind::Builtin(builtin @ (Builtin::Ok | Builtin::Err)))) => {
                 let label = if builtin == Builtin::Ok { "Ok" } else { "Err" };
                 if arguments.len() != 1 {
@@ -1861,7 +2031,7 @@ impl Checker<'_> {
                         );
                     } else if !matches!(
                         ty,
-                        Type::Int | Type::Float | Type::Bool | Type::String | Type::Error
+                        Type::Int(_) | Type::Float | Type::Bool | Type::String | Type::Error
                     ) {
                         self.error(
                             DiagnosticCode::InvalidValueType,
@@ -2038,6 +2208,14 @@ fn result_as_enum(info: ResultInfo) -> EnumInfo {
                 payload: Some(info.err),
             },
         ],
+    }
+}
+
+/// Looks past redundant parentheses without consuming the expression.
+fn strip_groups_ref(expr: &Expr) -> &Expr {
+    match &expr.kind {
+        ExprKind::Group(inner) => strip_groups_ref(inner),
+        _ => expr,
     }
 }
 
