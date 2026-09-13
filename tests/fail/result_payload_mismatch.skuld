@@ -1,0 +1,7 @@
+func parse() -> Result<int, string> {
+    return Ok("not an int")
+}
+
+func main() {
+    print("${parse().is_ok()}")
+}

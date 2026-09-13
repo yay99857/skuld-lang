@@ -1,0 +1,67 @@
+// Demonstrates the builtin Result<T, E>: Ok and Err construction, matching,
+// if let, is_ok/is_err and `?` propagation.
+
+enum ConfigError {
+    Missing(string)
+    NotANumber(string)
+}
+
+func describe(error: ConfigError) -> string {
+    match error {
+        ConfigError.Missing(key): return "missing key `${key}`"
+        ConfigError.NotANumber(key): return "key `${key}` is not a number"
+    }
+}
+
+func lookup(key: string) -> Result<string, ConfigError> {
+    if key == "port" {
+        return Ok("8080")
+    }
+    if key == "host" {
+        return Ok("localhost")
+    }
+    if key == "retries" {
+        return Ok("many")
+    }
+    return Err(ConfigError.Missing(key))
+}
+
+func to_int(key: string, text: string) -> Result<int, ConfigError> {
+    if text == "8080" {
+        return Ok(8080)
+    }
+    return Err(ConfigError.NotANumber(key))
+}
+
+// `?` returns the error unchanged, so this function reads as if nothing
+// could fail.
+func port() -> Result<int, ConfigError> {
+    let text = lookup("port")?
+    let value = to_int("port", text)?
+    return Ok(value + 1)
+}
+
+func retries() -> Result<int, ConfigError> {
+    let text = lookup("retries")?
+    return to_int("retries", text)
+}
+
+func main() {
+    match port() {
+        Ok(value): print("port + 1 = ${value}")
+        Err(error): print("config error: ${describe(error)}")
+    }
+    match retries() {
+        Ok(value): print("retries = ${value}")
+        Err(error): print("config error: ${describe(error)}")
+    }
+
+    let host = lookup("host")
+    print("host resolved: ${host.is_ok()}")
+    if let Ok(value) = host {
+        print("host = ${value}")
+    }
+    if let Err(error) = lookup("timeout") {
+        print("expected failure: ${describe(error)}")
+    }
+}

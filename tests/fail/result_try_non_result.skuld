@@ -1,0 +1,8 @@
+func wrap() -> Result<int, string> {
+    let value = 10?
+    return Ok(value)
+}
+
+func main() {
+    print("${wrap().is_ok()}")
+}

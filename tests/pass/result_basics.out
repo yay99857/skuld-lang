@@ -1,0 +1,8 @@
+10 / 2 = 5
+7 / 0 failed: divide by zero
+-4 / 2 failed: negative -4
+is_ok true is_err false
+is_ok false is_err true
+bound 3
+bound divide by zero
+anything else

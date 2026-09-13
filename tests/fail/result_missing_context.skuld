@@ -1,0 +1,4 @@
+func main() {
+    let outcome = Ok(1)
+    print("${outcome.is_ok()}")
+}

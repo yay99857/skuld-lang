@@ -1,0 +1,53 @@
+enum MathError {
+    DivideByZero
+    Negative(int)
+}
+
+func divide(left: int, right: int) -> Result<int, MathError> {
+    if right == 0 {
+        return Err(MathError.DivideByZero)
+    }
+    if left < 0 {
+        return Err(MathError.Negative(left))
+    }
+    return Ok(left / right)
+}
+
+func describe(error: MathError) -> string {
+    match error {
+        MathError.DivideByZero: return "divide by zero"
+        MathError.Negative(value): return "negative ${value}"
+    }
+}
+
+func report(left: int, right: int) {
+    match divide(left, right) {
+        Ok(value): print("${left} / ${right} = ${value}")
+        Err(error): print("${left} / ${right} failed: ${describe(error)}")
+    }
+}
+
+func main() {
+    report(10, 2)
+    report(7, 0)
+    report(-4, 2)
+
+    let ok = divide(9, 3)
+    print("is_ok ${ok.is_ok()} is_err ${ok.is_err()}")
+    let bad = divide(1, 0)
+    print("is_ok ${bad.is_ok()} is_err ${bad.is_err()}")
+
+    if let Ok(value) = ok {
+        print("bound ${value}")
+    } else {
+        print("unreachable")
+    }
+    if let Err(error) = bad {
+        print("bound ${describe(error)}")
+    }
+    // A wildcard covers whatever the arms above leave out.
+    match bad {
+        Ok(value): print("ok ${value}")
+        _: print("anything else")
+    }
+}

@@ -1,0 +1,7 @@
+func nothing() -> Result<void, string> {
+    return Err("no value")
+}
+
+func main() {
+    print("${nothing().is_err()}")
+}

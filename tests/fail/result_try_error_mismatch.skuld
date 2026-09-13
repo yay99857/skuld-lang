@@ -1,0 +1,16 @@
+enum Failure {
+    Broken
+}
+
+func parse() -> Result<int, string> {
+    return Ok(1)
+}
+
+func wrap() -> Result<int, Failure> {
+    let value = parse()?
+    return Ok(value)
+}
+
+func main() {
+    print("${wrap().is_ok()}")
+}

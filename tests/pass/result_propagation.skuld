@@ -1,0 +1,39 @@
+class Record {
+    label: string
+
+    describe() -> string {
+        return "record ${this.label}"
+    }
+}
+
+// Both payloads own references, so `?` has to release the operand and every
+// local acquired before it on the early return.
+func lookup(key: string) -> Result<Record, string> {
+    if key == "missing" {
+        return Err("no record for ${key}")
+    }
+    return Ok(new Record(label: key))
+}
+
+func pair(first: string, second: string) -> Result<string, string> {
+    let names = [first, second]
+    let left = lookup(names[0])?
+    let scratch = "held across the second lookup: ${left.describe()}"
+    let right = lookup(names[1])?
+    return Ok("${scratch} and ${right.describe()}")
+}
+
+func show(first: string, second: string) {
+    match pair(first, second) {
+        Ok(text): print(text)
+        Err(reason): print("failed: ${reason}")
+    }
+}
+
+func main() {
+    show("alpha", "beta")
+    // Fails on the first `?`, before any local is bound.
+    show("missing", "beta")
+    // Fails on the second `?`, with an array, a class and a string alive.
+    show("alpha", "missing")
+}

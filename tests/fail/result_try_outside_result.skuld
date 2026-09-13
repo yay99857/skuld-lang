@@ -1,0 +1,8 @@
+func parse() -> Result<int, string> {
+    return Ok(1)
+}
+
+func main() {
+    let value = parse()?
+    print("${value}")
+}

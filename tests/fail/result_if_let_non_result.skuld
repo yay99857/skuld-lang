@@ -1,0 +1,6 @@
+func main() {
+    let value: Option<int> = 1
+    if let Ok(inner) = value {
+        print("${inner}")
+    }
+}

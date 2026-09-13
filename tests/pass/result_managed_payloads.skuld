@@ -1,0 +1,71 @@
+struct Point {
+    x: int
+    y: int
+}
+
+// A Result nested inside an Option, an array of Results and a Result whose
+// success side is itself an Option all have to retain and release correctly.
+func parse(text: string) -> Result<Point, string> {
+    if text == "origin" {
+        return Ok(Point { x: 0, y: 0 })
+    }
+    if text == "unit" {
+        return Ok(Point { x: 1, y: 1 })
+    }
+    return Err("cannot parse ${text}")
+}
+
+func first_label(items: []string) -> Result<Option<string>, string> {
+    if items.len() == 0 {
+        return Err("empty")
+    }
+    if items[0] == "" {
+        return Ok(null)
+    }
+    return Ok(items[0])
+}
+
+func main() {
+    var results: []Result<Point, string> = []
+    results.push(parse("origin"))
+    results.push(parse("unit"))
+    results.push(parse("elsewhere"))
+    for outcome in results {
+        match outcome {
+            Ok(point): print("point ${point.x},${point.y}")
+            Err(reason): print(reason)
+        }
+    }
+
+    let held: Option<Result<Point, string>> = parse("unit")
+    if let Some(inner) = held {
+        if let Ok(point) = inner {
+            print("nested ${point.x},${point.y}")
+        }
+    }
+
+    match first_label(["hello", "world"]) {
+        Ok(label): {
+            if let Some(text) = label {
+                print("label ${text}")
+            } else {
+                print("no label")
+            }
+        }
+        Err(reason): print(reason)
+    }
+    match first_label([""]) {
+        Ok(label): {
+            if let Some(text) = label {
+                print("label ${text}")
+            } else {
+                print("no label")
+            }
+        }
+        Err(reason): print(reason)
+    }
+    match first_label([]) {
+        Ok(_unused): print("unexpected")
+        Err(reason): print(reason)
+    }
+}

@@ -1,0 +1,8 @@
+enum Result {
+    Yes
+    No
+}
+
+func main() {
+    print("redeclared")
+}
