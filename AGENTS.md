@@ -223,8 +223,10 @@ accurate; documenting a future feature is not a request to implement it.
   process and test-discovery decisions recorded below and in `ROADMAP.md`.
   M14 (field defaults) is complete; a constructor with a body is not part of
   it, for the reason recorded below. M15 (a string-keyed map), M16 (host names
-  and error detail) and M17 (verified HTTPS) are complete, each with its
-  decision recorded below and in `ROADMAP.md`.
+  and error detail), M17 (verified HTTPS) and M18 (measured performance and a
+  second native target) are complete, each with its decision recorded below and
+  in `ROADMAP.md`. The sequence `ROADMAP.md` proposed is finished; what comes
+  next is a selection nobody has made.
   No milestone is active. Do not infer authorization for further features without
   explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
@@ -389,6 +391,21 @@ accurate; documenting a future feature is not a request to implement it.
   is written, and is evaluated at every construction, in the declaring file's
   coordinates. Order is the usual one: written arguments first, left to right,
   then the defaults of the fields nobody wrote, in declaration order.
+- Performance is measured, not asserted. `tests/bench/` holds the programs and
+  `run.sh`, `BENCHMARKS.md` the report: between 1.2x and 3.8x the faster of
+  Rust and Go across five workloads, faster than Go on two. A benchmark is a
+  comparison only if the Skuld, Rust and Go versions print the same checksum,
+  which is why each prints one before it is timed. An optimisation needs
+  before-and-after evidence from these benchmarks and unchanged semantics; no
+  speed ratio is promised anywhere.
+- The second native target is i686-linux-gnu, and `cli/tests/portability.rs`
+  runs every `tests/pass` fixture on it: 58 of 59 produce identical output with
+  no change to the runtime. The exception is the foreign boundary, which is the
+  only place a target leaks into the language — an `extern "C"` declaration
+  names a concrete width and `size_t` is not one. Skuld has no `usize`; adding
+  one is a language decision, not a portability fix. `std/net` and `std/dns`
+  also assume a little-endian Linux and its numeric constants, and `std/dns`
+  builds a `struct timeval` of two 64-bit fields, which is LP64-specific.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built

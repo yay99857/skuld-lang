@@ -1,24 +1,27 @@
 # Skuld roadmap
 
 This document records completed milestones and a **proposed** next sequence.
-M1–M17 are implemented. No implementation milestone is active. Starting any of
-the milestones below still needs explicit selection and any open design
-decisions recorded in `AGENTS.md`. See `LANGUAGE.md` for semantics and `README.md` for usage.
+M1–M18 are implemented, and the proposed sequence is finished: there is no
+Planned milestone left in it. No implementation milestone is active, and what
+comes next is a selection nobody has made — the candidates below the sequence
+are the starting point, and each still needs an explicit decision recorded in
+`AGENTS.md`. See `LANGUAGE.md` for semantics and `README.md` for usage.
 
-The original target — fetching an HTTP document by IPv4 address and decoding
-JSON — is reached. The next proposed target is a small native command-line
-application that reads local input, transforms JSON, has its own tests, and
-can later fetch input over HTTPS by host name. Tooling and measured reliability
-come before expanding the type system or changing the backend.
+Both targets this document set are reached: an HTTP document fetched and
+decoded, and a native command-line application that reads local input,
+transforms JSON, has its own tests and fetches over HTTPS by host name. The
+performance goal has measurements behind it in `BENCHMARKS.md` rather than an
+expectation.
 
 ## Current baseline
 
-- **Implemented:** M1–M17, including non-escaping lambdas, stable array sorting,
+- **Implemented:** M1–M18, including non-escaping lambdas, stable array sorting,
   storable class interfaces, modules, the embedded library, blocking HTTP, the
   official formatter (`skuld fmt` with `--check`), verified rename in the
   editor, whole-file reads and writes, the process arguments, `skuld test`,
   field defaults at construction, a string-keyed map, a DNS resolver written in
-  Skuld, system error reasons, and verified TLS.
+  Skuld, system error reasons, verified TLS, and measured performance on two
+  native targets.
   `let ... else` also unwraps Option/Result without nesting the success path.
 - **Tooling implemented:** highlighting, the official formatter `skuld fmt`, and
   a third workspace crate, `lsp/`, with diagnostics, completion, hover,
@@ -524,7 +527,7 @@ M18 can collect a baseline earlier, but optimizations must follow measurements.
 | M15 | A map for real application data | Implemented |
 | M16 | Host names and useful network errors | Implemented |
 | M17 | Verified HTTPS | Implemented |
-| M18 | Performance baseline and a second native target | Representative applications |
+| M18 | Performance baseline and a second native target | Implemented |
 
 ## M11 — Official formatter — Implemented
 
@@ -829,23 +832,53 @@ let ada = new Account(owner: "Ada", balance: 120)
   servers, client certificates, redirects, and any test against a public
   endpoint.
 
-## M18 — Measured performance and portability — Planned
+## M18 — Measured performance and portability — Implemented
 
-- **Purpose:** turn the native-performance goal into evidence and identify which
-  parts of the runtime and foreign library are platform-specific.
-- **Scope:** reproducible benchmarks for JSON, strings, array growth/sort, maps
-  if selected, interface dispatch and compilation; then bring up one explicitly
-  selected second native target. Report toolchain, optimization flags, input,
-  timings and memory/allocation metrics where measurable.
-- **Decisions before implementation:** the second target and the comparison
-  workloads. Go/Rust comparisons must do equivalent work, including validation,
-  overflow behavior and IO boundaries; report differences that cannot be aligned.
-- **Closing marker:** checked-in benchmark inputs and reproducible instructions,
-  an initial results report, and the applicable native/sanitizer/FFI tests passing
-  on the selected target with unsupported features explicitly documented.
-  Performance improvements need before/after evidence and unchanged semantics.
-- **Out of scope:** a promised speed ratio, replacing the C backend, changing
-  copy semantics without evidence, threading and a new memory-management model.
+- **Decision taken — the second target is i686-linux-gnu.** It was chosen
+  because it can be *run* here and not only built for: a claim about ARM or
+  macOS with no machine behind it would be a claim rather than evidence, and a
+  32-bit pointer is what finds the places that assumed a 64-bit one. Bringing
+  up a third target is its own decision, and `BENCHMARKS.md` lists what it
+  would have to settle.
+- **Decision taken — a benchmark is only a comparison if the checksums
+  agree.** Every program prints a number derived from its whole result before
+  it is timed, and the Skuld, Rust and Go versions must print the same one.
+  The Rust and Go versions are therefore written the way the Skuld one is —
+  same generator, same loop, same comparison — rather than in the most
+  idiomatic form of their language: the subject is a language's cost for a
+  given piece of work.
+- **Workloads:** array growth with a stable sort through a comparator; building
+  a string byte by byte and scanning it; dynamic dispatch through an interface;
+  a string-keyed index against the array search it replaced; and parsing a
+  61 KB JSON document. Compilation is measured separately.
+- **Differences that could not be aligned, and are reported:** `json_parse` has
+  no Rust version, because Rust's standard library has no JSON and a crate
+  would compare Skuld's library against a third party rather than a language;
+  Go's uses `encoding/json` into `map[string]any`, which is comparable work and
+  not the same code.
+- **Results** (fastest of three, Xeon E5-2640 v3, clang 22 `-O2`, rustc 1.98
+  `-O`, Go 1.27): arrays 42 ms against 21/240; strings 179 ms against 47/86;
+  dispatch 89 ms against 73/126; JSON 582 ms against Go's 689; map 20 ms
+  against 8/8. Between **1.2x and 3.8x** the faster of Rust and Go, and faster
+  than Go on two workloads. The full report, including peak memory and the
+  compiler's own timings, is in [`BENCHMARKS.md`](BENCHMARKS.md).
+- **Found by measuring:** the compiler's share of a build is under 1% — 5 ms to
+  check a 646-line file, 1127 ms for the whole build — so the edit-compile loop
+  is a question of what is asked of clang. Strings are the weakest workload,
+  paying a bounds check and a reference-count update per push with no way to
+  reserve capacity; that is where an optimisation would start, with
+  before-and-after evidence.
+- **Closing marker — reached:** `tests/bench/` holds the programs, the checked-in
+  input and `run.sh`; `BENCHMARKS.md` is the report; and
+  `cli/tests/portability.rs` builds and runs every `tests/pass` fixture on the
+  second target, where **58 of 59** produce identical output. The exception,
+  `extern_c_ffi`, is the one place a target leaks into the language: an
+  `extern "C"` declaration names a concrete width and C's own types do not, so
+  `u64` for a `size_t` is right on x86-64 and wrong on i686. Skuld has no
+  `usize`, and adding one is a language decision, not a portability fix.
+- **Out of scope, and still out:** a promised speed ratio, replacing the C
+  backend, changing copy semantics without evidence, threading, and a new
+  memory-management model.
 
 ## Beyond this sequence — Candidates, not selected
 

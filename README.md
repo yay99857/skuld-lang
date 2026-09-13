@@ -380,16 +380,18 @@ M8 (function values and stable sorting), M9 (blocking TCP, HTTP and JSON)
 and M10 (class interfaces) are also implemented, as is `let ... else`.
 M11 (the official formatter, `skuld fmt`), M12 (LSP refactoring), M13 (local
 CLI applications and `skuld test`), M14 (field defaults), M15 (a string-keyed
-map), M16 (host names and system error reasons) and M17 (verified HTTPS) are
-implemented too. The LSP provides
+map), M16 (host names and system error reasons), M17 (verified HTTPS) and M18
+(measured performance on two native targets) are implemented too. The LSP provides
 diagnostics, completion, hover, definition, find-references, rename, the
 document outline and formatting through `skuld fmt`'s own formatter, and
 `examples/jsontool.skuld` is a multi-module native tool with its own test suite.
 
-No implementation milestone is active. [ROADMAP.md](ROADMAP.md#next-sequence--planned-not-selected)
-proposes M15–M18: maps, host-name resolution, verified HTTPS, and measured
-performance/portability. M15 is the recommended next step; each milestone still
-requires explicit selection and its open design decisions. General generics and
-self-hosting remain separate candidates.
+No implementation milestone is active, and the sequence [ROADMAP.md](ROADMAP.md)
+proposed is finished. What comes next is a selection nobody has made; the
+candidates listed there — general generics and self-hosting among them — each
+need an explicit decision first.
 Status is reported as completed milestones, not as a completion percentage, and
-implies neither production readiness nor measured Go/Rust performance.
+implies no production readiness. Performance is measured in
+[BENCHMARKS.md](BENCHMARKS.md): between 1.2x and 3.8x the faster of Rust and Go
+across five workloads on one machine, which is evidence for the range the
+project aimed at and not a promised ratio.

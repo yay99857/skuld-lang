@@ -1435,12 +1435,13 @@ string slicing and the `extern "C"` boundary.
 Future commands: `new` and `doc` (`fmt` and `test` are implemented). LLVM/Cranelift and eventual
 self-hosting remain long-term possibilities.
 
-`ROADMAP.md` records M1–M17 as implemented, including function values,
+`ROADMAP.md` records M1–M18 as implemented, including function values,
 callbacks, interfaces, blocking TCP/HTTP with JSON, the official formatter
 `skuld fmt`, find-references and rename in the editor, and a native command-line
 application with its own `skuld test` suite, field defaults at construction, a
-string-keyed map, host-name resolution and verified HTTPS. Its proposed M18
-covers measured performance and portability. These proposals do not settle their syntax
+string-keyed map, host-name resolution, verified HTTPS and the first measured
+performance baseline, which is in `BENCHMARKS.md`. Its proposed sequence is
+finished; nothing is selected after it. These proposals do not settle their syntax
 or authorize implementation. No implementation milestone is active.
 
 ## Unsupported features and experimental status
