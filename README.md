@@ -131,6 +131,23 @@ class references are supported; strong cycles require weak links or explicit bre
 scalars and raw pointers cross that boundary: a reference-counted value never
 does.
 
+A lambda is written without a keyword, the way a method already declares
+itself, and a function type keeps `->`:
+
+```skuld
+var numbers = [5, 3, 9, 1]
+numbers.sort((a: int, b: int): int { return a - b })
+
+func count_if(values: []int, keep: (int) -> bool) -> int { ... }
+```
+
+A function value may be a parameter or a local and nothing else — never a
+field, a return type or a payload. With reference counting and no cycle
+collector, a managed object able to reach a closure that captured it would be a
+cycle nothing frees; the rule removes the reachability, and in exchange a
+function value never allocates, retains or releases. Captures are copies of
+immutable bindings. Storing a callback for later waits for interfaces.
+
 A program can span several modules. A module is a directory whose `.skuld`
 files share one namespace; `import "net/socket"` binds the path's last segment,
 so its exports are reached as `socket.connect(...)` and never unqualified.

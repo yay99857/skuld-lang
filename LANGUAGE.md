@@ -57,7 +57,8 @@ The builtin is `print`, replacing `println`; neither old spelling is an alias.
 The old words are ordinary identifiers and can be explicitly declared by users.
 
 Keywords: `func let var return if else while loop for in break continue new weak class struct
-impl enum match import pub extern unsafe`.
+impl enum match import pub extern unsafe`. A lambda needs none of them: it is
+written `(a: int): int { ... }`, the shape a method already uses.
 Reserved future keywords: `interface static`.
 `true` and `false` produce boolean literal tokens. Type names, `print`, `Some`,
 `None`, `Ok` and `Err` are identifiers. `Option<T>` and `Result<T, E>` are
@@ -898,6 +899,94 @@ reading or writing through one from Skuld, and any ABI other than C. A
 declaration whose C prototype disagrees with a header the generated program
 already includes is a clang error at build time, not a Skuld diagnostic.
 
+## Function values — Implemented
+
+A lambda is a function declaration without a name, which is why it needs no
+keyword: a method already declares itself the same way.
+
+```skuld
+let increment = (n: int): int { return n + 1 }
+numbers.sort((a: int, b: int): int { return a - b })
+```
+
+A function *type* is written `(int, int) -> int`. The result uses `->` there so
+that a parameter is not spelled `compare: (int, int): int`, with `:` meaning
+"has type" and "returns" in the same declaration; inside a literal both `:` and
+`->` introduce the result, as they do on a method.
+
+```skuld
+func count_if(values: []int, keep: (int) -> bool) -> int {
+    var total = 0
+    for value in values {
+        if keep(value) {
+            total = total + 1
+        }
+    }
+    return total
+}
+```
+
+A parameter type may be omitted when the expected type supplies it — the same
+local inference `let` performs — and a declared function named where a value is
+expected becomes one:
+
+```skuld
+print(count_if(numbers, (n): bool { return n > 1 }))
+print(apply(10, double))
+```
+
+**A function value may not escape.** It can be a parameter or a local, and
+never a field, a return type, an array element, or a payload of `Option`,
+`Result` or an enum. This is the rule the rest depends on, so it is worth
+stating why it exists rather than treating it as a restriction: Skuld reference
+counts with non-atomic counts and has no cycle collector, so any managed object
+able to reach a closure that captured it would be a cycle nothing frees.
+Removing the reachability is cheaper than asking every user to reason about
+weak captures, which is the ownership burden the language sets out to avoid.
+
+What it buys is that a function value costs nothing. It never allocates, never
+retains and never releases: its captures are copied into an environment that
+lives in the enclosing block, which the value cannot outlive.
+
+**A lambda captures values, not variables.** Only immutable bindings — `let`,
+parameters, `this`, and the bindings introduced by `if let`, `match` and `for`
+— may be captured. A copy of a `var` could disagree with the variable by the
+time the value runs, and copying is exactly what makes the environment free, so
+the two rules are one rule.
+
+```skuld
+let base = 100
+print(apply(5, (n: int): int { return n + base }))   // captures `base`
+
+var running = 0
+print(apply(5, (n: int): int { return n + running })) // rejected
+```
+
+**A chosen limit.** Because a function value cannot be stored, a callback
+cannot be kept for later: there is no handler table, no registry and no
+observer list. That is deliberate, not an oversight — those shapes want a named
+abstraction, which is what interfaces are for, and interfaces are a milestone
+of their own with receiver syntax still unsettled.
+
+One parsing rule follows from the syntax: a lambda body opens on the same line
+its parentheses close. Newlines are not tokens, so without that rule
+`var x = (None)` followed by a block on the next line would read as a lambda. A
+parenthesised condition, as in `if (flag) { ... }`, is unaffected — conditions
+already refuse a bare record literal, and they refuse a lambda for the same
+reason.
+
+`sort()` is the first consumer. It sorts in place and returns `void`, like
+`push`, `insert`, `pop` and `remove`, because an array is a shared reference
+and a sort that returned a new one would mislead. It is stable, and it runs on
+a snapshot: a comparator that changes the array while the sort is running
+aborts rather than reading a buffer the array no longer owns.
+
+```skuld
+var words = ["pear", "fig", "banana", "kiwi"]
+words.sort((a: string, b: string): int { return a.len() - b.len() })
+// fig, pear, kiwi, banana — `pear` and `kiwi` keep the order they were in
+```
+
 ## Modules — Implemented
 
 A program is a set of modules. A **module is a directory**: every `.skuld` file
@@ -1062,9 +1151,11 @@ or automatically implement every construct it contains.
   all fields and run statements inside `func main()`.
 - Array literals such as `[1, 4, 6, 7, 3]` and the type syntax `[]int` are now
   implemented; the sketch's global placement is still unsupported.
-- `numbers.sort((a, b) => a - b)` is explicitly marked for revision by the user.
-  It is not the approved final sorting or callback syntax. Callback typing,
-  lambda syntax, in-place versus copying sort and the sorting API remain open.
+- `numbers.sort((a, b) => a - b)` was marked for revision by the user and has
+  been settled: the arrow is not adopted, and the sketch's shape now reads
+  `numbers.sort((a: int, b: int): int { return a - b })`. Sorting is in place
+  and returns `void`; the parameter types may be omitted where the expected
+  type supplies them.
 - No proposal introduces null/undefined values, JavaScript coercions or a
   requirement to match TypeScript. Strong typing and Skuld's own design goals
   continue to govern these decisions.

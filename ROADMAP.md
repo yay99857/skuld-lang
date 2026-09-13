@@ -262,10 +262,10 @@ of the error types the language had no way to name.
   beyond interpolation, time, randomness, filesystem traversal, threads,
   networking, and any way to add to the library except by changing the compiler.
 
-## M8 — Function values and lambdas — Planned
+## M8 — Function values and lambdas — Implemented
 
 ```skuld
-numbers.sort(func(a: int, b: int) -> int { return a - b })
+numbers.sort((a: int, b: int): int { return a - b })
 ```
 
 The abstraction milestone the earlier ones kept deferring. Sorting has demanded
@@ -273,13 +273,15 @@ it since M2. The user delegated this milestone's three open questions; the
 answers are below, and each is a consequence of a constraint the project
 already had rather than a preference.
 
-- **Decision — syntax.** A lambda is `func(params) -> Type { body }`: the
-  function declaration form without a name. The function *type* is
-  `func(int, int) -> int`. Parameter and return types may be omitted when the
-  expected type is known, which is the local inference `let` already does. The
-  sketch's `=>` is not adopted: the user marked it for revision, and importing
-  the TypeScript arrow into a language that already spells functions `func` and
-  returns `->` would buy brevity with a second way to say the same thing.
+- **Decision — syntax.** A lambda is `(params): Type { body }` — the shape a
+  method already declares itself with, so it needs no keyword. The user chose
+  this over the `func(...)` form first proposed here, and it is the better fit:
+  classes already declare `hello() -> string` without `func`. The function
+  *type* keeps `->`, as `(int, int) -> int`, so that a parameter is not written
+  `compare: (int, int): int` with `:` meaning both "has type" and "returns".
+  Parameter and return types may be omitted when the expected type is known,
+  which is the local inference `let` already does. The sketch's `=>` is not
+  adopted.
 - **Decision — capture.** A lambda may capture, by value, and a function value
   **may not escape**: it can be a parameter or a local, never a field, a return
   type, an array element or a payload of `Option`, `Result` or an enum. That is
@@ -306,10 +308,23 @@ already had rather than a preference.
   `remove` before it — an array is a shared reference, so a sort that returned a
   new one would invite the reader to think the original was untouched. Stable,
   because predictability is worth more here than the last constant factor.
-- **Validation:** sorting ints, floats and strings by a comparator; a lambda
-  capturing a local scalar and a local managed value; a named function passed
-  where a lambda is expected; and fail fixtures for each way a function value
-  can try to escape.
+- **A chosen limit, not a discovered one:** because a function value cannot be
+  stored, a callback cannot be kept for later — no handler table, no registry,
+  no observer list. Those shapes want a named abstraction, which is what the
+  interface milestone is for. Anyone who reaches this wall should find it
+  written down here rather than in a compiler error.
+- **Validated:** `tests/pass/function_values` covers lambdas bound to locals
+  and written in place, a declared function used as a value, inferred parameter
+  types, both result spellings, scalar and managed captures, nested lambdas and
+  a parenthesised condition that must not read as one. `tests/pass/array_sort`
+  covers sorting ints, strings and classes, stability, and the empty and
+  single-element cases. Six `tests/fail` fixtures pin each way a function value
+  can try to escape, plus capturing a `var` and calling with the wrong
+  signature, and `tests/trap/sort_mutation` pins the comparator that mutates
+  the array it is sorting.
+- **Risk closed:** a comparator can reach the array it is sorting, so the sort
+  runs on a snapshot and aborts if the array changed by the end, instead of
+  merging out of a buffer that was reallocated underneath it.
 
 ## M9 — Sockets, HTTP and the long-range target — Planned
 

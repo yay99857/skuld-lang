@@ -189,14 +189,10 @@ accurate; documenting a future feature is not a request to implement it.
   diagnostic. Its rules are set out in their own entry below, as are M7's. M6 was selected
   without waiting for M5, which modules do not depend on; M5 landed
   concurrently in another session (`2606206`, `e3d84c2`) and owns its own
-  status entry. M8 (function values and lambdas) is the active milestone: the
-  user delegated its three open design questions, and the answers are recorded
-  in `ROADMAP.md` — `func(params) -> Type { body }` as the lambda and
-  `func(int, int) -> int` as the type, with no `=>`; capture by value in
-  exchange for function values that may not escape into any managed location,
-  which is what keeps a closure out of an uncollectable cycle and out of the
-  heap entirely; and interfaces deferred to a milestone of their own. Do not
-  infer authorization for further features without explicit decision.
+  status entry. M8 (function values and lambdas) is complete; its three open
+  design questions were delegated by the user and are recorded in `ROADMAP.md`.
+  No milestone is active. Do not infer authorization for further features
+  without explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
   and string slices → `extern "C"` FFI → modules → standard library → function
   values → sockets. It is a plan, not a selection: a remaining entry is Planned,
@@ -231,6 +227,24 @@ accurate; documenting a future feature is not a request to implement it.
   adding one means changing the compiler, which is the intended brake. The
   builtin `bytes_to_string` keeps returning `Result<string, string>`: making it
   return a library type would invert the dependency.
+- Function values are implemented and non-escaping. A lambda is written
+  `(a: int, b: int): int { ... }` — no keyword, the shape a method already uses
+  — and a function type is `(int, int) -> int`, which keeps `->` so a parameter
+  is not spelled `compare: (int, int): int`. Parameter and result types may be
+  omitted where the expected type supplies them, and a declared function named
+  where a value is expected becomes one. A function value may be a parameter or
+  a local and nothing else: never a field, a return type, an array element or a
+  payload. That rule is the safety argument, not a detail — relaxing it
+  reintroduces cycles the reference counter cannot collect — and it is what
+  makes a function value free: no allocation, no retain, no release, with
+  captures copied into an environment in the enclosing block. Only immutable
+  bindings may be captured, since a copy of a `var` could go stale. A
+  consequence to keep written down: a callback cannot be stored, so handler
+  tables and registries wait for interfaces. A lambda body must open on the
+  same line its parentheses close, or `var x = (None)` followed by a block would
+  read as one. `sort()` is in place, returns void, is stable, and runs on a
+  snapshot so a comparator that mutates the array aborts instead of reading a
+  reallocated buffer.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built
@@ -276,11 +290,11 @@ conditional flow. Loops follow Demo 2. Classes, fields, methods, construction,
 implicit `this` and string interpolation belong to Demo 3, after functions and type
 checking are stable.
 
-Function values arrive in M8 as non-escaping, stack-allocated values: a
-parameter or a local, never a field, a return type, an array element or a
-payload. That rule is the milestone's safety argument, not a detail — relaxing
-it reintroduces cycles the reference counter cannot collect. Interfaces stay
-future work with unsettled receiver syntax.
+Function values are non-escaping and stack-allocated: a parameter or a local,
+never a field, a return type, an array element or a payload. That rule is the
+safety argument, not a detail — relaxing it reintroduces cycles the reference
+counter cannot collect. Interfaces stay future work with unsettled receiver
+syntax; storing a callback waits for them.
 
 Do not implement generics, macros, async/await, threads, channels, reflection,
 decorators, annotations, a package registry, compiler plugins, compile-time

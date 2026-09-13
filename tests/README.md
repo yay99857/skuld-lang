@@ -103,3 +103,14 @@ real `std/utf8` directory sits beside it offering a name the embedded module
 does not have, and the program is rejected because the embedded module is what
 it imported. `std_unknown_module` pins that a reserved path naming nothing is
 an error rather than a look on disk.
+
+Function-value fixtures cover both halves of the milestone's bargain.
+`pass/function_values` exercises what a lambda can do — bound to a local or
+written in place, a declared function used as a value, parameter types taken
+from the expected type, scalar and managed captures, nested lambdas — and
+`pass/array_sort` covers `sort()` including its stability and the empty case.
+The `function_value_*` fixtures in `fail/` pin what it may not do: a field, a
+return type, an array element, an `Option` payload, an enum payload, capturing
+a `var`, and calling with the wrong signature. `trap/sort_mutation` pins a
+comparator that changes the array it is sorting, which aborts rather than
+merging out of a reallocated buffer.
