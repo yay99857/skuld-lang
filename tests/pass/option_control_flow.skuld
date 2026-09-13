@@ -1,0 +1,24 @@
+func pick(value: Option<int>) -> int {
+    if let Some(n) = value { return n } else { return 0 }
+}
+func tick(value: int) -> Option<int> { print(value)
+    return Some(value) }
+func main() {
+    let n = 99
+    if let Some(n) = tick(1) { print(n) } else { print(n) }
+    print(n)
+    if let Some(n) = (NoneValue()) { print(n) }
+    else if let Some(n) = Some(2) { print(n) }
+    else { print(0) }
+    print(pick(None))
+    var i = 0
+    while i < 4 {
+        i += 1
+        if let Some(text) = Some("a" + "b") {
+            if i == 1 { continue }
+            if i == 3 { break }
+            print(text)
+        }
+    }
+}
+func NoneValue() -> Option<int> { return None }

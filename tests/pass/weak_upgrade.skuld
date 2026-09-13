@@ -1,0 +1,22 @@
+class User { name: string }
+func expired() -> weak User { return weak(new User(name: "gone")) }
+func main() {
+    let empty: weak User = weak()
+    print(empty.upgrade().is_none())
+    print(expired().upgrade().is_none())
+    var observer: weak User = weak()
+    {
+        var retained: Option<User> = (None)
+        {
+            let user = new User(name: "alive" + "!")
+            observer = weak(user)
+            retained = observer.upgrade()
+        }
+        if let Some(user) = retained {
+            retained = None
+            print(user.name)
+            print(observer.alive())
+        }
+    }
+    print(observer.alive())
+}

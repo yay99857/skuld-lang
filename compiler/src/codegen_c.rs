@@ -8,6 +8,7 @@ pub fn emit_c(program: &Program) -> String {
         next_temp: 0,
         structs: program.structs.clone(),
         arrays: program.arrays.clone(),
+        options: program.options.clone(),
     };
     for index in 0..program.arrays.len() {
         emitter.line(&format!("typedef struct skuld_a{index} skuld_a{index};"));
@@ -19,34 +20,52 @@ pub fn emit_c(program: &Program) -> String {
             emitter.line(&format!("typedef struct skuld_s{index} skuld_s{index};"));
         }
     }
-    // A value type embedded in another must be complete first. The checker has
-    // already rejected value cycles, so this ordering always exists.
-    let mut order: Vec<usize> = Vec::new();
-    let mut placed = vec![false; program.structs.len()];
-    while order.len() < program.structs.len() {
-        let mut progressed = false;
-        for index in 0..program.structs.len() {
-            if placed[index] {
+    // Inline structs and Options must be complete before embedding them.
+    let types: Vec<_> = (0..program.structs.len())
+        .map(|i| Type::Struct(crate::types::StructId(i)))
+        .chain((0..program.options.len()).map(|i| Type::Option(crate::types::OptionId(i))))
+        .collect();
+    let mut order = Vec::new();
+    while order.len() < types.len() {
+        let before = order.len();
+        for &ty in &types {
+            if order.contains(&ty) {
                 continue;
             }
-            let ready = program.structs[index]
-                .fields
-                .iter()
-                .all(|field| match field.ty {
-                    Type::Struct(id) => program.structs[id.0].reference || placed[id.0],
-                    _ => true,
-                });
+            let complete = |field: Type| match field {
+                Type::Struct(id) => program.structs[id.0].reference || order.contains(&field),
+                Type::Option(_) => order.contains(&field),
+                _ => true,
+            };
+            let ready = match ty {
+                Type::Struct(id) => program.structs[id.0]
+                    .fields
+                    .iter()
+                    .all(|field| complete(field.ty)),
+                Type::Option(id) => complete(program.options[id.0].element),
+                _ => unreachable!(),
+            };
             if ready {
-                placed[index] = true;
-                order.push(index);
-                progressed = true;
+                order.push(ty);
             }
         }
-        if !progressed {
-            unreachable!("internal compiler bug: value type cycle reached the backend");
+        if order.len() == before {
+            unreachable!("internal compiler bug: value type cycle reached backend");
         }
     }
-    for index in order {
+    for ty in order {
+        let index = match ty {
+            Type::Option(id) => {
+                emitter.line(&format!(
+                    "typedef struct {{ bool some; {} value; }} skuld_o{};",
+                    emitter.c_type(program.options[id.0].element),
+                    id.0
+                ));
+                continue;
+            }
+            Type::Struct(id) => id.0,
+            _ => unreachable!(),
+        };
         let declaration = &program.structs[index];
         emitter.line("");
         emitter.line(&format!(
@@ -93,6 +112,7 @@ pub fn emit_c(program: &Program) -> String {
     let managed: Vec<_> = (0..program.structs.len())
         .map(|i| Type::Struct(crate::types::StructId(i)))
         .chain((0..program.arrays.len()).map(|i| Type::Array(crate::types::ArrayId(i))))
+        .chain((0..program.options.len()).map(|i| Type::Option(crate::types::OptionId(i))))
         .filter(|ty| emitter.managed(*ty))
         .collect();
     // Prototypes permit forward references and mutually referring classes.
@@ -182,6 +202,7 @@ struct Emitter {
     /// Needed to decide which types own a reference and must be released.
     structs: Vec<StructInfo>,
     arrays: Vec<crate::types::ArrayInfo>,
+    options: Vec<crate::types::OptionInfo>,
 }
 fn type_name(structs: &[StructInfo], ty: Type) -> String {
     match ty {
@@ -191,6 +212,7 @@ fn type_name(structs: &[StructInfo], ty: Type) -> String {
         Type::String => "skuld_string".into(),
         Type::Void => "void".into(),
         Type::Weak(_) => "skuld_weak".into(),
+        Type::Option(id) => format!("skuld_o{}", id.0),
         Type::Array(id) => format!("skuld_a{} *", id.0),
         // A class value is a pointer to a shared object; a struct is the
         // object itself, and C assignment copies it, which is value semantics.
@@ -200,14 +222,55 @@ fn type_name(structs: &[StructInfo], ty: Type) -> String {
     }
 }
 impl Emitter {
+    fn option_helpers(&mut self, id: crate::types::OptionId) {
+        let name = format!("skuld_o{}", id.0);
+        let element = self.options[id.0].element;
+        self.line(&format!(
+            "static inline {name} {name}_retain({name} value) {{"
+        ));
+        self.indent += 1;
+        self.line(&format!(
+            "if (value.some) value.value = {};",
+            self.retained(element, "value.value")
+        ));
+        self.line("return value;");
+        self.indent -= 1;
+        self.line("}");
+        self.line(&format!(
+            "static inline void {name}_release({name} *slot) {{"
+        ));
+        self.indent += 1;
+        self.line(&format!(
+            "if (slot->some) {}(&slot->value);",
+            self.release_function(element)
+                .expect("managed Option payload")
+        ));
+        self.line("slot->some = false;");
+        self.indent -= 1;
+        self.line("}");
+        self.line(&format!(
+            "static inline void {name}_assign({name} *slot, {name} value) {{"
+        ));
+        self.indent += 1;
+        self.line(&format!("{name} previous = *slot;"));
+        self.line(&format!("*slot = {name}_retain(value);"));
+        self.line(&format!("{name}_release(&previous);"));
+        self.indent -= 1;
+        self.line("}");
+    }
     fn aggregate_prefix(&self, ty: Type) -> String {
         match ty {
             Type::Struct(id) => format!("skuld_s{}", id.0),
             Type::Array(id) => format!("skuld_a{}", id.0),
+            Type::Option(id) => format!("skuld_o{}", id.0),
             _ => unreachable!("aggregate type"),
         }
     }
     fn aggregate_helpers(&mut self, ty: Type) {
+        if let Type::Option(id) = ty {
+            self.option_helpers(id);
+            return;
+        }
         let name = self.c_type(ty);
         let prefix = self.aggregate_prefix(ty);
         let reference = match ty {
@@ -349,6 +412,7 @@ impl Emitter {
     fn managed(&self, ty: Type) -> bool {
         match ty {
             Type::String | Type::Array(_) | Type::Weak(_) => true,
+            Type::Option(id) => self.managed(self.options[id.0].element),
             // A class always owns a reference; a struct owns one only if a
             // field does.
             Type::Struct(id) => {
@@ -364,6 +428,7 @@ impl Emitter {
     fn retained(&self, ty: Type, value: &str) -> String {
         match ty {
             Type::String => format!("skuld_string_retain({value})"),
+            Type::Option(id) if self.managed(ty) => format!("skuld_o{}_retain({value})", id.0),
             Type::Weak(_) => format!("skuld_weak_retain({value})"),
             Type::Array(id) => format!("skuld_a{}_retain({value})", id.0),
             Type::Struct(id) if self.managed(ty) => format!("skuld_s{}_retain({value})", id.0),
@@ -373,6 +438,7 @@ impl Emitter {
     fn release_function(&self, ty: Type) -> Option<String> {
         match ty {
             Type::String => Some("skuld_string_release".into()),
+            Type::Option(id) if self.managed(ty) => Some(format!("skuld_o{}_release", id.0)),
             Type::Weak(_) => Some("skuld_weak_release".into()),
             Type::Array(id) => Some(format!("skuld_a{}_release", id.0)),
             Type::Struct(id) if self.managed(ty) => Some(format!("skuld_s{}_release", id.0)),
@@ -390,6 +456,7 @@ impl Emitter {
     fn assign_function(&self, ty: Type) -> Option<String> {
         match ty {
             Type::String => Some("skuld_string_assign".into()),
+            Type::Option(id) if self.managed(ty) => Some(format!("skuld_o{}_assign", id.0)),
             Type::Weak(_) => Some("skuld_weak_assign".into()),
             Type::Array(id) => Some(format!("skuld_a{}_assign", id.0)),
             Type::Struct(id) if self.managed(ty) => Some(format!("skuld_s{}_assign", id.0)),
@@ -486,6 +553,38 @@ impl Emitter {
                 let condition = self.expression(condition);
                 self.line(&format!("if ({condition})"));
                 self.block(then_block);
+                if let Some(branch) = else_branch {
+                    self.line("else {");
+                    self.indent += 1;
+                    self.statement(branch);
+                    self.indent -= 1;
+                    self.line("}");
+                }
+            }
+            StatementKind::IfLet {
+                binding,
+                value,
+                then_block,
+                else_branch,
+            } => {
+                let Type::Option(id) = value.ty else {
+                    unreachable!("checked if let")
+                };
+                let payload = self.options[id.0].element;
+                let value = self.expression(value);
+                self.line(&format!("if ({value}.some) {{"));
+                self.indent += 1;
+                self.line(&format!(
+                    "{}{} skuld_v{} = {};",
+                    self.cleanup(payload),
+                    self.c_type(payload),
+                    binding.0,
+                    self.retained(payload, &format!("{value}.value"))
+                ));
+                self.line(&format!("(void)skuld_v{};", binding.0));
+                self.block_contents(then_block);
+                self.indent -= 1;
+                self.line("}");
                 if let Some(branch) = else_branch {
                     self.line("else {");
                     self.indent += 1;
@@ -612,6 +711,43 @@ impl Emitter {
             ExprKind::WeakAlive(object) => {
                 let value = self.expression(object);
                 self.temporary(Type::Bool, &format!("skuld_weak_alive({value})"))
+            }
+            ExprKind::Some(value) => {
+                let rendered = self.expression(value);
+                self.store(
+                    expr.ty,
+                    &format!(
+                        "({}){{.some = true, .value = {}}}",
+                        self.c_type(expr.ty),
+                        self.retained(value.ty, &rendered)
+                    ),
+                    true,
+                )
+            }
+            ExprKind::None => {
+                self.store(expr.ty, &format!("({}){{0}}", self.c_type(expr.ty)), true)
+            }
+            ExprKind::IsSome(value) | ExprKind::IsNone(value) => {
+                let value = self.expression(value);
+                let not = if matches!(expr.kind, ExprKind::IsNone(_)) {
+                    "!"
+                } else {
+                    ""
+                };
+                self.temporary(Type::Bool, &format!("{not}{value}.some"))
+            }
+            ExprKind::WeakUpgrade(object) => {
+                let value = self.expression(object);
+                let result = self.store(expr.ty, &format!("({}){{0}}", self.c_type(expr.ty)), true);
+                // The runtime returns a retained target or an internal null.
+                // Adopt it directly into Some; no nullable class value enters HIR.
+                let pointer = format!("skuld_t{}", self.next_temp);
+                self.next_temp += 1;
+                self.line(&format!("void *{pointer} = skuld_weak_upgrade({value});"));
+                self.line(&format!(
+                    "if ({pointer} != NULL) {{ {result}.some = true; {result}.value = {pointer}; }}"
+                ));
+                result
             }
             ExprKind::WeakGet(object) => {
                 let value = self.expression(object);

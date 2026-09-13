@@ -520,3 +520,64 @@ fn nested_array_types_are_bounded_and_malformed_arrays_recover() {
         );
     }
 }
+
+#[test]
+fn option_type_spans_and_if_let_else_if() {
+    let source = "func main() { let x: Option<Option<int>>=Some(None)\nif let Some(value) = x {} else if let Some(other) = x {} }";
+    let ast = program(source);
+    let StatementKind::Variable(variable) = &ast.functions[0].body.statements[0].kind else {
+        panic!("variable")
+    };
+    let ty = variable.type_ref.as_ref().expect("type");
+    assert_eq!(
+        &source[ty.span().start..ty.span().end],
+        "Option<Option<int>>"
+    );
+    let StatementKind::IfLet {
+        binding,
+        else_branch,
+        ..
+    } = &ast.functions[0].body.statements[1].kind
+    else {
+        panic!("if let")
+    };
+    assert_eq!(&source[binding.span.start..binding.span.end], "value");
+    assert!(matches!(
+        else_branch.as_ref().expect("else").kind,
+        StatementKind::IfLet { .. }
+    ));
+}
+
+#[test]
+fn option_syntax_errors_and_nesting_are_diagnosed() {
+    for source in [
+        "func main() { let x: Option<> = None }",
+        "func main() { let x: Option<int = None }",
+        "func main() { if let None = None {} }",
+        "func main() { if let Some() = None {} }",
+        "func main() { if let Some(x) Some(1) {} }",
+        "func main() { let x: Option<int, bool> = None }",
+    ] {
+        let result = parse(source);
+        assert!(result.program.is_none(), "{source}");
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .all(|d| d.span.start <= d.span.end && d.span.end <= source.len())
+        );
+    }
+    let source = format!(
+        "func main() {{ let x: {}int{} = None }}",
+        "Option<".repeat(1000),
+        ">".repeat(1000)
+    );
+    let result = parse(&source);
+    assert!(result.program.is_none());
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::SyntaxLimit)
+    );
+}

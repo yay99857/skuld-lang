@@ -1,0 +1,29 @@
+class User { name: string }
+
+func find_answer(found: bool) -> Option<int> {
+    if found { return Some(42) }
+    return None
+}
+
+func main() {
+    if let Some(answer) = find_answer(true) {
+        print(answer)
+    } else {
+        print("No answer")
+    }
+
+    var observer: weak User = weak()
+    {
+        let user = new User(name: "Ada")
+        observer = weak(user)
+        if let Some(retained) = observer.upgrade() {
+            print(retained.name)
+        }
+    }
+
+    if let Some(retained) = observer.upgrade() {
+        print(retained.name)
+    } else {
+        print("User has expired")
+    }
+}

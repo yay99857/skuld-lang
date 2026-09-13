@@ -3,8 +3,8 @@
 Status labels: **Implemented** means available now; **Planned** describes future
 intent, not accepted/executable programs; **Experimental** denotes provisional
 choices. The complete single-file native pipeline, Demos 0–2, loops, structs,
-reference-counted strings, interpolation, classes, weak references and arrays are
-implemented. Self-hosting remains planned.
+reference-counted strings, interpolation, classes, weak references, arrays and
+builtin Option values are implemented. Self-hosting remains planned.
 
 ## Philosophy — Planned
 
@@ -57,8 +57,10 @@ The old words are ordinary identifiers and can be explicitly declared by users.
 Keywords: `func let var return if else while loop break continue new weak class struct
 impl`.
 Reserved future keywords: `interface enum match import for in static extern`.
-`true` and `false` produce boolean literal tokens. Type names and `print` are
-identifiers. Recognizing a keyword does not implement its syntax or semantics.
+`true` and `false` produce boolean literal tokens. Type names, `print`, `Some`
+and `None` are identifiers. `Option<T>` is builtin type syntax, not user-defined
+generics. In a type annotation, `Option<int>=None` separates the closing `>`
+from assignment even though the lexer otherwise recognizes `>=` as one operator. Recognizing a keyword does not implement its syntax or semantics.
 
 Delimiters: `( ) { } [ ] , . : ->`.
 Operators: `+ - * / % = == != < > <= >= ! && || += -= *= /=`.
@@ -152,7 +154,7 @@ optional, but function parameters require types. AST type references preserve
 source names, including unknown names; these are not semantic type values.
 
 Blocks, return, expression statements, variables, `if`/`else` (including
-`else if`), `while`, `loop`, `break` and `continue` are parsed. Later:
+`else if` and `if let Some(name) = value`), `while`, `loop`, `break` and `continue` are parsed. Later:
 `for item in items`, `0..10` and `0..=10`. Arrays `[1, 2, 3]` with type
 syntax `[]int` are implemented below.
 
@@ -227,9 +229,12 @@ Local bindings become visible after their initializer is resolved. Therefore
 are errors when no outer binding exists. Locals do not leak across blocks,
 branches or functions. Unknown identifiers produce E0201 at the name span.
 
-A separate parent prelude contains the typed builtin identity `Print`. User
-functions and local bindings may shadow `print`; call checking and lowering
-use the resolved symbol, not the spelling of the call. The type checker
+A separate parent prelude contains the typed builtin identities `Print`, `Some`
+and `None`. User functions and local bindings may shadow `print`, `Some` or
+`None`; checking and lowering use the resolved symbol, not its spelling. The
+`Some(name)` pattern in `if let` is dedicated syntax, not a value-name lookup.
+Its immutable binding exists only in the successful branch, shares that body
+scope and is not visible in the initializer or `else` branch. The type checker
 validates the builtin signature and the backend implements printing.
 
 Resolution stores deterministic SymbolId/ScopeId tables, declaration spans,
@@ -380,7 +385,7 @@ argument, so methods cost no more than a call.
 
 Classes are implemented below.
 
-## Memory — Implemented for strings, classes, arrays and weak references
+## Memory — Implemented for strings, classes, arrays, options and weak references
 
 Skuld manages memory with **reference counting, not a garbage collector**. Owning slots release their values when their lexical block exits. The last
 strong reference releases the payload; class allocation storage can remain
@@ -496,8 +501,7 @@ func main() {
     {
         let user = new User(name: "Ada")
         observer = weak(user)
-        if observer.alive() {
-            let retained = observer.get()
+        if let Some(retained) = observer.upgrade() {
             print(retained.name)
         }
     }
@@ -505,18 +509,78 @@ func main() {
 }
 ```
 
-`alive() -> bool` reports whether a strong target still exists. `get() -> User`
-promotes to a new strong reference. Calling `get()` on an empty or expired
-reference traps with `expired weak reference` and a source byte offset; it never
-returns a dangling reference. Check and promote next to each other, since other
-expressions can release the target between the two calls. An Option-returning
-promotion API awaits Option support. Neither method takes arguments.
+`upgrade() -> Option<User>` checks liveness and retains the target in one runtime
+operation. A live target produces `Some(user)` owning a strong reference; an
+empty or expired weak reference produces `None` without trapping. Handle the
+result with `if let Some(user) = observer.upgrade() { ... } else { ... }`.
+
+`alive() -> bool` remains a liveness query. The existing `get() -> User` retains
+the target or traps with `expired weak reference` and a source byte offset.
+Prefer `upgrade()` when expiration is an expected outcome: it combines the
+check and promotion. All three methods take no arguments.
 
 Weak values can be copied, assigned, passed, returned and stored in structs,
 classes and arrays. They keep allocation bookkeeping alive, not the target's
 managed fields. Only classes support weak references in this milestone.
 Use a weak parent link with a strong child link to avoid ownership cycles; see
 [examples/weak.skuld](examples/weak.skuld).
+
+## Optional values — Implemented
+
+`Option<T>` is a builtin value type representing `Some(value)` or `None`.
+`T` can be any non-void implemented value type, including another Option,
+a struct, a class, an array or a weak reference. This milestone introduces
+neither general generics nor user-defined enums, and there is no normal null.
+
+```skuld
+func answer(found: bool) -> Option<int> {
+    if found { return Some(42) }
+    return None
+}
+
+func main() {
+    let missing: Option<int> = None
+    if let Some(value) = answer(true) {
+        print(value)
+    } else {
+        print("No answer")
+    }
+    print(missing.is_none())
+}
+```
+
+`Some(value)` requires exactly one non-void value and infers its payload type.
+`None` needs an expected Option type from an annotation, assignment, parameter,
+field, return type or enclosing array/Some expression. For example,
+`let nested: Option<Option<int>> = Some(None)` is valid, while unannotated
+`let nested = Some(None)` cannot infer the inner payload. No implicit wrapping,
+unwrapping, truthiness or numeric conversions are provided. `None()` is invalid.
+`Option` cannot be redeclared as a struct/class type; `Some` and `None` remain
+shadowable prelude value bindings like `print`.
+
+`if let Some(name) = expression { ... } else { ... }` evaluates the expression
+once. The successful branch receives an immutable copy of the payload, retaining
+any owned references. That name exists only in that branch. The `else` branch
+is optional and can contain another `if`/`if let`; both branches must guarantee
+a return for the statement to satisfy a non-void function's return requirement.
+Only the `Some(name)` pattern is supported; general patterns and `match` remain
+planned. There is no direct payload field or unchecked Option extraction API.
+
+`is_some() -> bool` and `is_none() -> bool` query the tag and take no arguments.
+Use `if let` to obtain the payload. Options do not support equality, printing or
+interpolation as a whole; extract and use their payload instead.
+
+Options store a tag and an inline payload; constructing an Option itself does
+not allocate. Copying a Some copies value payloads and retains managed payloads.
+None never reads, retains or releases its inactive payload. Thus a value struct
+cannot contain itself through Option; class or array references break that
+size cycle. Owning temporaries retain the existing lexical-block lifetime.
+
+The existing record-construction ambiguity applies to bare `None` followed by
+a standalone block: write `let value: Option<int> = (None)` before a following
+`{ ... }`, so the parser does not read `None { ... }` as record construction.
+See [examples/options.skuld](examples/options.skuld) for optional values and safe
+weak promotion together.
 
 ## Arrays — Implemented
 
@@ -537,7 +601,7 @@ fixed at construction. Assignment, arguments and returns share the array;
 `let` prevents rebinding but permits writing an element, like class fields.
 Reading a struct element copies its value; reading a class or array element
 shares that reference. Elements can have any implemented non-void value type,
-including structs, classes, arrays and weak references.
+including structs, classes, arrays, options and weak references.
 
 Nonempty literals infer an element type locally. Empty `[]` needs an expected
 array type from an annotation, assignment, field, parameter, enclosing array
@@ -584,8 +648,8 @@ and receiver syntax needs alignment with the class design before it is fixed;
 the earlier `func print(self)` sketch is superseded as a class-method model.
 Enums are sum types, e.g.
 `enum Status { Online Offline Away }`.
-`Option<T>` with `Some`/`None` replaces nullable values; `Result<T, E>` with
-`Ok`/`Err` and future `?` propagation represents errors.
+`Option<T>` with `Some`/`None` is implemented above. `Result<T, E>` with
+`Ok`/`Err` and future `?` propagation remains planned for errors.
 
 Future FFI: `extern "C" { func puts(text: *char) -> int }`.
 Future commands: `new`, `fmt`, `test`, `doc`. LLVM/Cranelift and eventual
@@ -598,9 +662,9 @@ no experimental compiler features are enabled. The full native pipeline, functio
 variables, conditional execution and classes with methods/interpolation
 (Demos 0–3) are **Implemented**.
 
-Loops, structs, classes, interpolation, weak class references, arrays and
-reference-counted runtime behavior are **Implemented**. Interfaces, enums,
-Option/Result, modules and the remaining capabilities above are **Planned**. No generics, macros, async/await, threads, channels,
+Loops, structs, classes, interpolation, weak class references, arrays, Option
+and reference-counted runtime behavior are **Implemented**. Interfaces, enums,
+Result, modules and the remaining capabilities above are **Planned**. No generics, macros, async/await, threads, channels,
 reflection, decorators, annotations, package registry, compiler plugins,
 compile-time execution, operator overloading or user-defined conversions will
 be implemented before Demo 3. Inheritance is excluded from the core design.

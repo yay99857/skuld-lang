@@ -13,6 +13,8 @@ pub struct ScopeId(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Builtin {
     Print,
+    Some,
+    None,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
@@ -69,6 +71,8 @@ pub fn resolve(program: &Program) -> ResolveOutput {
         symbols: BTreeMap::new(),
     });
     resolver.insert("print", SymbolKind::Builtin(Builtin::Print), None);
+    resolver.insert("Some", SymbolKind::Builtin(Builtin::Some), None);
+    resolver.insert("None", SymbolKind::Builtin(Builtin::None), None);
     resolver.enter(program.span);
     for function in &program.functions {
         resolver.declare(&function.name, SymbolKind::Function);
@@ -225,6 +229,21 @@ impl Resolver {
             } => {
                 self.expression(condition);
                 self.block(then_block);
+                if let Some(branch) = else_branch {
+                    self.statement(branch);
+                }
+            }
+            StatementKind::IfLet {
+                binding,
+                value,
+                then_block,
+                else_branch,
+            } => {
+                self.expression(value);
+                self.enter(then_block.span);
+                self.declare(binding, SymbolKind::Variable(Mutability::Immutable));
+                self.statements(then_block);
+                self.leave();
                 if let Some(branch) = else_branch {
                     self.statement(branch);
                 }

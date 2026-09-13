@@ -2,9 +2,9 @@
 use crate::{
     ast::*,
     diagnostic::{Diagnostic, DiagnosticCode},
-    resolver::{Resolution, SymbolId, SymbolKind},
+    resolver::{Builtin, Resolution, SymbolId, SymbolKind},
     span::Span,
-    types::{ArrayId, ArrayInfo, StructId, Type},
+    types::{ArrayId, ArrayInfo, OptionId, OptionInfo, StructId, Type},
 };
 use std::collections::BTreeMap;
 
@@ -26,8 +26,12 @@ pub struct TypedProgram {
     pub(crate) entry: SymbolId,
     pub(crate) structs: Vec<StructInfo>,
     pub(crate) arrays: Vec<ArrayInfo>,
+    pub(crate) options: Vec<OptionInfo>,
 }
 impl TypedProgram {
+    pub fn options(&self) -> &[OptionInfo] {
+        &self.options
+    }
     pub fn arrays(&self) -> &[ArrayInfo] {
         &self.arrays
     }
@@ -59,6 +63,8 @@ pub(crate) fn type_check(
         structs: Vec::new(),
         struct_names: BTreeMap::new(),
         arrays: Vec::new(),
+        options: Vec::new(),
+        option_types: BTreeMap::new(),
         array_types: BTreeMap::new(),
         expected_context: None,
     };
@@ -66,6 +72,13 @@ pub(crate) fn type_check(
     // before field types so a struct can refer to one declared later.
     for declaration in &syntax.structs {
         let id = StructId(checker.structs.len());
+        if declaration.name.text == "Option" {
+            checker.error(
+                DiagnosticCode::DuplicateDeclaration,
+                declaration.name.span,
+                "`Option` is a builtin type and cannot be redeclared",
+            );
+        }
         if checker
             .struct_names
             .insert(declaration.name.text.clone(), id)
@@ -285,6 +298,7 @@ pub(crate) fn type_check(
     let Checker {
         structs,
         arrays,
+        options,
         expressions,
         symbol_types,
         signatures,
@@ -297,6 +311,7 @@ pub(crate) fn type_check(
         resolution,
         structs,
         arrays,
+        options,
         expressions,
         symbol_types,
         signatures,
@@ -320,6 +335,8 @@ struct Checker<'a> {
     struct_names: BTreeMap<String, StructId>,
     /// Interned array types; `Type::Array` indexes this.
     arrays: Vec<ArrayInfo>,
+    options: Vec<OptionInfo>,
+    option_types: BTreeMap<Type, OptionId>,
     array_types: BTreeMap<Type, ArrayId>,
     expected_context: Option<Type>,
 }
@@ -378,9 +395,19 @@ impl Checker<'_> {
         match ty {
             Type::Struct(id) => self.structs[id.0].name.clone(),
             Type::Array(id) => format!("[]{}", self.type_name(self.arrays[id.0].element)),
+            Type::Option(id) => format!("Option<{}>", self.type_name(self.options[id.0].element)),
             Type::Weak(id) => format!("weak {}", self.structs[id.0].name),
             other => other.to_string(),
         }
+    }
+    fn option_type(&mut self, element: Type) -> Type {
+        if let Some(&id) = self.option_types.get(&element) {
+            return Type::Option(id);
+        }
+        let id = OptionId(self.options.len());
+        self.options.push(OptionInfo { element });
+        self.option_types.insert(element, id);
+        Type::Option(id)
     }
     fn array_type(&mut self, element: Type) -> Type {
         if let Some(&id) = self.array_types.get(&element) {
@@ -394,6 +421,14 @@ impl Checker<'_> {
     }
     fn type_ref(&mut self, reference: &TypeRef, allow_void: bool) -> Type {
         match reference {
+            TypeRef::Option { element, .. } => {
+                let element = self.type_ref(element, false);
+                if element == Type::Error {
+                    Type::Error
+                } else {
+                    self.option_type(element)
+                }
+            }
             TypeRef::Weak { class, span } => {
                 let ty = self.type_ref(&TypeRef::Named(class.clone()), false);
                 match ty {
@@ -531,6 +566,33 @@ impl Checker<'_> {
             } => {
                 let ty = self.expression(condition);
                 self.expect_type(Type::Bool, ty, condition.span);
+                let then_returns = self.block(then_block);
+                let else_returns = else_branch
+                    .as_ref()
+                    .is_some_and(|branch| self.statement(branch));
+                then_returns && else_returns
+            }
+            StatementKind::IfLet {
+                binding,
+                value,
+                then_block,
+                else_branch,
+            } => {
+                let ty = self.expression(value);
+                let payload = match ty {
+                    Type::Option(id) => self.options[id.0].element,
+                    Type::Error => Type::Error,
+                    _ => {
+                        self.error(
+                            DiagnosticCode::TypeMismatch,
+                            value.span,
+                            "if let Some(...) requires an Option value",
+                        );
+                        Type::Error
+                    }
+                };
+                let id = self.declaration(binding);
+                self.symbol_types[id.0] = payload;
                 let then_returns = self.block(then_block);
                 let else_returns = else_branch
                     .as_ref()
@@ -708,6 +770,17 @@ impl Checker<'_> {
                 let id = self.reference(name);
                 match self.resolution.symbols[id.0].kind {
                     SymbolKind::Variable(_) | SymbolKind::Parameter => self.symbol_types[id.0],
+                    SymbolKind::Builtin(Builtin::None) => match expected {
+                        Some(ty @ Type::Option(_)) => ty,
+                        _ => {
+                            self.error(
+                                DiagnosticCode::UnknownType,
+                                expr.span,
+                                "None requires an expected Option type; add a type annotation",
+                            );
+                            Type::Error
+                        }
+                    },
                     _ => {
                         self.error(DiagnosticCode::UnsupportedFeature, expr.span, "functions can only be used as direct call targets; function values are not supported");
                         Type::Error
@@ -820,7 +893,9 @@ impl Checker<'_> {
                 }
                 target_type
             }
-            ExprKind::Call { callee, arguments } => self.call(callee, arguments, expr.span),
+            ExprKind::Call { callee, arguments } => {
+                self.call(callee, arguments, expr.span, expected)
+            }
             ExprKind::Member { object, member } => {
                 let object_type = self.expression(object);
                 match object_type {
@@ -1056,6 +1131,8 @@ impl Checker<'_> {
             (Type::Array(_), "len") => Some(Type::Int),
             (Type::Weak(_), "alive") => Some(Type::Bool),
             (Type::Weak(id), "get") => Some(Type::Struct(id)),
+            (Type::Weak(id), "upgrade") => Some(self.option_type(Type::Struct(id))),
+            (Type::Option(_), "is_some" | "is_none") => Some(Type::Bool),
             _ => None,
         };
         if let Some(ty) = builtin {
@@ -1081,8 +1158,9 @@ impl Checker<'_> {
                     DiagnosticCode::UnsupportedFeature,
                     member.span,
                     format!(
-                        "`{}` has no methods; only structs support method calls",
-                        self.type_name(receiver)
+                        "`{}` has no method `{}`",
+                        self.type_name(receiver),
+                        member.text
                     ),
                 );
             }
@@ -1135,7 +1213,13 @@ impl Checker<'_> {
         self.expected_context = previous;
         signature.return_type
     }
-    fn call(&mut self, callee: &Expr, arguments: &[Expr], span: Span) -> Type {
+    fn call(
+        &mut self,
+        callee: &Expr,
+        arguments: &[Expr],
+        span: Span,
+        expected: Option<Type>,
+    ) -> Type {
         let mut direct = callee;
         while let ExprKind::Group(inner) = &direct.kind {
             direct = inner;
@@ -1149,7 +1233,49 @@ impl Checker<'_> {
             None
         };
         match id.map(|id| (id, self.resolution.symbols[id.0].kind)) {
-            Some((_, SymbolKind::Builtin(_))) => {
+            Some((_, SymbolKind::Builtin(Builtin::Some))) => {
+                if arguments.len() != 1 {
+                    for argument in arguments {
+                        self.expression(argument);
+                    }
+                    self.error(
+                        DiagnosticCode::ArgumentCount,
+                        span,
+                        "Some expects exactly one argument",
+                    );
+                    return Type::Error;
+                }
+                self.expected_context = match expected {
+                    Some(Type::Option(id)) => Some(self.options[id.0].element),
+                    _ => None,
+                };
+                let element = self.expression(&arguments[0]);
+                self.expected_context = None;
+                if element == Type::Void {
+                    self.error(
+                        DiagnosticCode::InvalidValueType,
+                        arguments[0].span,
+                        "Some cannot contain void",
+                    );
+                    Type::Error
+                } else if element == Type::Error {
+                    Type::Error
+                } else {
+                    self.option_type(element)
+                }
+            }
+            Some((_, SymbolKind::Builtin(Builtin::None))) => {
+                for argument in arguments {
+                    self.expression(argument);
+                }
+                self.error(
+                    DiagnosticCode::NotCallable,
+                    callee.span,
+                    "None is a value; use None without parentheses",
+                );
+                Type::Error
+            }
+            Some((_, SymbolKind::Builtin(Builtin::Print))) => {
                 let arg_types: Vec<_> = arguments.iter().map(|arg| self.expression(arg)).collect();
                 if arguments.len() > 1 {
                     self.error(
@@ -1235,7 +1361,11 @@ impl Checker<'_> {
         }
         seen[from.0] = true;
         self.structs[from.0].fields.iter().any(|field| {
-            let Type::Struct(id) = field.ty else {
+            let mut ty = field.ty;
+            while let Type::Option(id) = ty {
+                ty = self.options[id.0].element;
+            }
+            let Type::Struct(id) = ty else {
                 return false;
             };
             // A reference field stops the chain: it is a pointer.

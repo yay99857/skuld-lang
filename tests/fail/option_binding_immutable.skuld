@@ -1,0 +1,1 @@
+func main() { if let Some(x) = Some(1) { x = 2 } }

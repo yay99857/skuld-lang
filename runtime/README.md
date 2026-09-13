@@ -61,6 +61,20 @@ The selected object or array remains alive if the RHS replaces another reference
 Owning temporaries currently last until the containing lexical block exits,
 which can delay weak expiration beyond the last source-level use.
 
+## Optional values and promotion
+
+`Option<T>` is emitted as an inline tag and payload with no wrapper allocation.
+Generated helpers copy/retain and release the payload only when the tag denotes
+Some. None initializes the storage but never accesses the inactive payload.
+Structs and Options are ordered by value dependencies before their C definitions;
+recursive value layouts are rejected by the checker.
+
+`skuld_weak_upgrade` checks liveness and retains together, returning an internal
+null on failure. The backend immediately translates this into None or an owning
+Some; nullable class values never enter the language or HIR. `if let` evaluates
+once and retains the extracted payload for its successful branch. The existing
+lexical-block lifetime of owning temporaries also applies to Option values.
+
 ## Verification
 
 `cli/tests/native.rs` builds every `tests/pass` fixture with address, leak and

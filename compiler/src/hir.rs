@@ -12,6 +12,7 @@ pub struct Program {
     /// Declaration order, which is also the emitted field layout.
     pub(crate) structs: Vec<StructInfo>,
     pub(crate) arrays: Vec<crate::types::ArrayInfo>,
+    pub(crate) options: Vec<crate::types::OptionInfo>,
     pub(crate) functions: Vec<Function>,
     pub(crate) entry: SymbolId,
     pub(crate) span: Span,
@@ -58,6 +59,12 @@ pub(crate) enum StatementKind {
     Block(Block),
     If {
         condition: Expr,
+        then_block: Block,
+        else_branch: Option<Box<Statement>>,
+    },
+    IfLet {
+        binding: SymbolId,
+        value: Expr,
         then_block: Block,
         else_branch: Option<Box<Statement>>,
     },
@@ -124,6 +131,11 @@ pub(crate) enum ExprKind {
     ArrayLen(Box<Expr>),
     WeakAlive(Box<Expr>),
     WeakGet(Box<Expr>),
+    WeakUpgrade(Box<Expr>),
+    Some(Box<Expr>),
+    None,
+    IsSome(Box<Expr>),
+    IsNone(Box<Expr>),
 }
 
 #[derive(Debug)]

@@ -1,0 +1,25 @@
+func choose(flag: bool) -> Option<int> {
+    if flag { return Some(42) }
+    return None
+}
+func show(value: Option<int>) {
+    if let Some(number) = value { print(number) } else { print("none") }
+}
+func main() {
+    show(choose(true))
+    show(choose(false))
+    var value: Option<string> = None
+    print(value.is_none())
+    value = Some("hel" + "lo")
+    let copy = value
+    value = None
+    if let Some(text) = copy { print(text) }
+    print(copy.is_some())
+    let nested: Option<Option<int>> = Some(None)
+    if let Some(inner) = nested { print(inner.is_none()) }
+    let values: []Option<int> = [None, Some(7)]
+    values[0] = Some(3)
+    if let Some(n) = values[0] { print(n) }
+    let empty: Option<[]int> = Some([])
+    if let Some(array) = empty { print(array.len()) }
+}

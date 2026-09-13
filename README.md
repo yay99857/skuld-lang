@@ -11,7 +11,8 @@ func main() {
 Skuld now checks and runs small native programs through the complete pipeline:
 lexer → parser → AST → resolver → type checker → HIR → C → clang → executable.
 Demos 0–3 work: hello, typed functions/variables, conditional flow and classes
-with methods and interpolation. Loops, structs, weak references and arrays work too.
+with methods and interpolation. Loops, structs, weak references, arrays and
+Option values work too.
 
 Skuld is an independent language with its own syntax, semantics and identity.
 TypeScript is only one reference for readability, alongside Go, V and Rust;
@@ -161,7 +162,8 @@ and reference semantics: multiple bindings share mutable state. Allocation is
 heap-based and reference counted.
 
 `weak User` holds a non-owning class reference. `weak(user)` creates one,
-`alive()` checks it and `get()` promotes it, trapping if expired. Weak parent
+`upgrade()` returns `Some(user)` or `None` and safely retains a live target.
+`alive()` and trapping `get()` remain available. Weak parent
 links avoid ownership cycles without introducing null or a cycle collector.
 
 Arrays use `[]int` and `[1, 2, 3]`, with shared references, checked indexes and
@@ -171,10 +173,17 @@ Arrays use `[]int` and `[1, 2, 3]`, with shared references, checked indexes and
 cargo run -p skuld-cli -- run examples/classes.skuld
 cargo run -p skuld-cli -- run examples/weak.skuld
 cargo run -p skuld-cli -- run examples/arrays.skuld
+cargo run -p skuld-cli -- run examples/options.skuld
 ```
 
-This closes the classes, weak references and initial arrays milestones.
-Array growth and iteration, Option/Result, modules, a standard library, the official
+`Option<T>`, `Some(value)` and `None` represent optional values without null.
+Use `if let Some(value) = expression { ... } else { ... }` to access a payload;
+`is_some()` and `is_none()` query presence. Options have value semantics and
+an inline representation, with reference counting for managed payloads.
+
+This closes the Option and safe weak-promotion milestone as well as classes,
+weak references and initial arrays. Array growth and iteration, Result,
+modules, a standard library, the official
 formatter, broader tooling, portability and eventual self-hosting remain ahead;
 the next implementation milestone has not been selected.
 Status is reported as completed milestones, not as a completion percentage, and

@@ -1,0 +1,2 @@
+func main() { if let Some(x) = Some(1) {} else { print(x) }
+print(x) }

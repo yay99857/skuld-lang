@@ -1,0 +1,15 @@
+class Node {
+    next: Option<Node>
+    parent: weak Node
+    name: string
+}
+func main() {
+    let parent = new Node(next: None, parent: weak(), name: "parent")
+    let child = new Node(next: None, parent: weak(parent), name: "child")
+    parent.next = Some(child)
+    if let Some(node) = parent.next {
+        if let Some(owner) = node.parent.upgrade() { print(owner.name) }
+    }
+    parent.next = None
+    print(parent.next.is_none())
+}

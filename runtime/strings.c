@@ -151,6 +151,11 @@ static inline void skuld_object_release(skuld_object *object) {
 static inline bool skuld_weak_alive(skuld_weak value) {
     return value != NULL && value->strong != 0;
 }
+/* Check and retain together. Null stays internal and lowers to Option::None. */
+static inline void *skuld_weak_upgrade(skuld_weak value) {
+    if (!skuld_weak_alive(value)) return NULL;
+    return skuld_object_retain(value);
+}
 static inline void *skuld_weak_get(skuld_weak value, size_t byte) {
     if (!skuld_weak_alive(value)) skuld_fail("expired weak reference", byte);
     return skuld_object_retain(value);

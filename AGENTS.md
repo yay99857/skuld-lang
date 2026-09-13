@@ -51,8 +51,8 @@ accurate; documenting a future feature is not a request to implement it.
 - Prefer composition over inheritance. Structs have value/copy semantics;
   classes have reference semantics with reference counting. Do not introduce
   inheritance, GC, a borrow checker or Rust's ownership system.
-- No normal `null` value. Future optional values and errors use `Option` and
-  `Result`; exceptions are not the primary error mechanism.
+- No normal `null` value. Optional values use builtin `Option<T>`; future errors
+  use `Result`. Exceptions are not the primary error mechanism.
 
 ## Repository and current milestone
 
@@ -65,7 +65,7 @@ accurate; documenting a future feature is not a request to implement it.
   are int, float, bool, string and void; functions, locals, calls, returns,
   conditionals, `while`, `loop`, `break`, `continue`, structs, classes and
   reference-counted string concatenation and interpolation execute. Weak class
-  references and homogeneous arrays execute too. Parameters and `let` bindings are immutable.
+  references, homogeneous arrays and builtin Option values execute too. Parameters and `let` bindings are immutable.
 - `lex`, `parse`, `resolve` inspect individual stages. `check` performs full
   static checking without clang; `emit-c` emits checked C; `run` builds and
   executes in a private temporary directory, keeping nothing; `build` keeps the
@@ -73,7 +73,7 @@ accurate; documenting a future feature is not a request to implement it.
 - The resolver uses single-source declaration/use tables; keep them with their
   exact AST revision. Functions are predeclared; parameters share the function
   body scope; locals become visible after initializers; child scopes shadow.
-  The `print` prelude binding may be shadowed. Use resolved symbols, not
+  The `print`, `Some` and `None` prelude bindings may be shadowed. Use resolved symbols, not
   spelling, to identify builtins. Only direct calls are supported currently.
 - HIR lowering is separate from checking. Only successful checking constructs
   a TypedProgram, and only lowering constructs backend HIR. Do not expose
@@ -98,13 +98,19 @@ accurate; documenting a future feature is not a request to implement it.
   is emitted with cleanup attributes: fresh values are adopted, borrowed values
   retained on entry, arguments borrowed, returns retained.
 - Weak class references use `weak Class`, `weak(value)` and contextually typed
-  empty `weak()`. `alive()` checks liveness; `get()` retains the target or traps
-  if empty/expired. Weak references do not keep managed fields alive. No Option
-  type or normal null value was introduced.
+  empty `weak()`. `upgrade()` returns an owning `Option<Class>` without trapping
+  on expiration; `alive()` checks liveness and `get()` retains or traps.
+  Weak references do not keep managed fields alive. No normal null value exists.
+- Builtin `Option<T>` uses inline tag/payload value semantics. `Some(value)` and
+  contextually typed `None` construct values; `is_some()`/`is_none()` query them.
+  `if let Some(name) = value` binds an immutable payload only in its then scope.
+  Managed payloads retain/release only when present. General generics, patterns,
+  enums and Result remain future work.
 - Arrays use `[]T`, literals, checked int indexes and `len()`. Length is fixed;
   references share element mutations even through `let`. Managed elements are
   retained and released. Growth, sorting, callbacks and `for` remain future work.
-- Completed: classes, weak references and initial arrays. The next milestone
+- Completed: classes, weak references, initial arrays, Option and safe weak
+  promotion. The next milestone
   has not been selected; do not infer authorization for further features.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
@@ -154,7 +160,7 @@ checking are stable.
 Do not implement generics, macros, async/await, threads, channels, reflection,
 decorators, annotations, a package registry, compiler plugins, compile-time
 execution, operator overloading, user-defined conversions, LLVM or Cranelift
-before Demo 3. Interfaces, enums, Option/Result, FFI and the official
+before Demo 3. Interfaces, enums, Result, FFI and the official
 formatter remain future work unless explicitly included in the active task.
 Do not build a standard library or memory-management runtime ahead of need.
 

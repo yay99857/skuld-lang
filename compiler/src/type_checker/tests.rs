@@ -457,3 +457,63 @@ fn weak_types_do_not_resolve_as_value_names() {
         DiagnosticCode::TypeMismatch,
     );
 }
+
+#[test]
+fn options_infer_only_from_local_expected_types() {
+    valid(
+        "func f(x: Option<[]int>) -> Option<Option<int>> { return Some(None) }\nfunc main() { let x: Option<[]int> = Some([])\nf(Some([])) }",
+    );
+    fails(
+        "func main() { let x = Some(None) }",
+        DiagnosticCode::UnknownType,
+    );
+    fails(
+        "func main() { let x: Option<int> = None.is_some() }",
+        DiagnosticCode::UnknownType,
+    );
+    fails(
+        "func main() { let x: Option<int> = Some(true) }",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "struct A { next: Option<B> }\nstruct B { next: Option<A> }\nfunc main() {}",
+        DiagnosticCode::InvalidValueType,
+    );
+    valid("class A { next: Option<A> }\nfunc main() { let a = new A(next: None) }");
+}
+
+#[test]
+fn if_let_bindings_obey_scope_and_mutability_rules() {
+    valid(
+        "func main() { let x = Some(1)\nif let Some(x) = x { print(x) } else { print(x.is_some()) } }",
+    );
+    fails(
+        "func main() { if let Some(x) = Some(1) { let x = 2 } }",
+        DiagnosticCode::DuplicateDeclaration,
+    );
+    fails(
+        "func main() { if let Some(x) = Some(1) { x = 2 } }",
+        DiagnosticCode::ImmutableAssignment,
+    );
+    fails(
+        "func main() { if let Some(x) = Some(1) {}\nprint(x) }",
+        DiagnosticCode::UnknownName,
+    );
+    valid(
+        "func f(x: Option<int>) -> int { if let Some(n) = x { return n } else { return 0 } }\nfunc main() {}",
+    );
+}
+
+#[test]
+fn option_constructor_identity_comes_from_resolution() {
+    valid("func Some(x: int) -> int { return x }\nfunc main() { print(Some(1)) }");
+    valid("func None() -> int { return 2 }\nfunc main() { print(None()) }");
+    fails(
+        "func main() { let Some = 1\nSome(2) }",
+        DiagnosticCode::NotCallable,
+    );
+    fails(
+        "func main() { let None = 1\nlet x: Option<int> = None }",
+        DiagnosticCode::TypeMismatch,
+    );
+}

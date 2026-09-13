@@ -9,6 +9,14 @@ pub struct StructId(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ArrayId(pub usize);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct OptionId(pub usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OptionInfo {
+    pub element: Type,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArrayInfo {
     pub element: Type,
@@ -25,6 +33,8 @@ pub enum Type {
     Struct(StructId),
     /// A reference-counted heap array.
     Array(ArrayId),
+    /// An inline discriminated optional value.
+    Option(OptionId),
     /// A non-owning class reference, which may be empty or expired.
     Weak(StructId),
     /// Recovery only; never present in a successfully checked program.
@@ -46,6 +56,7 @@ impl fmt::Display for Type {
             // Only the checker knows struct names; it renders them itself.
             Self::Struct(_) => "<struct>",
             Self::Array(_) => "<array>",
+            Self::Option(_) => "<option>",
             Self::Weak(_) => "<weak>",
             Self::Error => "<error>",
         })

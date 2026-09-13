@@ -1,6 +1,10 @@
 //! AST-to-HIR lowering after resolution and checking, with no code generation.
 use crate::{
-    ast, hir as h, resolver::SymbolKind, span::Span, type_checker::TypedProgram, types::Type,
+    ast, hir as h,
+    resolver::{Builtin, SymbolKind},
+    span::Span,
+    type_checker::TypedProgram,
+    types::Type,
 };
 
 pub fn lower(typed: TypedProgram) -> h::Program {
@@ -59,6 +63,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
     h::Program {
         structs: typed.structs.clone(),
         arrays: typed.arrays.clone(),
+        options: typed.options.clone(),
         functions,
         entry: typed.entry,
         span: typed.syntax.span,
@@ -132,6 +137,17 @@ fn statement(source: &ast::Statement, typed: &TypedProgram) -> h::Statement {
             else_branch,
         } => h::StatementKind::If {
             condition: expression(condition, typed),
+            then_block: block(then_block, typed),
+            else_branch: else_branch.as_ref().map(|s| Box::new(statement(s, typed))),
+        },
+        ast::StatementKind::IfLet {
+            binding,
+            value,
+            then_block,
+            else_branch,
+        } => h::StatementKind::IfLet {
+            binding: typed.resolution.declarations[&binding.span.start],
+            value: expression(value, typed),
             then_block: block(then_block, typed),
             else_branch: else_branch.as_ref().map(|s| Box::new(statement(s, typed))),
         },
@@ -218,7 +234,12 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
             ast::Literal::Char(_) => unreachable!("internal compiler bug: checked char literal"),
         },
         ast::ExprKind::Identifier(name) => {
-            h::ExprKind::Local(typed.resolution.references[&name.span.start])
+            let id = typed.resolution.references[&name.span.start];
+            if typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::None) {
+                h::ExprKind::None
+            } else {
+                h::ExprKind::Local(id)
+            }
         }
         ast::ExprKind::Group(inner) => expression(inner, typed).kind,
         ast::ExprKind::Unary {
@@ -274,6 +295,15 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
             if let ast::ExprKind::Member { object, member } = &strip_groups(callee).kind {
                 let object_type = typed.expression_type(object.span);
                 let special = match (object_type, member.text.as_str()) {
+                    (Some(Type::Weak(_)), "upgrade") => Some(h::ExprKind::WeakUpgrade(Box::new(
+                        expression(object, typed),
+                    ))),
+                    (Some(Type::Option(_)), "is_some") => {
+                        Some(h::ExprKind::IsSome(Box::new(expression(object, typed))))
+                    }
+                    (Some(Type::Option(_)), "is_none") => {
+                        Some(h::ExprKind::IsNone(Box::new(expression(object, typed))))
+                    }
                     (Some(Type::Array(_)), "len") => {
                         Some(h::ExprKind::ArrayLen(Box::new(expression(object, typed))))
                     }
@@ -317,8 +347,15 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
                 unreachable!("internal compiler bug: indirect checked call")
             };
             let id = typed.resolution.references[&name.span.start];
+            if typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::Some) {
+                return h::Expr {
+                    kind: h::ExprKind::Some(Box::new(expression(&arguments[0], typed))),
+                    ty: typed.expressions[&(source.span.start, source.span.end)],
+                    span: source.span,
+                };
+            }
             let target = match typed.resolution.symbols[id.0].kind {
-                SymbolKind::Builtin(_) => h::CallTarget::Print,
+                SymbolKind::Builtin(Builtin::Print) => h::CallTarget::Print,
                 SymbolKind::Function => h::CallTarget::Function(id),
                 _ => unreachable!("internal compiler bug: non-callable checked symbol"),
             };

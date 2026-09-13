@@ -1,0 +1,30 @@
+struct Record { value: Option<string> }
+class Box { value: Option<Record> }
+class User { name: string }
+func wrap() -> Option<Record> { return Some(Record { value: Some("a" + "b") }) }
+func main() {
+    var value = wrap()
+    value = value
+    let box = new Box(value: value)
+    value = None
+    if let Some(record) = box.value {
+        box.value = None
+        if let Some(text) = record.value { print(text) }
+    }
+    let user = new User(name: "Ada")
+    let optional = Some(user)
+    if let Some(alias) = optional { alias.name = "Grace" }
+    print(user.name)
+    var numbers = Some([1, 2])
+    if let Some(array) = numbers { numbers = None
+        array[0] = 10
+        print(array[0]) }
+    let refs: Option<weak User> = Some(weak(user))
+    if let Some(ref) = refs { print(ref.alive()) }
+    let records: []Option<Record> = [wrap(), None]
+    records[1] = records[0]
+    records[0] = None
+    if let Some(record) = records[1] {
+        if let Some(text) = record.value { print(text) }
+    }
+}

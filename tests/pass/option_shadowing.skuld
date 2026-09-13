@@ -1,0 +1,11 @@
+func ordinary() -> int { let None = 5
+    return None }
+func main() {
+    print(ordinary())
+    let Some = 4
+    print(Some)
+    let Option = 7
+    print(Option)
+    let empty: Option<int> = None
+    print(empty.is_none())
+}

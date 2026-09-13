@@ -156,6 +156,29 @@ impl Parser<'_> {
         self.nested(|p| p.type_ref_inner())
     }
     fn type_ref_inner(&mut self) -> Parsed<TypeRef> {
+        if matches!(&self.current().kind, TokenKind::Identifier(name) if name == "Option") {
+            let start = self.bump().span.start;
+            self.expect(&TokenKind::Less, "`<` and the Option payload type")?;
+            let element = Box::new(self.type_ref()?);
+            let end = if self.at(&TokenKind::GreaterEqual) {
+                // In a type annotation `Option<T>=value`, the first byte closes
+                // the type; leave the assignment token for its normal parser.
+                let span = self.current().span;
+                self.tokens[self.position] = Token {
+                    kind: TokenKind::Equal,
+                    span: Span::new(span.start + 1, span.end),
+                };
+                span.start + 1
+            } else {
+                self.expect(&TokenKind::Greater, "`>` after the Option payload type")?
+                    .span
+                    .end
+            };
+            return Ok(TypeRef::Option {
+                element,
+                span: Span::new(start, end),
+            });
+        }
         if self.at(&TokenKind::Weak) {
             let start = self.bump().span.start;
             let class = self.name("a class name after `weak`")?;
@@ -541,6 +564,24 @@ impl Parser<'_> {
     }
     fn if_statement(&mut self) -> Parsed<Statement> {
         let start = self.expect(&TokenKind::If, "`if`")?.span.start;
+        let binding = if self.take(&TokenKind::Let).is_some() {
+            let constructor = self.name("`Some` in an if-let pattern")?;
+            if constructor.text != "Some" {
+                return Err(Diagnostic {
+                    code: DiagnosticCode::ExpectedSyntax,
+                    span: constructor.span,
+                    message: "if let requires a `Some(name)` pattern".into(),
+                    help: None,
+                });
+            }
+            self.expect(&TokenKind::LeftParen, "`(` after `Some`")?;
+            let name = self.name("a binding name")?;
+            self.expect(&TokenKind::RightParen, "`)` after the binding")?;
+            self.expect(&TokenKind::Equal, "`=` after the pattern")?;
+            Some(name)
+        } else {
+            None
+        };
         let condition = self.with_struct_literals(false, |parser| parser.expression())?;
         let then_block = self.block()?;
         let else_branch = if self.take(&TokenKind::Else).is_some() {
@@ -557,10 +598,19 @@ impl Parser<'_> {
             None
         };
         Ok(Statement {
-            kind: StatementKind::If {
-                condition,
-                then_block,
-                else_branch,
+            kind: if let Some(binding) = binding {
+                StatementKind::IfLet {
+                    binding,
+                    value: condition,
+                    then_block,
+                    else_branch,
+                }
+            } else {
+                StatementKind::If {
+                    condition,
+                    then_block,
+                    else_branch,
+                }
             },
             span: Span::new(start, self.previous_end()),
         })

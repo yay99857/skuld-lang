@@ -1,0 +1,2 @@
+func f(x: Option<int>) -> int { if let Some(n) = x { return n } }
+func main() {}

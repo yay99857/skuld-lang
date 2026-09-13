@@ -50,6 +50,7 @@ pub struct Name {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeRef {
     Named(Name),
+    Option { element: Box<TypeRef>, span: Span },
     Weak { class: Name, span: Span },
     Array { element: Box<TypeRef>, span: Span },
 }
@@ -58,7 +59,7 @@ impl TypeRef {
     pub fn span(&self) -> Span {
         match self {
             Self::Named(name) => name.span,
-            Self::Array { span, .. } | Self::Weak { span, .. } => *span,
+            Self::Array { span, .. } | Self::Weak { span, .. } | Self::Option { span, .. } => *span,
         }
     }
 }
@@ -102,6 +103,12 @@ pub enum StatementKind {
         condition: Expr,
         then_block: Block,
         /// Either a block or another if statement.
+        else_branch: Option<Box<Statement>>,
+    },
+    IfLet {
+        binding: Name,
+        value: Expr,
+        then_block: Block,
         else_branch: Option<Box<Statement>>,
     },
     While {

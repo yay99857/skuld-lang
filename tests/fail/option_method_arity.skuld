@@ -1,0 +1,1 @@
+func main() { Some(1).is_some(2) }

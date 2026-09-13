@@ -40,3 +40,7 @@ managed fields/elements, weak expiration and cycle breaking. Bounds and expired
 promotion failures live in `trap/`; type errors live in `fail/`. Every `pass/`
 fixture also runs with address, leak and undefined-behavior sanitizers through
 `cli/tests/native.rs`, where clang is required.
+
+Option fixtures cover expected-type inference, managed and nested payloads,
+constructor shadowing, if-let scope/flow and safe weak promotion on live, empty
+and expired targets. Invalid Option recursion through value fields is rejected.
