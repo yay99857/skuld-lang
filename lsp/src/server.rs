@@ -29,6 +29,10 @@ const INVALID_REQUEST: i64 = -32600;
 /// warning level of its own.
 const SEVERITY_ERROR: f64 = 1.0;
 
+/// The document a request names is always the entry file of the program it
+/// was checked as, which is that program's first file.
+const ENTRY: FileId = FileId(0);
+
 /// Full document sync. The incremental form would mean applying ranges to a
 /// buffer, which is a source of drift bugs for no gain at this size: a Skuld
 /// file is small and the compiler re-reads it in microseconds.
@@ -127,6 +131,12 @@ impl Server {
                     Ok(edit) => respond(output, id.clone(), edit),
                     Err(reason) => respond_error(output, id.clone(), INVALID_REQUEST, &reason),
                 }
+                None
+            }
+
+            (Some("textDocument/documentHighlight"), Some(id)) => {
+                let highlights = self.document_highlights(message);
+                respond(output, id.clone(), highlights);
                 None
             }
 
@@ -622,6 +632,40 @@ impl Server {
             .map_err(|errors| first_message(&errors))
     }
 
+    /// Answer `textDocument/documentHighlight` with every place this file
+    /// writes the name under the cursor.
+    ///
+    /// It is `references` narrowed to one file and widened in what it accepts:
+    /// a prelude binding and an import qualifier are highlighted even though
+    /// neither can be renamed, because showing where `print` is used costs
+    /// nothing and refusing it would be a surprise.
+    ///
+    /// No `kind` is sent. The tables record where a name is written, not
+    /// whether that writing reads or assigns, and marking every use `Read`
+    /// would colour `count = count + 1` wrongly on both sides.
+    fn document_highlights(&self, message: &Json) -> Json {
+        let empty = Json::Array(Vec::new());
+        let Some((source, offset, typed)) = self.position_context(message) else {
+            return empty;
+        };
+        let Some(query::Target::Symbol(symbol, _)) = query::target_at(source, offset, typed) else {
+            return empty;
+        };
+        let positions = Positions::new(source.clone());
+        Json::Array(
+            rename::occurrences(typed, symbol)
+                .into_iter()
+                // The document asked about is the entry file of its own
+                // program; an occurrence in an imported module belongs to
+                // another document's highlights, not to this one's.
+                .filter(|occurrence| occurrence.file == ENTRY)
+                .map(|occurrence| {
+                    Json::object([("range", range_json(&positions, occurrence.span))])
+                })
+                .collect(),
+        )
+    }
+
     /// Answer `textDocument/documentSymbol` with the outline of the file.
     ///
     /// The outline comes from the syntax, so it is the one answer that needs
@@ -959,6 +1003,7 @@ fn initialize_result() -> Json {
             // if a client would have preferred something else.
             ("positionEncoding", Json::string("utf-16")),
             ("hoverProvider", Json::Bool(true)),
+            ("documentHighlightProvider", Json::Bool(true)),
             ("documentSymbolProvider", Json::Bool(true)),
             // Whole-document only: the formatter reads a program, not a
             // fragment, so there is no honest answer for a range.

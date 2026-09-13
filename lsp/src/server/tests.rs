@@ -1073,3 +1073,66 @@ fn formatting_a_document_that_does_not_parse_edits_nothing() {
     ]);
     assert_eq!(result_of(&out, 2), &Json::Array(Vec::new()));
 }
+
+/// The `(line, character)` each range in a response starts at.
+fn starts_of(result: &Json) -> Vec<(i64, i64)> {
+    result
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|entry| {
+            (
+                entry
+                    .path(&["range", "start", "line"])
+                    .and_then(Json::as_i64)
+                    .expect("a line"),
+                entry
+                    .path(&["range", "start", "character"])
+                    .and_then(Json::as_i64)
+                    .expect("a character"),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_server_advertises_and_answers_document_highlights() {
+    let path = "/tmp/skuld-lsp-test/highlight.skuld";
+    let source = "func main() {\n    var total = 1\n    total = total + 2\n    print(total)\n}\n";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        // The cursor rests on `total` in the declaration.
+        position_request(2, "textDocument/documentHighlight", path, 1, 9),
+    ]);
+    assert_eq!(
+        out[0].path(&["result", "capabilities", "documentHighlightProvider"]),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(
+        starts_of(result_of(&out, 2)),
+        [(1, 8), (2, 4), (2, 12), (3, 10)],
+        "the declaration and every use, in source order"
+    );
+}
+
+#[test]
+fn a_prelude_binding_is_highlighted_even_though_it_cannot_be_renamed() {
+    let path = "/tmp/skuld-lsp-test/prelude-highlight.skuld";
+    let source = "func main() {\n    print(1)\n    print(2)\n}\n";
+    let (out, _) = converse(&[
+        did_open(path, source),
+        position_request(2, "textDocument/documentHighlight", path, 1, 5),
+    ]);
+    assert_eq!(starts_of(result_of(&out, 2)), [(1, 4), (2, 4)]);
+}
+
+#[test]
+fn highlighting_nothing_answers_an_empty_list() {
+    let path = "/tmp/skuld-lsp-test/blank-highlight.skuld";
+    let (out, _) = converse(&[
+        did_open(path, "func main() {\n}\n"),
+        position_request(2, "textDocument/documentHighlight", path, 1, 0),
+    ]);
+    assert_eq!(result_of(&out, 2), &Json::Array(Vec::new()));
+}
