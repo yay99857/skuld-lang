@@ -3,12 +3,57 @@ use crate::span::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Program {
+    /// `import "net/socket"`, in source order, always before any declaration.
+    pub imports: Vec<ImportDecl>,
     pub structs: Vec<StructDecl>,
     pub enums: Vec<EnumDecl>,
     pub functions: Vec<FunctionDecl>,
     /// Foreign declarations, which have signatures but no bodies.
     pub externs: Vec<ExternBlock>,
     pub span: Span,
+}
+
+/// `import "net/socket"`. The path names a directory of `.skuld` files
+/// relative to the program root; its last segment is the qualifier the
+/// importing file uses, so `net/socket` is spelled `socket.connect(...)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportDecl {
+    pub path: String,
+    /// The string literal, for diagnostics about the path itself.
+    pub path_span: Span,
+    /// The last path segment, which is the name bound in this file.
+    pub qualifier: Name,
+    pub span: Span,
+}
+
+/// Whether a declaration leaves its module. Visibility is written, never
+/// inferred from spelling, and it applies to the whole declaration: a public
+/// type carries its fields and methods with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Visibility {
+    Private,
+    Public,
+}
+
+/// A name that may be qualified by an imported module: `parse` or
+/// `json.parse`. An unqualified path names something in the current module or
+/// the prelude; there is no unqualified access to another module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Path {
+    pub module: Option<Name>,
+    pub name: Name,
+    pub span: Span,
+}
+
+impl Path {
+    pub fn bare(name: Name) -> Self {
+        let span = name.span;
+        Self {
+            module: None,
+            name,
+            span,
+        }
+    }
 }
 
 /// `unsafe extern "C" { ... }`. The `unsafe` marker is the source-level record
@@ -33,6 +78,7 @@ pub struct ExternFunctionDecl {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumDecl {
+    pub visibility: Visibility,
     pub name: Name,
     pub variants: Vec<VariantDecl>,
     pub span: Span,
@@ -55,6 +101,7 @@ pub enum TypeDeclKind {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructDecl {
+    pub visibility: Visibility,
     pub kind: TypeDeclKind,
     pub name: Name,
     pub fields: Vec<FieldDecl>,
@@ -86,7 +133,7 @@ pub struct Name {
 /// A source type name, to be resolved to a semantic type in a later phase.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeRef {
-    Named(Name),
+    Named(Path),
     Option {
         element: Box<TypeRef>,
         span: Span,
@@ -97,7 +144,7 @@ pub enum TypeRef {
         span: Span,
     },
     Weak {
-        class: Name,
+        class: Path,
         span: Span,
     },
     Array {
@@ -114,7 +161,7 @@ pub enum TypeRef {
 impl TypeRef {
     pub fn span(&self) -> Span {
         match self {
-            Self::Named(name) => name.span,
+            Self::Named(path) => path.span,
             Self::Array { span, .. }
             | Self::Pointer { span, .. }
             | Self::Weak { span, .. }
@@ -126,6 +173,7 @@ impl TypeRef {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FunctionDecl {
+    pub visibility: Visibility,
     pub name: Name,
     pub parameters: Vec<Parameter>,
     /// None means an implicit void return type.
@@ -217,7 +265,7 @@ pub struct MatchArm {
 #[derive(Debug, Clone, PartialEq)]
 pub enum MatchPattern {
     Variant {
-        enum_name: Option<Name>,
+        enum_name: Option<Path>,
         variant_name: Name,
         binding: Option<Name>,
         span: Span,
@@ -279,14 +327,14 @@ pub enum ExprKind {
     /// Record construction, e.g. `Vec2 { x: 1.0, y: 2.0 }`. The name is a type,
     /// not a value, so it is never resolved as one.
     StructLiteral {
-        name: Name,
+        name: Path,
         fields: Vec<FieldInit>,
     },
     /// `"text ${value} more"`. Always yields a string.
     Interpolation(Vec<InterpolationPart>),
     /// `new User(name: "Ada")`. Allocates a reference-counted object.
     New {
-        name: Name,
+        name: Path,
         fields: Vec<FieldInit>,
     },
     /// `[1, 2, 3]`. Allocates a reference-counted array.

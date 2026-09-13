@@ -654,7 +654,8 @@ impl Checker<'_> {
                     }
                 }
             }
-            TypeRef::Named(name) => {
+            TypeRef::Named(path) => {
+                let name = self.unqualified(path).clone();
                 let ty = match name.text.as_str() {
                     // `int` and `i64` are two spellings of one type, not two
                     // types with a conversion between them.
@@ -956,7 +957,20 @@ impl Checker<'_> {
                             binding,
                             span: _,
                         } => {
-                            if let Some(enum_name) = enum_name
+                            let enum_name = enum_name.as_ref().map(|path| {
+                                if let Some(module) = &path.module {
+                                    self.error(
+                                        DiagnosticCode::UnsupportedFeature,
+                                        path.span,
+                                        format!(
+                                            "module-qualified names like `{}.{}` are not resolved yet",
+                                            module.text, path.name.text
+                                        ),
+                                    );
+                                }
+                                path.name.clone()
+                            });
+                            if let Some(enum_name) = &enum_name
                                 && enum_name.text != enum_info.name
                             {
                                 self.error(
@@ -1075,6 +1089,22 @@ impl Checker<'_> {
                 false
             }
         }
+    }
+    /// The name inside a path, once it is known to be unqualified. Module
+    /// qualifiers are parsed but not yet resolved; until they are, a qualified
+    /// name is reported rather than silently read as a local one.
+    fn unqualified<'b>(&mut self, path: &'b Path) -> &'b Name {
+        if let Some(module) = &path.module {
+            self.error(
+                DiagnosticCode::UnsupportedFeature,
+                path.span,
+                format!(
+                    "module-qualified names like `{}.{}` are not resolved yet",
+                    module.text, path.name.text
+                ),
+            );
+        }
+        &path.name
     }
     fn construction(&mut self, name: &Name, fields: &[FieldInit], new: bool) -> Type {
         let Some(id) = self.struct_names.get(&name.text).copied() else {
@@ -1683,8 +1713,14 @@ impl Checker<'_> {
                     }
                 }
             }
-            ExprKind::StructLiteral { name, fields } => self.construction(name, fields, false),
-            ExprKind::New { name, fields } => self.construction(name, fields, true),
+            ExprKind::StructLiteral { name, fields } => {
+                let name = self.unqualified(name).clone();
+                self.construction(&name, fields, false)
+            }
+            ExprKind::New { name, fields } => {
+                let name = self.unqualified(name).clone();
+                self.construction(&name, fields, true)
+            }
             ExprKind::Interpolation(parts) => {
                 for part in parts {
                     let InterpolationPart::Value(value) = part else {

@@ -11,7 +11,7 @@ fn kinds(source: &str) -> Vec<TokenKind> {
 fn keywords_and_identifiers() {
     assert_eq!(
         kinds(
-            "func let var return if else while loop new class struct impl interface enum match import for in static extern unsafe true false main _x x2 fnx"
+            "func let var return if else while loop new class struct impl interface enum match import pub for in static extern unsafe true false main _x x2 fnx"
         ),
         vec![
             Function,
@@ -30,6 +30,7 @@ fn keywords_and_identifiers() {
             Enum,
             Match,
             Import,
+            Pub,
             For,
             In,
             Static,

@@ -66,6 +66,13 @@ impl Parser<'_> {
     fn at(&self, kind: &TokenKind) -> bool {
         std::mem::discriminant(&self.current().kind) == std::mem::discriminant(kind)
     }
+    /// The kind `offset` tokens ahead, clamped to the final `Eof`. Qualified
+    /// names need two tokens of lookahead to tell `json.Config { ... }` from a
+    /// member access on a value.
+    fn peek_kind(&self, offset: usize) -> &TokenKind {
+        let index = (self.position + offset).min(self.tokens.len() - 1);
+        &self.tokens[index].kind
+    }
     fn bump(&mut self) -> Token {
         let token = self.current().clone();
         if token.kind != TokenKind::Eof {
@@ -139,6 +146,23 @@ impl Parser<'_> {
             Err(self.expected(description))
         }
     }
+    /// A name that an imported module may qualify: `Config` or
+    /// `json.Config`. Only one qualifier is accepted, because a module's name
+    /// is the last segment of its path and never itself a path.
+    fn path(&mut self, description: &str) -> Parsed<Path> {
+        let first = self.name(description)?;
+        if self.at(&TokenKind::Dot) && matches!(self.peek_kind(1), TokenKind::Identifier(_)) {
+            self.bump();
+            let name = self.name(description)?;
+            let span = Span::new(first.span.start, name.span.end);
+            return Ok(Path {
+                module: Some(first),
+                name,
+                span,
+            });
+        }
+        Ok(Path::bare(first))
+    }
     /// `if p { }` and `while p { }` would otherwise read `p { ... }` as record
     /// construction. Conditions forbid a bare struct literal; parentheses make
     /// one available again, as does any nested expression context.
@@ -196,7 +220,7 @@ impl Parser<'_> {
         }
         if self.at(&TokenKind::Weak) {
             let start = self.bump().span.start;
-            let class = self.name("a class name after `weak`")?;
+            let class = self.path("a class name after `weak`")?;
             let span = Span::new(start, class.span.end);
             return Ok(TypeRef::Weak { class, span });
         }
@@ -228,18 +252,52 @@ impl Parser<'_> {
                 span: Span::new(start, end),
             })
         } else {
-            Ok(TypeRef::Named(self.name("a type name")?))
+            Ok(TypeRef::Named(self.path("a type name")?))
         }
     }
 
     fn program(mut self) -> ParseOutput {
+        let mut imports = Vec::new();
         let mut functions = Vec::new();
         let mut structs = Vec::new();
         let mut enums = Vec::new();
         let mut externs = Vec::new();
+        // Imports come first, so that reading the top of a file is enough to
+        // know every module it depends on.
+        while self.at(&TokenKind::Import) {
+            let start = self.position;
+            match self.import_declaration() {
+                Ok(declaration) => imports.push(declaration),
+                Err(diagnostic) => {
+                    self.diagnostics.push(diagnostic);
+                    self.recover_declaration(start);
+                }
+            }
+        }
         while !self.at(&TokenKind::Eof) {
             let start = self.position;
+            if self.at(&TokenKind::Import) {
+                let span = self.current().span;
+                self.diagnostics.push(Diagnostic {
+                    code: DiagnosticCode::MisplacedImport,
+                    message: "`import` must appear before any declaration".into(),
+                    span,
+                    help: Some("move every `import` to the top of the file".into()),
+                });
+                self.recover_declaration(start);
+                continue;
+            }
+            let visibility = match self.take(&TokenKind::Pub) {
+                Some(_) => Visibility::Public,
+                None => Visibility::Private,
+            };
             if self.at(&TokenKind::Unsafe) || self.at(&TokenKind::Extern) {
+                if visibility == Visibility::Public {
+                    self.diagnostics.push(self.error(
+                        DiagnosticCode::ExpectedDeclaration,
+                        "`pub` cannot mark an `extern` block; mark the declarations a module exports",
+                    ));
+                }
                 match self.extern_block() {
                     Ok(declaration) => externs.push(declaration),
                     Err(diagnostic) => {
@@ -250,7 +308,7 @@ impl Parser<'_> {
                 continue;
             }
             if self.at(&TokenKind::Struct) || self.at(&TokenKind::Class) {
-                match self.struct_declaration() {
+                match self.struct_declaration(visibility) {
                     Ok(declaration) => structs.push(declaration),
                     Err(diagnostic) => {
                         self.diagnostics.push(diagnostic);
@@ -260,7 +318,7 @@ impl Parser<'_> {
                 continue;
             }
             if self.at(&TokenKind::Enum) {
-                match self.enum_declaration() {
+                match self.enum_declaration(visibility) {
                     Ok(declaration) => enums.push(declaration),
                     Err(diagnostic) => {
                         self.diagnostics.push(diagnostic);
@@ -270,7 +328,7 @@ impl Parser<'_> {
                 continue;
             }
             let result = if self.at(&TokenKind::Function) {
-                self.function()
+                self.function(visibility)
             } else {
                 Err(self.error(DiagnosticCode::ExpectedDeclaration, "expected a function declaration (`func`); executable global statements and other declarations are not supported"))
             };
@@ -283,6 +341,7 @@ impl Parser<'_> {
             }
         }
         let program = self.diagnostics.is_empty().then_some(Program {
+            imports,
             structs,
             enums,
             functions,
@@ -299,6 +358,8 @@ impl Parser<'_> {
             self.bump();
         }
         while !self.at(&TokenKind::Function)
+            && !self.at(&TokenKind::Pub)
+            && !self.at(&TokenKind::Import)
             && !self.at(&TokenKind::Struct)
             && !self.at(&TokenKind::Class)
             && !self.at(&TokenKind::Enum)
@@ -308,6 +369,39 @@ impl Parser<'_> {
         {
             self.bump();
         }
+    }
+    /// `import "net/socket"`. The path is a literal rather than a bare name
+    /// because it contains separators, and its last segment is the qualifier
+    /// the rest of the file uses.
+    fn import_declaration(&mut self) -> Parsed<ImportDecl> {
+        let start = self.expect(&TokenKind::Import, "`import`")?.span.start;
+        let token = self.current().clone();
+        let TokenKind::String(path) = token.kind else {
+            return Err(self.expected("a quoted module path after `import`"));
+        };
+        self.bump();
+        let Some(qualifier) = module_qualifier(&path) else {
+            return Err(Diagnostic {
+                code: DiagnosticCode::InvalidModulePath,
+                message: format!("`{path}` is not a module path"),
+                span: token.span,
+                help: Some(
+                    "a path is one or more `/`-separated segments, each a name, as in `net/socket`"
+                        .into(),
+                ),
+            });
+        };
+        Ok(ImportDecl {
+            path,
+            path_span: token.span,
+            qualifier: Name {
+                text: qualifier,
+                // The qualifier is spelled inside the literal, so its
+                // diagnostics point at the path that produced it.
+                span: token.span,
+            },
+            span: Span::new(start, self.previous_end()),
+        })
     }
     /// `unsafe extern "C" { func name(...) -> type ... }`. The declarations
     /// inside carry no body: the definition lives in the linked library.
@@ -388,7 +482,7 @@ impl Parser<'_> {
             span,
         })
     }
-    fn enum_declaration(&mut self) -> Parsed<EnumDecl> {
+    fn enum_declaration(&mut self, visibility: Visibility) -> Parsed<EnumDecl> {
         let start = self.expect(&TokenKind::Enum, "`enum`")?.span.start;
         let name = self.name("an enum name")?;
         self.expect(&TokenKind::LeftBrace, "`{` to begin the enum body")?;
@@ -422,13 +516,14 @@ impl Parser<'_> {
             .span
             .end;
         Ok(EnumDecl {
+            visibility,
             name,
             variants,
             span: Span::new(start, end),
         })
     }
     /// One field per line, matching the statement-boundary rule elsewhere.
-    fn struct_declaration(&mut self) -> Parsed<StructDecl> {
+    fn struct_declaration(&mut self, visibility: Visibility) -> Parsed<StructDecl> {
         let (kind, noun) = if self.at(&TokenKind::Class) {
             (TypeDeclKind::Reference, "class")
         } else {
@@ -467,6 +562,7 @@ impl Parser<'_> {
             .span
             .end;
         Ok(StructDecl {
+            visibility,
             kind,
             name,
             fields,
@@ -486,6 +582,9 @@ impl Parser<'_> {
         let body = self.block()?;
         let span = Span::new(start, body.span.end);
         Ok(FunctionDecl {
+            // A method travels with its type: exporting the type exports the
+            // methods, so `pub` is never written on one.
+            visibility: Visibility::Public,
             name,
             parameters,
             return_type,
@@ -515,7 +614,7 @@ impl Parser<'_> {
         self.expect(&TokenKind::RightParen, "`)` after parameters")?;
         Ok(parameters)
     }
-    fn function(&mut self) -> Parsed<FunctionDecl> {
+    fn function(&mut self, visibility: Visibility) -> Parsed<FunctionDecl> {
         let start = self.expect(&TokenKind::Function, "`func`")?.span.start;
         let name = self.name("a function name")?;
         let parameters = self.parameter_list()?;
@@ -528,6 +627,7 @@ impl Parser<'_> {
         let body = self.block()?;
         let span = Span::new(start, body.span.end);
         Ok(FunctionDecl {
+            visibility,
             name,
             parameters,
             return_type,
@@ -708,10 +808,26 @@ impl Parser<'_> {
                 let token = self.bump();
                 MatchPattern::Wildcard(token.span)
             } else {
+                // One name is a variant whose enum comes from the matched
+                // value; two are `Enum.Variant`; three are
+                // `module.Enum.Variant`.
                 let first = self.name("a pattern or `_`")?;
                 let (enum_name, variant_name) = if self.take(&TokenKind::Dot).is_some() {
-                    let variant = self.name("a variant name")?;
-                    (Some(first), variant)
+                    let second = self.name("a variant name")?;
+                    if self.take(&TokenKind::Dot).is_some() {
+                        let variant = self.name("a variant name")?;
+                        let span = Span::new(first.span.start, second.span.end);
+                        (
+                            Some(Path {
+                                module: Some(first),
+                                name: second,
+                                span,
+                            }),
+                            variant,
+                        )
+                    } else {
+                        (Some(Path::bare(first)), second)
+                    }
                 } else {
                     (None, first)
                 };
@@ -831,7 +947,7 @@ impl Parser<'_> {
         self.expect(close, close_message)?;
         Ok(fields)
     }
-    fn struct_literal(&mut self, name: Name) -> Parsed<ExprKind> {
+    fn struct_literal(&mut self, name: Path) -> Parsed<ExprKind> {
         let fields = self.field_initializers(
             &TokenKind::LeftBrace,
             &TokenKind::RightBrace,
@@ -969,8 +1085,23 @@ impl Parser<'_> {
                     text,
                     span: token.span,
                 };
-                if self.struct_literals && self.at(&TokenKind::LeftBrace) {
-                    self.struct_literal(name)?
+                if self.struct_literals
+                    && self.at(&TokenKind::Dot)
+                    && matches!(self.peek_kind(1), TokenKind::Identifier(_))
+                    && matches!(self.peek_kind(2), TokenKind::LeftBrace)
+                {
+                    // `json.Config { ... }`: a qualified type, not a member of
+                    // a value named `json`.
+                    self.bump();
+                    let type_name = self.name("a type name after `.`")?;
+                    let span = Span::new(name.span.start, type_name.span.end);
+                    self.struct_literal(Path {
+                        module: Some(name),
+                        name: type_name,
+                        span,
+                    })?
+                } else if self.struct_literals && self.at(&TokenKind::LeftBrace) {
+                    self.struct_literal(Path::bare(name))?
                 } else {
                     ExprKind::Identifier(name)
                 }
@@ -990,7 +1121,7 @@ impl Parser<'_> {
             }
             TokenKind::New => {
                 self.bump();
-                let name = self.name("a class name after `new`")?;
+                let name = self.path("a class name after `new`")?;
                 let fields = self.field_initializers(
                     &TokenKind::LeftParen,
                     &TokenKind::RightParen,
@@ -1210,3 +1341,22 @@ fn infix(token: &TokenKind) -> Option<(u8, u8, Infix)> {
 
 #[cfg(test)]
 mod tests;
+
+/// The last segment of a module path, or `None` when the path is not one.
+/// Segments are ordinary names, so a path never escapes the program root:
+/// `..`, an absolute path and an empty segment are all rejected here.
+fn module_qualifier(path: &str) -> Option<String> {
+    let mut last = None;
+    for segment in path.split('/') {
+        let mut characters = segment.chars();
+        let first = characters.next()?;
+        if !first.is_ascii_alphabetic() && first != '_' {
+            return None;
+        }
+        if !characters.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return None;
+        }
+        last = Some(segment.to_owned());
+    }
+    last
+}

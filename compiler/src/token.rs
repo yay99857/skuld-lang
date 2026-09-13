@@ -27,6 +27,7 @@ pub enum TokenKind {
     Enum,
     Match,
     Import,
+    Pub,
     For,
     In,
     Static,

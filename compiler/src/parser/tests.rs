@@ -70,7 +70,7 @@ fn parses_existing_examples_and_signatures() {
     let Some(TypeRef::Named(name)) = &add.return_type else {
         panic!("return type")
     };
-    assert_eq!(name.text, "int");
+    assert_eq!(name.name.text, "int");
     assert!(matches!(
         add.body.statements[0].kind,
         StatementKind::Return(Some(_))
@@ -392,7 +392,7 @@ fn record_construction_parses_as_an_expression() {
     let ExprKind::StructLiteral { name, fields } = expression.kind else {
         panic!("struct literal")
     };
-    assert_eq!(name.text, "Vec2");
+    assert_eq!(name.name.text, "Vec2");
     assert_eq!(fields.len(), 2);
 }
 
@@ -460,7 +460,7 @@ fn class_bodies_and_new_expressions() {
     let ExprKind::New { name, fields } = &var.initializer.kind else {
         panic!("new expression");
     };
-    assert_eq!(name.text, "User");
+    assert_eq!(name.name.text, "User");
     assert_eq!(fields.len(), 1);
     assert_eq!(fields[0].name.text, "name");
 }
@@ -597,8 +597,8 @@ fn result_types_patterns_and_try_parse() {
     else {
         panic!("Result return type")
     };
-    assert!(matches!(**ok, TypeRef::Named(ref name) if name.text == "int"));
-    assert!(matches!(**err, TypeRef::Named(ref name) if name.text == "string"));
+    assert!(matches!(**ok, TypeRef::Named(ref name) if name.name.text == "int"));
+    assert!(matches!(**err, TypeRef::Named(ref name) if name.name.text == "string"));
     let patterns: Vec<IfLetPattern> = program.functions[1]
         .body
         .statements
@@ -781,4 +781,142 @@ fn pointer_types_nest_and_keep_spans() {
         assert!(matches!(**pointee, TypeRef::Named(_)));
         assert_eq!(*span, parameter.type_ref.span());
     }
+}
+
+#[test]
+fn imports_are_collected_before_declarations() {
+    let program = program("import \"json\"\nimport \"net/socket\"\nfunc main() { }");
+    let paths: Vec<_> = program
+        .imports
+        .iter()
+        .map(|import| (import.path.as_str(), import.qualifier.text.as_str()))
+        .collect();
+    // The qualifier is the last segment, so two different paths can still
+    // collide on the name they bind.
+    assert_eq!(paths, vec![("json", "json"), ("net/socket", "socket")]);
+}
+
+#[test]
+fn an_import_after_a_declaration_is_rejected() {
+    let output = parse("func main() { }\nimport \"json\"");
+    assert!(output.program.is_none());
+    assert_eq!(
+        output.diagnostics[0].code,
+        DiagnosticCode::MisplacedImport,
+        "{:#?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn module_paths_reject_traversal_and_empty_segments() {
+    for source in [
+        "import \"../json\"",
+        "import \"/json\"",
+        "import \"json/\"",
+        "import \"\"",
+        "import \"2json\"",
+    ] {
+        let output = parse(source);
+        assert_eq!(
+            output.diagnostics[0].code,
+            DiagnosticCode::InvalidModulePath,
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn pub_marks_functions_types_and_enums() {
+    let program = program(
+        "pub func exported() { }\nfunc hidden() { }\npub class Open { x: int }\nstruct Closed { x: int }\npub enum Tag { A }",
+    );
+    assert_eq!(program.functions[0].visibility, Visibility::Public);
+    assert_eq!(program.functions[1].visibility, Visibility::Private);
+    assert_eq!(program.structs[0].visibility, Visibility::Public);
+    assert_eq!(program.structs[1].visibility, Visibility::Private);
+    assert_eq!(program.enums[0].visibility, Visibility::Public);
+}
+
+#[test]
+fn a_method_is_public_with_the_type_that_owns_it() {
+    let program = program("struct Point { x: int\n  show() -> int { return this.x } }");
+    assert_eq!(program.structs[0].visibility, Visibility::Private);
+    assert_eq!(program.structs[0].methods[0].visibility, Visibility::Public);
+}
+
+#[test]
+fn type_positions_accept_a_module_qualifier() {
+    let program = program(
+        "func f(a: json.Value, b: []json.Value, c: Option<json.Value>, d: weak json.Node) -> json.Value { return a }",
+    );
+    let parameters = &program.functions[0].parameters;
+    let TypeRef::Named(path) = &parameters[0].type_ref else {
+        panic!("named type")
+    };
+    assert_eq!(path.module.as_ref().map(|m| m.text.as_str()), Some("json"));
+    assert_eq!(path.name.text, "Value");
+    let TypeRef::Array { element, .. } = &parameters[1].type_ref else {
+        panic!("array type")
+    };
+    assert!(matches!(&**element, TypeRef::Named(path) if path.module.is_some()));
+    let TypeRef::Option { element, .. } = &parameters[2].type_ref else {
+        panic!("option type")
+    };
+    assert!(matches!(&**element, TypeRef::Named(path) if path.module.is_some()));
+    assert!(
+        matches!(&parameters[3].type_ref, TypeRef::Weak { class, .. } if class.module.is_some())
+    );
+}
+
+#[test]
+fn construction_and_patterns_accept_a_module_qualifier() {
+    let program = program(
+        "func main() { let a = new json.Node(value: 1)\n let b = json.Point { x: 1 }\n match a { json.Tag.One(v): print(v)\n Tag.Two: print(2)\n _: print(3) } }",
+    );
+    let statements = &program.functions[0].body.statements;
+    let StatementKind::Variable(first) = &statements[0].kind else {
+        panic!("variable")
+    };
+    assert!(matches!(&first.initializer.kind, ExprKind::New { name, .. } if name.module.is_some()));
+    let StatementKind::Variable(second) = &statements[1].kind else {
+        panic!("variable")
+    };
+    assert!(
+        matches!(&second.initializer.kind, ExprKind::StructLiteral { name, .. } if name.module.is_some())
+    );
+    let StatementKind::Match { arms, .. } = &statements[2].kind else {
+        panic!("match")
+    };
+    // Three names are `module.Enum.Variant`; two are `Enum.Variant`.
+    let MatchPattern::Variant {
+        enum_name,
+        variant_name,
+        ..
+    } = &arms[0].pattern
+    else {
+        panic!("variant pattern")
+    };
+    let path = enum_name.as_ref().expect("qualified enum");
+    assert_eq!(path.module.as_ref().map(|m| m.text.as_str()), Some("json"));
+    assert_eq!(path.name.text, "Tag");
+    assert_eq!(variant_name.text, "One");
+    let MatchPattern::Variant { enum_name, .. } = &arms[1].pattern else {
+        panic!("variant pattern")
+    };
+    assert!(enum_name.as_ref().expect("enum name").module.is_none());
+}
+
+#[test]
+fn a_member_access_is_not_a_qualified_struct_literal() {
+    // `value.field` followed by a block must stay a member access; only a
+    // `name.Name {` sequence reads as construction.
+    let program = program("func main() { let x = point.field\n if flag { print(1) } }");
+    let StatementKind::Variable(declaration) = &program.functions[0].body.statements[0].kind else {
+        panic!("variable")
+    };
+    assert!(matches!(
+        &declaration.initializer.kind,
+        ExprKind::Member { .. }
+    ));
 }

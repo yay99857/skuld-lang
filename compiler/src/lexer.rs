@@ -189,6 +189,7 @@ impl Lexer<'_> {
             "enum" => Enum,
             "match" => Match,
             "import" => Import,
+            "pub" => Pub,
             "for" => For,
             "in" => In,
             "static" => Static,

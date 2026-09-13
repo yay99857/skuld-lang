@@ -29,6 +29,11 @@ pub enum DiagnosticCode {
     JumpOutsideLoop,
     MissingField,
     NonExhaustiveMatch,
+    MisplacedImport,
+    InvalidModulePath,
+    UnknownModule,
+    ImportCycle,
+    PrivateName,
 }
 
 impl DiagnosticCode {
@@ -61,6 +66,11 @@ impl DiagnosticCode {
             Self::JumpOutsideLoop => "E0111",
             Self::MissingField => "E0112",
             Self::NonExhaustiveMatch => "E0113",
+            Self::MisplacedImport => "E1006",
+            Self::InvalidModulePath => "E1007",
+            Self::UnknownModule => "E0205",
+            Self::ImportCycle => "E0206",
+            Self::PrivateName => "E0207",
         }
     }
 }
