@@ -62,6 +62,9 @@ pub struct Server {
     checked: BTreeMap<String, skuld_compiler::type_checker::TypedProgram>,
     /// Set once `shutdown` arrives, so `exit` can report the right code.
     shutting_down: bool,
+    /// Ids for the requests this server sends the client. They live in the
+    /// server's own numbering, which never meets the client's.
+    next_request: u32,
     /// Whether the client said it understands a nested outline. The protocol's
     /// default is that it does not, and a client that cannot parse the nested
     /// form shows nothing at all, so the flat one is what silence buys.
@@ -80,6 +83,7 @@ impl Server {
             open: BTreeMap::new(),
             checked: BTreeMap::new(),
             shutting_down: false,
+            next_request: 0,
             hierarchical_symbols: false,
         }
     }
@@ -124,7 +128,11 @@ impl Server {
                 None
             }
 
-            (Some("textDocument/definition"), Some(id)) => {
+            // Skuld has no forward declarations: where a function is declared
+            // is where it is defined, so the two questions have one answer.
+            // Answering both is what keeps a client's `gD` from reporting that
+            // the server cannot do it.
+            (Some("textDocument/definition" | "textDocument/declaration"), Some(id)) => {
                 let location = self.definition(message);
                 respond(output, id.clone(), location);
                 None
@@ -273,8 +281,26 @@ impl Server {
                 None
             }
 
+            (Some("initialized"), _) => {
+                // A watcher has to be registered; there is no way to ask for
+                // one in the `initialize` result. A client that does not
+                // support the registration ignores it, and the server is no
+                // worse off than before.
+                self.watch_skuld_files(output);
+                None
+            }
+
+            (Some("workspace/didChangeWatchedFiles"), _) => {
+                // Something changed on disk that the editor is not showing —
+                // another tool, a branch switch, a second agent. Which file it
+                // was does not matter: every open document is re-checked on
+                // any change already, and this is that same refresh.
+                self.publish_all(output);
+                None
+            }
+
             // Notifications that need no reply and no work.
-            (Some("initialized" | "$/setTrace"), _) => None,
+            (Some("$/setTrace"), _) => None,
 
             (Some("textDocument/didOpen"), _) => {
                 let text = message.path(&["params", "textDocument", "text"]);
@@ -334,6 +360,44 @@ impl Server {
             }
             (Some(_), None) => None,
         }
+    }
+
+    /// Ask the client to tell us when a `.skuld` file changes on disk.
+    ///
+    /// The server reads imported modules through the loader on every check, so
+    /// what is missing without this is not fresh content but the trigger: a
+    /// module edited outside the editor would go unnoticed until the user
+    /// typed in a file that imports it.
+    fn watch_skuld_files(&mut self, output: &mut impl Write) {
+        self.next_request += 1;
+        send(
+            output,
+            Json::object([
+                ("jsonrpc", Json::string("2.0")),
+                ("id", Json::number(self.next_request as f64)),
+                ("method", Json::string("client/registerCapability")),
+                (
+                    "params",
+                    Json::object([(
+                        "registrations",
+                        Json::Array(vec![Json::object([
+                            ("id", Json::string("skuld-watched-files")),
+                            ("method", Json::string("workspace/didChangeWatchedFiles")),
+                            (
+                                "registerOptions",
+                                Json::object([(
+                                    "watchers",
+                                    Json::Array(vec![Json::object([(
+                                        "globPattern",
+                                        Json::string("**/*.skuld"),
+                                    )])]),
+                                )]),
+                            ),
+                        ])]),
+                    )]),
+                ),
+            ]),
+        );
     }
 
     /// Record a document's new text and republish its diagnostics.
@@ -1714,6 +1778,7 @@ fn initialize_result() -> Json {
             // fragment, so there is no honest answer for a range.
             ("documentFormattingProvider", Json::Bool(true)),
             ("definitionProvider", Json::Bool(true)),
+            ("declarationProvider", Json::Bool(true)),
             ("typeDefinitionProvider", Json::Bool(true)),
             ("callHierarchyProvider", Json::Bool(true)),
             // Conformance is declared in Skuld, never inferred, so this

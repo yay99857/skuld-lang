@@ -1942,3 +1942,71 @@ fn a_file_with_no_entrypoint_is_a_document_like_any_other() {
     );
     assert_eq!(labels_of(result_of(&out, 4)), [": int"]);
 }
+
+#[test]
+fn declaration_answers_the_same_place_as_definition() {
+    // Skuld has no forward declarations, so the two questions have one answer;
+    // answering both keeps a client's `gD` from reporting an unsupported
+    // method.
+    let path = "/tmp/skuld-lsp-test/declaration.skuld";
+    let source = "func add(a: int, b: int) -> int {\n    return a + b\n}\n\nfunc main() {\n    print(add(1, 2))\n}\n";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        position_request(2, "textDocument/definition", path, 5, 11),
+        position_request(3, "textDocument/declaration", path, 5, 11),
+    ]);
+    assert_eq!(
+        out[0].path(&["result", "capabilities", "declarationProvider"]),
+        Some(&Json::Bool(true))
+    );
+    assert_eq!(result_of(&out, 2), result_of(&out, 3));
+    assert_eq!(located(result_of(&out, 3)).1, 0);
+}
+
+#[test]
+fn the_server_asks_to_be_told_about_files_changing_on_disk() {
+    let path = "/tmp/skuld-lsp-test/watched.skuld";
+    let initialized = Json::object([
+        ("jsonrpc", Json::string("2.0")),
+        ("method", Json::string("initialized")),
+        ("params", Json::object([])),
+    ]);
+    let changed = Json::object([
+        ("jsonrpc", Json::string("2.0")),
+        ("method", Json::string("workspace/didChangeWatchedFiles")),
+        (
+            "params",
+            Json::object([("changes", Json::Array(Vec::new()))]),
+        ),
+    ]);
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        initialized,
+        did_open(path, "func main() {\n    print(1)\n}\n"),
+        changed,
+    ]);
+    let registration = out
+        .iter()
+        .find(|message| {
+            message.get("method").and_then(Json::as_str) == Some("client/registerCapability")
+        })
+        .expect("a registration request");
+    assert_eq!(
+        registration
+            .path(&["params", "registrations"])
+            .and_then(Json::as_array)
+            .and_then(<[Json]>::first)
+            .and_then(|entry| entry.get("method"))
+            .and_then(Json::as_str),
+        Some("workspace/didChangeWatchedFiles")
+    );
+    // The change republished the open document rather than being dropped.
+    let reports = out
+        .iter()
+        .filter(|message| {
+            message.get("method").and_then(Json::as_str) == Some("textDocument/publishDiagnostics")
+        })
+        .count();
+    assert_eq!(reports, 2, "one for the open, one for the change");
+}
