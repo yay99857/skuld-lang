@@ -2130,6 +2130,12 @@ impl Checker<'_> {
                 "insert" => Some(vec![Type::INT, element]),
                 "pop" => Some(vec![]),
                 "remove" => Some(vec![Type::INT]),
+                // A comparator returns a negative, zero or positive `int`,
+                // the ordering convention the C library already uses.
+                "sort" => {
+                    let comparator = self.function_type(vec![element, element], Type::INT);
+                    Some(vec![comparator])
+                }
                 _ => None,
             };
             if let Some(parameters) = parameters {

@@ -1,0 +1,53 @@
+// `sort` is the first consumer of function values: in place, returning void
+// like the growth operations beside it, and stable, so equal elements keep the
+// order they were written in.
+
+class Person {
+    name: string
+    age: int
+}
+
+func by_length(a: string, b: string) -> int {
+    return a.len() - b.len()
+}
+
+func main() {
+    var numbers = [5, 3, 9, 1, 3, 7]
+    numbers.sort((a: int, b: int): int { return a - b })
+    for n in numbers {
+        print(n)
+    }
+
+    // A comparator is an ordinary argument, so reversing is a different one.
+    numbers.sort((a: int, b: int): int { return b - a })
+    print(numbers[0])
+    print(numbers[5])
+
+    // A declared function serves as well as a lambda. `fig`, `pear` and
+    // `kiwi` show the stability: the two four-letter words keep their order.
+    var words = ["pear", "fig", "banana", "kiwi"]
+    words.sort(by_length)
+    for w in words {
+        print(w)
+    }
+
+    // Managed elements are moved, never retained: a permutation cannot change
+    // how many references exist.
+    var people = [
+        new Person(name: "ada", age: 36),
+        new Person(name: "alan", age: 41),
+        new Person(name: "grace", age: 36)
+    ]
+    people.sort((a: Person, b: Person): int { return a.age - b.age })
+    for p in people {
+        print("${p.name} ${p.age}")
+    }
+
+    // Nothing to do, and nothing to go wrong.
+    var empty: []int = []
+    empty.sort((a: int, b: int): int { return a - b })
+    print(empty.len())
+    var single = [42]
+    single.sort((a: int, b: int): int { return a - b })
+    print(single[0])
+}

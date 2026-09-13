@@ -20,6 +20,8 @@ struct Lowering<'a> {
     /// Declared functions used as values, collected here rather than found
     /// again by walking the finished HIR.
     function_values: &'a RefCell<Vec<(crate::resolver::SymbolId, crate::types::FunctionTypeId)>>,
+    /// Array types the program sorts, collected the same way.
+    sorts: &'a RefCell<Vec<(crate::types::ArrayId, crate::types::FunctionTypeId)>>,
 }
 
 impl Lowering<'_> {
@@ -62,12 +64,14 @@ pub fn lower(typed: TypedProgram) -> h::Program {
     // unique across the program, so nothing here has to disambiguate them.
     let lambdas = RefCell::new(Vec::new());
     let function_values = RefCell::new(Vec::new());
+    let sorts = RefCell::new(Vec::new());
     let files: Vec<Lowering<'_>> = (0..typed.program.files.len())
         .map(|index| Lowering {
             typed: &typed,
             file: FileId(index),
             lambdas: &lambdas,
             function_values: &function_values,
+            sorts: &sorts,
         })
         .collect();
     for cx in &files {
@@ -141,11 +145,15 @@ pub fn lower(typed: TypedProgram) -> h::Program {
     let mut function_values = function_values.into_inner();
     function_values.sort();
     function_values.dedup();
+    let mut sorts = sorts.into_inner();
+    sorts.sort();
+    sorts.dedup();
     h::Program {
         externs,
         lambdas,
         function_types: typed.function_signatures.clone(),
         function_values,
+        sorts,
         structs: typed.structs.clone(),
         enums: typed.enums.clone(),
         arrays: typed.arrays.clone(),
@@ -548,6 +556,13 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     (Some(Type::Array(_)), "insert") => Some(h::ArrayMethod::Insert),
                     (Some(Type::Array(_)), "pop") => Some(h::ArrayMethod::Pop),
                     (Some(Type::Array(_)), "remove") => Some(h::ArrayMethod::Remove),
+                    (Some(Type::Array(id)), "sort") => {
+                        let Some(Type::Function(comparator)) = cx.ty(arguments[0].span) else {
+                            unreachable!("internal compiler bug: unchecked comparator")
+                        };
+                        cx.sorts.borrow_mut().push((id, comparator));
+                        Some(h::ArrayMethod::Sort)
+                    }
                     _ => None,
                 };
                 if let Some(method) = array_method {

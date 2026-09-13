@@ -1,0 +1,11 @@
+// A comparator that changes the array while the sort is running invalidates
+// the snapshot it is being sorted from. That is a mistake in the program, so
+// it aborts rather than reading memory the array no longer owns.
+func main() {
+    let numbers = [5, 3, 9, 1, 7, 2, 8]
+    numbers.sort((a: int, b: int): int {
+        numbers.push(0)
+        return a - b
+    })
+    print(numbers.len())
+}

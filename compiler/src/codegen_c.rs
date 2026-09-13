@@ -264,6 +264,56 @@ pub fn emit_c(program: &Program) -> String {
         emitter.indent -= 1;
         emitter.line("}");
     }
+    // One sort per array type that is sorted. It is stable, and it works on a
+    // snapshot: a comparator that mutated the array while it ran would
+    // otherwise leave the merge reading freed memory.
+    for (array, comparator) in &program.sorts {
+        let element = type_name(&program.structs, program.arrays[array.0].element);
+        emitter.line(&format!(
+            "static void skuld_sort_a{}_{}(skuld_a{} *array, skuld_ft{} cmp, size_t byte) {{",
+            array.0, comparator.0, array.0, comparator.0
+        ));
+        emitter.indent += 1;
+        for line in [
+            "size_t n = array->len;".to_owned(),
+            "if (n < 2) return;".to_owned(),
+            format!("{element} *original = array->data;"),
+            format!("{element} *src = malloc(n * sizeof({element}));"),
+            format!("{element} *dst = malloc(n * sizeof({element}));"),
+            "if (src == NULL || dst == NULL) skuld_fail(\"out of memory while sorting\", byte);"
+                .to_owned(),
+            format!("memcpy(src, array->data, n * sizeof({element}));"),
+            "for (size_t width = 1; width < n; width *= 2) {".to_owned(),
+            "    for (size_t start = 0; start < n; start += 2 * width) {".to_owned(),
+            "        size_t middle = start + width < n ? start + width : n;".to_owned(),
+            "        size_t end = start + 2 * width < n ? start + 2 * width : n;".to_owned(),
+            "        size_t left = start, right = middle, out = start;".to_owned(),
+            "        while (left < middle && right < end) {".to_owned(),
+            // `<= 0` is what makes the sort stable: equal elements keep the
+            // order they were written in.
+            format!(
+                "            dst[out++] = skuld_ftcall{}(cmp, src[left], src[right]) <= 0 ? src[left++] : src[right++];",
+                comparator.0
+            ),
+            "        }".to_owned(),
+            "        while (left < middle) dst[out++] = src[left++];".to_owned(),
+            "        while (right < end) dst[out++] = src[right++];".to_owned(),
+            "    }".to_owned(),
+            format!("    {element} *swap = src; src = dst; dst = swap;"),
+            "}".to_owned(),
+            // A comparator that pushed or removed would have invalidated the
+            // snapshot; that is a mistake, not something to paper over.
+            "if (array->len != n || array->data != original) skuld_fail(\"the array changed while it was being sorted\", byte);"
+                .to_owned(),
+            format!("memcpy(array->data, src, n * sizeof({element}));"),
+            "free(src);".to_owned(),
+            "free(dst);".to_owned(),
+        ] {
+            emitter.line(&line);
+        }
+        emitter.indent -= 1;
+        emitter.line("}");
+    }
     // Prototypes permit forward references and mutually referring classes.
     for ty in &managed {
         let name = emitter.c_type(*ty);
@@ -721,9 +771,22 @@ impl Emitter {
         };
         let element = self.arrays[id.0].element;
         let array = self.expression(object);
+        // Kept before the arguments become text, since a sort needs the
+        // comparator's signature to name the helper it calls.
+        let first_type = arguments.first().map(|argument| argument.ty);
         let arguments: Vec<_> = arguments.iter().map(|arg| self.expression(arg)).collect();
         let byte = expr.span.start;
         match method {
+            ArrayMethod::Sort => {
+                let Some(Type::Function(comparator)) = first_type else {
+                    unreachable!("checked comparator")
+                };
+                self.line(&format!(
+                    "skuld_sort_a{}_{}({array}, {}, {byte});",
+                    id.0, comparator.0, arguments[0]
+                ));
+                String::new()
+            }
             ArrayMethod::Push | ArrayMethod::Insert => {
                 let index = if matches!(method, ArrayMethod::Insert) {
                     self.temporary(

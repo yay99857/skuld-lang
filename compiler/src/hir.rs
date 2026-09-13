@@ -23,6 +23,9 @@ pub struct Program {
     /// Declared functions the program turns into values, each needing a thunk
     /// that gives it the shape every function value has.
     pub(crate) function_values: Vec<(SymbolId, crate::types::FunctionTypeId)>,
+    /// Array types the program sorts, with the comparator signature each one
+    /// takes, so that a sort is generated only where it is used.
+    pub(crate) sorts: Vec<(crate::types::ArrayId, crate::types::FunctionTypeId)>,
     /// Foreign functions: a signature and a linker name, with no body.
     pub(crate) externs: Vec<ExternFunction>,
     pub(crate) entry: SymbolId,
@@ -256,6 +259,9 @@ pub(crate) enum Place {
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ArrayMethod {
+    /// In place and stable, like the growth operations beside it: an array is
+    /// a shared reference, so a sort that returned a new one would mislead.
+    Sort,
     Push,
     Insert,
     Pop,
