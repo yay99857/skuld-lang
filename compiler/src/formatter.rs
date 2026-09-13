@@ -153,6 +153,40 @@ impl<'a> Formatter<'a> {
         self.indent_level -= 1;
     }
 
+    /// What comes before an item: the blank line the author left, and then any
+    /// comments. A blank line is how a reader groups statements, so losing it
+    /// changes the shape of every function it appears in.
+    fn lead_in(&mut self, start: usize) {
+        // The gap is measured to whatever comes first — a comment of this
+        // item's, or the item itself.
+        let first = self
+            .comments
+            .get(self.comment_idx)
+            .map(|comment| comment.span.start)
+            .filter(|comment_start| *comment_start <= start)
+            .unwrap_or(start);
+        if self
+            .source
+            .get(self.covered..first)
+            .is_some_and(|gap| gap.matches('\n').count() >= 2)
+            && !self.output.ends_with("{\n")
+            && !self.output.ends_with("\n\n")
+        {
+            if self.output.ends_with('\n') {
+                self.push("\n");
+            } else {
+                self.push("\n\n");
+            }
+        }
+        // A comment the source kept apart from the item stays apart.
+        if let Some(end) = self.emit_comments_before(start)
+            && self.source[end..start].matches('\n').count() >= 2
+            && !self.output.ends_with("\n\n")
+        {
+            self.push("\n");
+        }
+    }
+
     /// Emit any comments whose start position is before `pos`, and answer
     /// where the last of them ended.
     fn emit_comments_before(&mut self, pos: usize) -> Option<usize> {
@@ -261,14 +295,7 @@ impl<'a> Formatter<'a> {
                 }
             }
 
-            // A comment that the source separated from the declaration by a
-            // blank line belongs to neither, so the separation is kept.
-            if let Some(end) = self.emit_comments_before(decl.span().start)
-                && self.source[end..decl.span().start].matches('\n').count() >= 2
-                && !self.output.ends_with("\n\n")
-            {
-                self.push("\n");
-            }
+            self.lead_in(decl.span().start);
 
             match decl {
                 Decl::Import(i) => self.format_import(i),
@@ -363,6 +390,10 @@ impl<'a> Formatter<'a> {
             self.push(&field.name.text);
             self.push(": ");
             self.format_type(&field.type_ref);
+            if let Some(default) = &field.default {
+                self.push(" = ");
+                self.format_expr(default);
+            }
             self.emit_trailing_comment(field.span.end);
         }
 
@@ -492,7 +523,7 @@ impl<'a> Formatter<'a> {
         self.indent();
 
         for stmt in &block.statements {
-            self.emit_comments_before(stmt.span.start);
+            self.lead_in(stmt.span.start);
             self.format_statement(stmt);
         }
 
@@ -685,7 +716,7 @@ impl<'a> Formatter<'a> {
         self.emit_trailing_comment(block.span.start);
         self.indent();
         for stmt in &block.statements {
-            self.emit_comments_before(stmt.span.start);
+            self.lead_in(stmt.span.start);
             self.format_statement(stmt);
         }
         self.dedent();
@@ -794,6 +825,12 @@ impl<'a> Formatter<'a> {
             }
             ExprKind::StructLiteral { name, fields } => {
                 self.format_path(name);
+                // `Point {}` — every field defaulted — is written without the
+                // space a field would have needed.
+                if fields.is_empty() {
+                    self.push(" {}");
+                    return;
+                }
                 self.push(" { ");
                 self.format_field_inits(fields);
                 self.push(" }");

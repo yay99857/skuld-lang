@@ -242,3 +242,16 @@ fn a_comment_after_a_run_of_code_does_not_inherit_an_earlier_gap() {
         "enum E {\n    // The first.\n    A,\n    B,\n    C,\n    // The last.\n    D,\n}\n"
     );
 }
+
+#[test]
+fn a_blank_line_between_statements_is_how_a_reader_groups_them() {
+    let input = "func main() {\n    let a = 1\n\n    let b = 2\n    let c = 3\n}\n";
+    assert_eq!(fmt(input), input);
+}
+
+#[test]
+fn an_empty_struct_literal_has_nothing_to_space_out() {
+    // Every field defaulted: `Point {}` is the whole expression.
+    let input = "struct Point {\n    x: int = 0\n}\n\nfunc main() {\n    let p = Point {}\n}\n";
+    assert_eq!(fmt(input), input);
+}
