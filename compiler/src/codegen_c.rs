@@ -891,28 +891,32 @@ impl Emitter {
                 ));
                 String::new()
             }
-            ArrayMethod::Push | ArrayMethod::Insert => {
-                let index = if matches!(method, ArrayMethod::Insert) {
-                    self.temporary(
-                        Type::INT,
-                        &format!(
-                            "(int64_t)skuld_insert_index({}, {array}->len, {byte})",
-                            arguments[0]
-                        ),
-                    )
-                } else {
-                    self.temporary(Type::INT, &format!("(int64_t){array}->len"))
-                };
+            // Appending is its own emission rather than an insertion at the
+            // end. Sharing one made the hot operation carry a move whose
+            // condition is always false, and left the reader to work out that
+            // it never runs.
+            ArrayMethod::Push => {
+                self.line(&format!("{array}->data = skuld_array_reserve({array}->data, &{array}->capacity, skuld_array_next_length({array}->len, {byte}), sizeof({}), {byte});", self.c_type(element)));
+                self.line(&format!(
+                    "{array}->data[{array}->len] = {};",
+                    self.retained(element, &arguments[0])
+                ));
+                self.line(&format!("{array}->len += 1;"));
+                String::new()
+            }
+            ArrayMethod::Insert => {
+                let index = self.temporary(
+                    Type::INT,
+                    &format!(
+                        "(int64_t)skuld_insert_index({}, {array}->len, {byte})",
+                        arguments[0]
+                    ),
+                );
                 self.line(&format!("{array}->data = skuld_array_reserve({array}->data, &{array}->capacity, skuld_array_next_length({array}->len, {byte}), sizeof({}), {byte});", self.c_type(element)));
                 self.line(&format!("if ((size_t){index} < {array}->len) memmove(&{array}->data[{index} + 1], &{array}->data[{index}], ({array}->len - (size_t){index}) * sizeof({}));", self.c_type(element)));
-                let value = &arguments[if matches!(method, ArrayMethod::Insert) {
-                    1
-                } else {
-                    0
-                }];
                 self.line(&format!(
                     "{array}->data[{index}] = {};",
-                    self.retained(element, value)
+                    self.retained(element, &arguments[1])
                 ));
                 self.line(&format!("{array}->len += 1;"));
                 String::new()
