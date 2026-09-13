@@ -2282,10 +2282,15 @@ impl Checker<'_> {
                     return Type::Error;
                 }
                 // Expecting the target width lets a literal argument be
-                // range-checked here instead of trapping at run time.
-                self.expected_context = Some(Type::Int(kind));
+                // range-checked here instead of trapping at run time. It
+                // reaches a literal only: imposing the width on a whole
+                // expression would make `u8(128 + n % 64)` a type error, since
+                // `n` is an `int` and widths never mix. A computed argument
+                // types itself and is checked when it is converted.
+                let previous = self.expected_context;
+                self.expected_context = literal_int(&arguments[0]).then_some(Type::Int(kind));
                 let found = self.expression(&arguments[0]);
-                self.expected_context = None;
+                self.expected_context = previous;
                 if found == Type::Error {
                     Type::Error
                 } else if found.int_type().is_none() {
@@ -2562,6 +2567,21 @@ fn result_as_enum(info: ResultInfo) -> EnumInfo {
 }
 
 /// Looks past redundant parentheses without consuming the expression.
+/// Whether an argument is an integer literal, possibly signed or parenthesised.
+/// Only such an argument can carry an expected width, because only it has no
+/// type of its own.
+fn literal_int(expr: &Expr) -> bool {
+    match &strip_groups_ref(expr).kind {
+        ExprKind::Literal(Literal::Integer(_)) => true,
+        ExprKind::Unary {
+            op: UnaryOp::Negative | UnaryOp::Positive,
+            operand,
+            ..
+        } => literal_int(operand),
+        _ => false,
+    }
+}
+
 fn strip_groups_ref(expr: &Expr) -> &Expr {
     match &expr.kind {
         ExprKind::Group(inner) => strip_groups_ref(inner),

@@ -809,3 +809,30 @@ fn ptr_borrows_strings_and_scalar_arrays() {
         );
     }
 }
+
+#[test]
+fn a_conversion_expects_a_width_of_a_literal_only() {
+    // The expected width reaches a literal, which has no type of its own, and
+    // stops there: a computed argument keeps its own type and is converted.
+    valid("func main() { let n = 3\nprint(u8(128 + n % 64)) }");
+    valid("func main() { var bytes: []u8 = []\nlet n = 200\nbytes.push(u8(n)) }");
+    valid("func main() { let n = 3\nprint(i8(-n)) }");
+    // A literal is still range-checked where it is written, signed or not.
+    fails(
+        "func main() { print(u8(256)) }",
+        DiagnosticCode::IntegerRange,
+    );
+    fails(
+        "func main() { print(i8(-129)) }",
+        DiagnosticCode::IntegerRange,
+    );
+    fails(
+        "func main() { print(u8((300))) }",
+        DiagnosticCode::IntegerRange,
+    );
+    // And a width still never mixes with another on its own.
+    fails(
+        "func main() { let n: i32 = 3\nlet m: int = 4\nprint(n + m) }",
+        DiagnosticCode::TypeMismatch,
+    );
+}
