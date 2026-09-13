@@ -198,6 +198,12 @@ impl Server {
                 None
             }
 
+            (Some("textDocument/codeAction"), Some(id)) => {
+                let actions = self.code_actions(message);
+                respond(output, id.clone(), actions);
+                None
+            }
+
             (Some("textDocument/inlayHint"), Some(id)) => {
                 let hints = self.inlay_hints(message);
                 respond(output, id.clone(), hints);
@@ -1094,6 +1100,78 @@ impl Server {
                 .filter(|occurrence| occurrence.file == ENTRY)
                 .map(|occurrence| {
                     Json::object([("range", range_json(&positions, occurrence.span))])
+                })
+                .collect(),
+        )
+    }
+
+    /// Answer `textDocument/codeAction`.
+    ///
+    /// One action so far: write out the type a binding leaves inferred, which
+    /// is the hint made permanent. It exists as a refactor rather than as a
+    /// fix because nothing is wrong with the code — a reader sometimes wants
+    /// the type on the page.
+    ///
+    /// There are no quick fixes yet, and that is not an oversight to work
+    /// around here: a fix has to come from the diagnostic that knows what went
+    /// wrong. The compiler's diagnostics carry a message and a help line,
+    /// both prose, and turning prose into an edit would be guessing. Giving a
+    /// diagnostic a machine-applicable fix is a compiler change, and it is the
+    /// right one.
+    fn code_actions(&self, message: &Json) -> Json {
+        let empty = Json::Array(Vec::new());
+        let Some(path) = document_path(message) else {
+            return empty;
+        };
+        let (Some(source), Some(typed)) = (self.open.get(&path), self.checked.get(&path)) else {
+            return empty;
+        };
+        let positions = Positions::new(source.clone());
+        let window = requested_range(message, &positions, source.len());
+        Json::Array(
+            hints::type_hints(source, typed)
+                .into_iter()
+                .filter(|hint| window.contains(&hint.offset))
+                .filter_map(|hint| {
+                    let name = query::word_at(source, hint.offset)?;
+                    let at = positions.position(hint.offset);
+                    Some(Json::object([
+                        (
+                            "title",
+                            Json::string(format!(
+                                "Annotate `{}` as `{}`",
+                                name.text,
+                                hint.label.trim_start_matches([':', ' '])
+                            )),
+                        ),
+                        ("kind", Json::string("refactor.rewrite")),
+                        (
+                            "edit",
+                            Json::object([(
+                                "changes",
+                                Json::Object(
+                                    [(
+                                        path_to_uri(&path),
+                                        Json::Array(vec![Json::object([
+                                            (
+                                                // An insertion is an edit whose
+                                                // range is empty, at the point
+                                                // the text goes in.
+                                                "range",
+                                                Json::object([
+                                                    ("start", position_json(at)),
+                                                    ("end", position_json(at)),
+                                                ]),
+                                            ),
+                                            ("newText", Json::string(&hint.label)),
+                                        ])]),
+                                    )]
+                                    .into_iter()
+                                    .collect(),
+                                ),
+                            )]),
+                        ),
+                    ]))
                 })
                 .collect(),
         )
