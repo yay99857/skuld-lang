@@ -7,6 +7,7 @@
 //! a later stage, not a bigger version of this one.
 
 use crate::complete;
+use crate::query;
 use crate::json::Json;
 use crate::rpc::{self, ReadError};
 use crate::text::{Positions, path_to_uri, uri_to_path};
@@ -91,6 +92,12 @@ impl Server {
             (Some("shutdown"), Some(id)) => {
                 self.shutting_down = true;
                 respond(output, id.clone(), Json::Null);
+                None
+            }
+
+            (Some("textDocument/hover"), Some(id)) => {
+                let hover = self.hover(message);
+                respond(output, id.clone(), hover);
                 None
             }
 
@@ -266,6 +273,61 @@ impl Server {
         }
     }
 
+    /// Answer `textDocument/hover` with the declaration a reader would
+    /// otherwise have to go and find.
+    fn hover(&self, message: &Json) -> Json {
+        let Some((source, offset, typed)) = self.position_context(message) else {
+            return Json::Null;
+        };
+        let Some((text, span)) = query::hover(source, offset, typed) else {
+            return Json::Null;
+        };
+        let positions = Positions::new(source.clone());
+        let start = positions.position(span.start);
+        let end = positions.position(span.end);
+        Json::object([
+            (
+                "contents",
+                Json::object([
+                    ("kind", Json::string("markdown")),
+                    ("value", Json::string(format!("```skuld\n{text}\n```"))),
+                ]),
+            ),
+            (
+                "range",
+                Json::object([
+                    ("start", position_json(start)),
+                    ("end", position_json(end)),
+                ]),
+            ),
+        ])
+    }
+
+    /// The document, the byte offset asked about, and the last good check of
+    /// it — the three things every position request needs.
+    fn position_context(
+        &self,
+        message: &Json,
+    ) -> Option<(&String, usize, &skuld_compiler::type_checker::TypedProgram)> {
+        let path = document_path(message)?;
+        let source = self.open.get(&path)?;
+        let typed = self.checked.get(&path)?;
+        // A negative line or character would be a client bug; clamping to zero
+        // answers at the start of the file instead of refusing.
+        let line = message
+            .path(&["params", "position", "line"])
+            .and_then(Json::as_i64)
+            .unwrap_or(0)
+            .max(0) as usize;
+        let character = message
+            .path(&["params", "position", "character"])
+            .and_then(Json::as_i64)
+            .unwrap_or(0)
+            .max(0) as usize;
+        let offset = Positions::new(source.clone()).offset(crate::text::Position { line, character });
+        Some((source, offset, typed))
+    }
+
     /// Answer `textDocument/completion` from the last good check of the
     /// document, which may be a moment behind the text on screen.
     fn completions(&self, message: &Json) -> Json {
@@ -373,6 +435,7 @@ fn initialize_result() -> Json {
             // `Positions` produces, so saying so keeps the two in step even
             // if a client would have preferred something else.
             ("positionEncoding", Json::string("utf-16")),
+            ("hoverProvider", Json::Bool(true)),
             (
                 "completionProvider",
                 Json::object([

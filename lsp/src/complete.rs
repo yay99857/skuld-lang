@@ -146,11 +146,12 @@ fn members(source: &str, receiver: &str, checked: Option<&TypedProgram>) -> Vec<
     if let SymbolKind::Module(module) = resolution.symbols[symbol.0].kind {
         return exports(typed, module);
     }
-    of_type(typed, typed.symbol_type(symbol))
+    members_of(typed, typed.symbol_type(symbol))
 }
 
-/// The members a value of this type has.
-fn of_type(typed: &TypedProgram, ty: Type) -> Vec<Item> {
+/// The members a value of this type has. Hover reads the same table, so a
+/// builtin method's shape is written once.
+pub fn members_of(typed: &TypedProgram, ty: Type) -> Vec<Item> {
     let mut items = Vec::new();
     match ty {
         Type::Struct(id) => {

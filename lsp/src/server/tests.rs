@@ -199,7 +199,9 @@ fn an_unknown_request_is_refused_but_an_unknown_notification_is_not() {
         ("jsonrpc", Json::string("2.0")),
         ("method", Json::string("textDocument/inventedNotification")),
     ]);
-    let (out, _) = converse(&[request(7, "textDocument/hover"), notification]);
+    // `hover` is answered now, so the refused request has to be one the
+    // server genuinely does not implement.
+    let (out, _) = converse(&[request(7, "textDocument/references"), notification]);
     assert_eq!(out.len(), 1, "a notification must not be answered");
     assert_eq!(out[0].get("id").unwrap().as_i64(), Some(7));
     assert_eq!(
@@ -449,4 +451,77 @@ fn completion_answers_from_the_last_good_check_while_the_file_is_broken() {
         completion_at(path, 5, 15),
     ]);
     assert_eq!(completion_labels(&out), ["name"]);
+}
+
+fn hover_at(path: &str, line: i64, character: i64) -> Json {
+    Json::object([
+        ("jsonrpc", Json::string("2.0")),
+        ("id", Json::number(9.0)),
+        ("method", Json::string("textDocument/hover")),
+        (
+            "params",
+            Json::object([
+                (
+                    "textDocument",
+                    Json::object([("uri", Json::string(path_to_uri(path)))]),
+                ),
+                (
+                    "position",
+                    Json::object([
+                        ("line", Json::number(line as f64)),
+                        ("character", Json::number(character as f64)),
+                    ]),
+                ),
+            ]),
+        ),
+    ])
+}
+
+#[test]
+fn the_server_advertises_and_answers_hover() {
+    let path = "/tmp/skuld-lsp-test/hover.skuld";
+    let source = "func area(w: int, h: int) -> int {\n    return w * h\n}\nfunc main() {\n    print(area(2, 3))\n}\n";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        // Line 4 is `    print(area(2, 3))`; the cursor rests inside `area`.
+        hover_at(path, 4, 12),
+    ]);
+    assert_eq!(
+        out[0].path(&["result", "capabilities", "hoverProvider"]),
+        Some(&Json::Bool(true))
+    );
+    let hover = out
+        .iter()
+        .rfind(|message| message.get("id").and_then(Json::as_i64) == Some(9))
+        .and_then(|message| message.get("result"))
+        .expect("a hover response");
+    assert_eq!(
+        hover.path(&["contents", "value"]).and_then(Json::as_str),
+        Some("```skuld\nfunc area(int, int) -> int\n```")
+    );
+    // The range covers the word asked about, so a client can highlight it.
+    assert_eq!(
+        hover.path(&["range", "start", "character"]).and_then(Json::as_i64),
+        Some(10)
+    );
+    assert_eq!(
+        hover.path(&["range", "end", "character"]).and_then(Json::as_i64),
+        Some(14)
+    );
+}
+
+#[test]
+fn hover_over_nothing_answers_null_rather_than_an_error() {
+    let path = "/tmp/skuld-lsp-test/blank.skuld";
+    let (out, _) = converse(&[
+        did_open(path, "func main() {\n}\n"),
+        hover_at(path, 1, 0),
+    ]);
+    let hover = out
+        .iter()
+        .rfind(|message| message.get("id").and_then(Json::as_i64) == Some(9))
+        .and_then(|message| message.get("result"))
+        .expect("a hover response");
+    assert_eq!(*hover, Json::Null);
 }

@@ -6,6 +6,7 @@
 
 mod complete;
 mod json;
+mod query;
 mod rpc;
 mod server;
 mod text;
