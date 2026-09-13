@@ -12,6 +12,7 @@
 // A failure therefore says which step failed and on which path, never why.
 
 import "std/cstring"
+import "std/os"
 
 unsafe extern "C" {
     func open(path: *u8, flags: i32, mode: u32) -> i32
@@ -39,9 +40,10 @@ func user_readable() -> u32 {
 pub enum FsError {
     // The path contained a NUL, so it could not become a C string.
     Path(string),
-    OpenFailed(string),
-    ReadFailed(string),
-    WriteFailed(string),
+    // Each of these carries the path and the system's reason.
+    OpenFailed(os.OsFailure),
+    ReadFailed(os.OsFailure),
+    WriteFailed(os.OsFailure),
     // The bytes read are not the UTF-8 `read_text` promised.
     NotText(string),
 }
@@ -49,9 +51,9 @@ pub enum FsError {
 pub func describe(error: FsError) -> string {
     match error {
         FsError.Path(path): return "`${path}` is not a usable path"
-        FsError.OpenFailed(path): return "could not open `${path}`"
-        FsError.ReadFailed(path): return "could not read `${path}`"
-        FsError.WriteFailed(path): return "could not write `${path}`"
+        FsError.OpenFailed(problem): return "could not open ${os.describe_failure(problem)}"
+        FsError.ReadFailed(problem): return "could not read ${os.describe_failure(problem)}"
+        FsError.WriteFailed(problem): return "could not write ${os.describe_failure(problem)}"
         FsError.NotText(path): return "`${path}` is not valid UTF-8"
     }
 }
@@ -69,8 +71,9 @@ pub func read_file(path: string) -> Result<[]u8, FsError> {
     loop {
         let got = read(i32(handle), ptr(block), u64(4096))
         if got < 0 {
+            let problem = os.failure("`${path}`")
             let ignored = close(i32(handle))
-            return Err(FsError.ReadFailed(path))
+            return Err(FsError.ReadFailed(problem))
         }
         if got == 0 {
             break
@@ -100,8 +103,9 @@ pub func write_file(path: string, bytes: []u8) -> Result<int, FsError> {
         let rest = bytes[written..bytes.len()]
         let wrote = write(i32(handle), ptr(rest), u64(rest.len()))
         if wrote <= 0 {
+            let problem = os.failure("`${path}`")
             let ignored = close(i32(handle))
-            return Err(FsError.WriteFailed(path))
+            return Err(FsError.WriteFailed(problem))
         }
         written += int(wrote)
     }
@@ -121,7 +125,7 @@ func open_path(path: string, flags: i32, mode: u32) -> Result<int, FsError> {
     }
     let handle = open(ptr(terminated), flags, mode)
     if handle < 0 {
-        return Err(FsError.OpenFailed(path))
+        return Err(FsError.OpenFailed(os.failure("`${path}`")))
     }
     return Ok(int(handle))
 }

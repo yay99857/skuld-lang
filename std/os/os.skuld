@@ -11,6 +11,8 @@ unsafe extern "C" {
     func sk_arg_count() -> i64
     func sk_arg_len(index: i64) -> i64
     func sk_arg_copy(index: i64, out: *u8, capacity: u64) -> i64
+    func sk_errno() -> i64
+    func sk_error_message(code: i64, out: *u8, capacity: u64) -> i64
     func sk_flush() -> void
     func sk_exit(code: i64) -> void
 }
@@ -18,7 +20,7 @@ unsafe extern "C" {
 pub enum OsError {
     // An argument that is not UTF-8. Skuld strings are UTF-8, and a command
     // line is bytes, so the two can disagree.
-    NotText(int)
+    NotText(int),
 }
 
 pub func describe(error: OsError) -> string {
@@ -67,6 +69,59 @@ pub func parameters() -> Result<[]string, OsError> {
         return Ok(all)
     }
     return Ok(all[1..all.len()])
+}
+
+// Why the last foreign call failed, as the operating system's number. It is
+// only meaningful immediately after a call that reported failure: anything in
+// between may have set it.
+pub func last_error() -> int {
+    return int(sk_errno())
+}
+
+// The system's description of an error number, such as "Connection refused".
+// An unknown number still describes itself, since that is what `strerror`
+// does; an empty string means the description did not fit, which no real one
+// does.
+pub func error_message(code: int) -> string {
+    var buffer: []u8 = []
+    var index = 0
+    while index < 256 {
+        buffer.push(0)
+        index += 1
+    }
+    let length = sk_error_message(i64(code), ptr(buffer), u64(256))
+    if length < 0 {
+        return ""
+    }
+    let text = bytes_to_string(buffer[0..int(length)]) else problem {
+        return ""
+    }
+    return text
+}
+
+// A failed system call: what was being attempted, and the number the system
+// left behind. It is a class so that an enum variant can carry both halves
+// without the language needing a tuple.
+pub class OsFailure {
+    // What the call was working on — a path, an address, a step's name.
+    subject: string
+    // The system's error number at the moment the call failed, or 0 when
+    // there was none to read.
+    code: int = 0
+}
+
+// Capture the reason the call that just failed did so. Call it immediately:
+// anything in between may set `errno` itself.
+pub func failure(subject: string) -> OsFailure {
+    return new OsFailure(subject: subject, code: last_error())
+}
+
+// `subject: reason`, or just the subject where the system had no number.
+pub func describe_failure(problem: OsFailure) -> string {
+    if problem.code == 0 {
+        return problem.subject
+    }
+    return "${problem.subject}: ${error_message(problem.code)}"
 }
 
 // Write out what has been printed so far. Output is buffered, so a program

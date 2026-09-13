@@ -328,6 +328,22 @@ int64_t sk_arg_copy(int64_t index, unsigned char *out, uint64_t capacity) {
     return len;
 }
 
+/* The reason the last foreign call failed.
+ *
+ * `errno` is a macro over a function returning a pointer, and `strerror`
+ * answers with one, so neither can cross the boundary as it is. Reading them
+ * here keeps the rule intact: a number comes back, and a message is copied
+ * into bytes the caller already owns. */
+int64_t sk_errno(void) { return (int64_t)errno; }
+
+int64_t sk_error_message(int64_t code, unsigned char *out, uint64_t capacity) {
+    const char *text = strerror((int)code);
+    size_t len = strlen(text);
+    if (len > capacity) return -1;
+    memcpy(out, text, len);
+    return (int64_t)len;
+}
+
 /* Flush what has been printed so far. A test runner needs this: a program
  * that aborts loses whatever is still sitting in the buffer, and the line
  * that says which test was running is exactly what must survive. */

@@ -171,8 +171,9 @@ func main() {{
         .output()
         .expect("run skuld");
     assert!(output.status.success(), "a refusal is a value, not a crash");
+    // The failure now says why, not just which step failed.
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "could not connect\n"
+        format!("could not connect to 127.0.0.1:{port}: Connection refused\n")
     );
 }

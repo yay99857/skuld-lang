@@ -9,12 +9,14 @@
 // either a read primitive at the boundary or a resolver written in Skuld over
 // UDP; both are decisions of their own.
 //
-// There is no `errno` either, for the same reason, so a failure says which
-// step failed rather than why. That is less than C offers and more than a
-// silent -1.
+// A failure does say why: `std/os` reads `errno` through the runtime, since
+// `errno` is a macro over a function returning a pointer and cannot cross the
+// boundary itself.
 //
 // The address layout below is `struct sockaddr_in` on a little-endian Linux:
 // the family is host order, the port and address are network order.
+
+import "std/os"
 
 unsafe extern "C" {
     func socket(domain: i32, kind: i32, protocol: i32) -> i32
@@ -26,23 +28,24 @@ unsafe extern "C" {
 
 pub enum NetError {
     // The text was not four decimal octets separated by dots.
-    Address(string)
+    Address(string),
     // The port was outside 1..65535.
-    Port(int)
-    OpenFailed
-    ConnectFailed
-    SendFailed
-    ReceiveFailed
+    Port(int),
+    // Each of these carries what was being attempted and the system's reason.
+    OpenFailed(os.OsFailure),
+    ConnectFailed(os.OsFailure),
+    SendFailed(os.OsFailure),
+    ReceiveFailed(os.OsFailure),
 }
 
 pub func describe(error: NetError) -> string {
     match error {
         NetError.Address(text): return "`${text}` is not an IPv4 address"
         NetError.Port(value): return "port ${value} is out of range"
-        NetError.OpenFailed: return "could not open a socket"
-        NetError.ConnectFailed: return "could not connect"
-        NetError.SendFailed: return "could not send"
-        NetError.ReceiveFailed: return "could not receive"
+        NetError.OpenFailed(problem): return "could not open ${os.describe_failure(problem)}"
+        NetError.ConnectFailed(problem): return "could not connect to ${os.describe_failure(problem)}"
+        NetError.SendFailed(problem): return "could not send to ${os.describe_failure(problem)}"
+        NetError.ReceiveFailed(problem): return "could not receive from ${os.describe_failure(problem)}"
     }
 }
 
@@ -85,6 +88,8 @@ pub func parse_address(text: string) -> Result<[]u8, NetError> {
 
 pub class Connection {
     handle: int
+    // Where this connection goes, so a failure can say which peer it was.
+    peer: string = "the peer"
 
     // `MSG_NOSIGNAL`, so that writing to a connection the peer has closed
     // fails as a return value instead of killing the process with SIGPIPE.
@@ -94,7 +99,7 @@ pub class Connection {
             let rest = bytes[sent..bytes.len()]
             let wrote = send(i32(this.handle), ptr(rest), u64(rest.len()), 16384)
             if wrote <= 0 {
-                return Err(NetError.SendFailed)
+                return Err(NetError.SendFailed(os.failure(this.peer)))
             }
             sent = sent + int(wrote)
         }
@@ -112,7 +117,7 @@ pub class Connection {
         }
         let got = recv(i32(this.handle), ptr(buffer), u64(limit), 0)
         if got < 0 {
-            return Err(NetError.ReceiveFailed)
+            return Err(NetError.ReceiveFailed(os.failure(this.peer)))
         }
         return Ok(buffer[0..int(got)])
     }
@@ -146,7 +151,7 @@ pub func open(address: string, port: int) -> Result<Connection, NetError> {
     // AF_INET, SOCK_STREAM.
     let handle = socket(2, 1, 0)
     if handle < 0 {
-        return Err(NetError.OpenFailed)
+        return Err(NetError.OpenFailed(os.failure("a socket")))
     }
     var sockaddr: []u8 = []
     // sin_family: AF_INET in host order on a little-endian target.
@@ -165,8 +170,9 @@ pub func open(address: string, port: int) -> Result<Connection, NetError> {
         pad = pad + 1
     }
     if connect(i32(handle), ptr(sockaddr), u32(16)) < 0 {
+        let problem = os.failure("${address}:${port}")
         let ignored = close(i32(handle))
-        return Err(NetError.ConnectFailed)
+        return Err(NetError.ConnectFailed(problem))
     }
-    return Ok(new Connection(handle: int(handle)))
+    return Ok(new Connection(handle: int(handle), peer: "${address}:${port}"))
 }
