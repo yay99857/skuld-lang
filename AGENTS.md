@@ -68,16 +68,19 @@ accurate; documenting a future feature is not a request to implement it.
   conditionals, `while`, `loop`, `break`, `continue`, structs, classes and
   reference-counted string concatenation and interpolation execute. Weak class
   references, homogeneous arrays, builtin Option values, builtin `Result<T, E>`
-  with `?` propagation, the sized integers and byte-level string access execute
+  with `?` propagation, the sized integers, byte-level string access and
+  `extern "C"` foreign calls execute
   too. Parameters and `let` bindings are immutable.
 - `lex`, `parse`, `resolve` inspect individual stages. `check` performs full
   static checking without clang; `emit-c` emits checked C; `run` builds and
   executes in a private temporary directory, keeping nothing; `build` keeps the
-  executable in the working directory under the source stem.
+  executable in the working directory under the source stem. `build` and `run`
+  also forward trailing `-l<library>`/`-L<directory>` arguments to clang, and
+  accept no other linker argument.
 - The resolver uses single-source declaration/use tables; keep them with their
   exact AST revision. Functions are predeclared; parameters share the function
   body scope; locals become visible after initializers; child scopes shadow.
-  The prelude bindings — `print`, `Some`, `None`, `null`, `Ok`, `Err`, the width
+  The prelude bindings — `print`, `Some`, `None`, `null`, `Ok`, `Err`, `ptr`, the width
   conversions and `bytes_to_string` — may all be shadowed. Use resolved symbols,
   not spelling, to identify builtins. Only direct calls are supported currently.
 - HIR lowering is separate from checking. Only successful checking constructs
@@ -148,9 +151,27 @@ accurate; documenting a future feature is not a request to implement it.
   `for i in 0..10 { ... }` and `for item in items { ... }`. Loop variables are immutable
   and scoped to the body. Managed array elements retain and release per iteration.
   `break` and `continue` naturally bind to the loop.
+- Foreign functions are declared in `unsafe extern "C" { func name(...) -> type }`
+  blocks with no bodies. The `unsafe` marker is required and sits on the block,
+  because the unsafe act is asserting a signature the compiler cannot verify
+  against the linked library; the calls themselves are ordinary direct calls,
+  resolved and checked like any other, and the backend emits the declared name
+  verbatim instead of a generated one. Only `"C"` is a supported ABI.
+  Managed values never cross the boundary, and the checker enforces it: a
+  signature accepts only the scalars, the raw pointer type `*T` over a scalar or
+  `*void`, and `void` as a return type; a string, array, class, Option, Result
+  or a pointer to one is rejected. A declared name may not be `main` or start
+  with `skuld_`. `ptr(value)` borrows the bytes a string or an array of scalars
+  already owns — `*u8` for a string, `*T` for a `[]T` — retains nothing and is
+  valid only while its operand is alive, so a foreign call emits no retain,
+  release or cleanup of its own. Length travels separately; a Skuld string is
+  not NUL-terminated. Libraries are named on the command line, never in the
+  source. Callbacks into C, structs by value across the ABI, varargs, pointer
+  arithmetic and reading through a pointer from Skuld remain out of scope.
 - Completed: classes, weak references, dynamic arrays (push, insert, pop, remove),
   colon return type syntax, Option with null, safe weak promotion, M1 (Enums and match),
-  M2 (`for` and iteration), and M3 (`Result<T, E>` and propagation), which the user
+  M2 (`for` and iteration), M5 (`extern "C"` FFI and linking, authorized by the
+  user in the session that implemented it), and M3 (`Result<T, E>` and propagation), which the user
   authorized as a builtin following the Option precedent rather than through general
   generics. M4 (bytes, sized integers and string slices) is complete — the user
   authorized the full set of sized integers, type-name conversion calls, and
@@ -223,13 +244,16 @@ checking are stable.
 Do not implement generics, macros, async/await, threads, channels, reflection,
 decorators, annotations, a package registry, compiler plugins, compile-time
 execution, operator overloading, user-defined conversions, LLVM or Cranelift
-before Demo 3. Interfaces, FFI and the official formatter remain future work
-unless explicitly included in the active task.
+before Demo 3. Interfaces and the official formatter remain future work
+unless explicitly included in the active task. The FFI arrived with M5 and
+authorizes nothing beyond itself: no standard library, no sockets, no wrapper
+around a C library shipped with the compiler.
 Do not build a standard library or memory-management runtime ahead of need.
 
 The milestones proposed in `ROADMAP.md` do not relax any of the above.
-`extern "C"`, HTTP and JSON are all Planned and each needs its own
-authorization. `Result` arrived as a builtin, which settles that roadmap
+HTTP and JSON are Planned and each needs its own
+authorization; `extern "C"` is implemented, which is a boundary, not a
+standard library. `Result` arrived as a builtin, which settles that roadmap
 question; general generics remain excluded and still need their own explicit
 decision. M4's closing marker was met by `tests/pass/json_parser.skuld`, a
 parser written in Skuld — it is a fixture, never a JSON facility in the
