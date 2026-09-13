@@ -112,6 +112,7 @@ pub(crate) fn type_check(
         diagnostics: Vec::new(),
         return_type: Type::Void,
         loops: Vec::new(),
+        jumps_escape: false,
         structs: Vec::new(),
         enums: Vec::new(),
         module_types: vec![ModuleTypes::default(); program.modules.len()],
@@ -539,6 +540,11 @@ struct Checker<'a> {
     /// One frame per enclosing loop, recording whether a `break` can exit it.
     /// Empty means a jump has no loop to bind to.
     loops: Vec<bool>,
+    /// Whether a `break` or `continue` counts as leaving the block being
+    /// checked. It does inside the escape block of a declaration that unwraps,
+    /// where the question is whether control can fall through rather than
+    /// whether the function returns.
+    jumps_escape: bool,
     /// Declared structs in declaration order; `Type::Struct` indexes this.
     structs: Vec<StructInfo>,
     enums: Vec<EnumInfo>,
@@ -1051,7 +1057,12 @@ impl Checker<'_> {
                     .as_ref()
                     .map(|reference| self.type_ref(reference, false));
                 let previous_expected = self.expected_context;
-                self.expected_context = annotated;
+                // With an escape block the annotation describes the unwrapped
+                // name, so it cannot steer the initializer.
+                self.expected_context = match variable.otherwise {
+                    Some(_) => None,
+                    None => annotated,
+                };
                 let inferred = self.expression(&variable.initializer);
                 self.expected_context = previous_expected;
                 if inferred == Type::Void {
@@ -1061,11 +1072,16 @@ impl Checker<'_> {
                         "cannot store a `void` expression in a variable",
                     );
                 }
-                let ty = if let Some(annotated) = annotated {
-                    self.expect_type(annotated, inferred, variable.initializer.span);
-                    annotated
-                } else {
-                    inferred
+                let ty = match &variable.otherwise {
+                    Some(otherwise) => self.otherwise(variable, otherwise, inferred, annotated),
+                    None => {
+                        if let Some(annotated) = annotated {
+                            self.expect_type(annotated, inferred, variable.initializer.span);
+                            annotated
+                        } else {
+                            inferred
+                        }
+                    }
                 };
                 let id = self.declaration(&variable.name);
                 self.symbol_types[id.0] = ty;
@@ -1190,7 +1206,9 @@ impl Checker<'_> {
                         format!("`{keyword}` is only valid inside a loop"),
                     ),
                 }
-                false
+                // A jump never returns, but it does leave the block, which is
+                // the question an escape block is asking.
+                self.jumps_escape
             }
             StatementKind::Match { value, arms } => {
                 let target_ty = self.expression(value);
@@ -1424,9 +1442,13 @@ impl Checker<'_> {
         // and a `break` inside it has no enclosing loop to bind to.
         let outer_return = std::mem::replace(&mut self.return_type, return_type);
         let outer_loops = std::mem::take(&mut self.loops);
+        // A `return` inside a lambda leaves the lambda, not the block that
+        // built it, so it settles nothing about an enclosing escape block.
+        let outer_jumps = std::mem::replace(&mut self.jumps_escape, false);
         let outer_expected = self.expected_context.take();
         let returns = self.block(&lambda.body);
         self.expected_context = outer_expected;
+        self.jumps_escape = outer_jumps;
         self.loops = outer_loops;
         self.return_type = outer_return;
         if return_type != Type::Void && return_type != Type::Error && !returns {
@@ -1440,6 +1462,73 @@ impl Checker<'_> {
             );
         }
         self.function_type(parameters, return_type)
+    }
+    /// `let value = fallible() else reason { ... }`. The declaration unwraps,
+    /// and the block is what happens when there is nothing to unwrap; it must
+    /// not fall through, because the name it guards is in scope afterwards.
+    fn otherwise(
+        &mut self,
+        variable: &VariableDecl,
+        otherwise: &Otherwise,
+        inferred: Type,
+        annotated: Option<Type>,
+    ) -> Type {
+        let (payload, error) = match inferred {
+            Type::Option(id) => (self.options[id.0].element, None),
+            Type::Result(id) => {
+                let info = self.results[id.0];
+                (info.ok, Some(info.err))
+            }
+            Type::Error => (Type::Error, None),
+            other => {
+                self.error(
+                    DiagnosticCode::TypeMismatch,
+                    variable.initializer.span,
+                    format!(
+                        "`else` unwraps an Option or a Result, found `{}`",
+                        self.type_name(other)
+                    ),
+                );
+                (Type::Error, None)
+            }
+        };
+        match (&otherwise.binding, error) {
+            (Some(binding), Some(error)) => {
+                let id = self.declaration(binding);
+                self.symbol_types[id.0] = error;
+            }
+            (Some(binding), None) => {
+                self.error(
+                    DiagnosticCode::TypeMismatch,
+                    binding.span,
+                    "an Option carries no error to name; write `else { ... }`",
+                );
+            }
+            (None, Some(_)) => {
+                // Ignoring the error is allowed: the block may not need it.
+            }
+            (None, None) => {}
+        }
+        // A `break` or `continue` leaves the block as surely as a `return`
+        // does, so both count while this block is being checked.
+        let previous = std::mem::replace(&mut self.jumps_escape, true);
+        let escapes = self.block(&otherwise.block);
+        self.jumps_escape = previous;
+        if !escapes {
+            self.error(
+                DiagnosticCode::MissingReturn,
+                otherwise.span,
+                format!(
+                    "this block must not fall through: `{}` is in scope after it, and there would be nothing to bind",
+                    variable.name.text
+                ),
+            );
+        }
+        if let Some(annotated) = annotated {
+            self.expect_type(annotated, payload, variable.initializer.span);
+            return annotated;
+        }
+        payload
     }
     fn construction(&mut self, path: &Path, fields: &[FieldInit], new: bool) -> Type {
         let name = &path.name;

@@ -926,3 +926,54 @@ fn the_checked_tables_are_reachable_from_outside() {
     assert_eq!(signature.parameters, vec![Type::INT]);
     assert_eq!(signature.return_type, Type::INT);
 }
+
+#[test]
+fn an_escape_block_must_not_fall_through() {
+    let prelude = "func fallible() -> Result<int, string> { return Ok(1) }\n";
+    // The name is in scope after the statement, so falling past the block
+    // would leave it unbound.
+    fails(
+        &format!("{prelude}func main() {{ let v = fallible() else r {{ print(r) }}\n print(v) }}"),
+        DiagnosticCode::MissingReturn,
+    );
+    fails(
+        &format!(
+            "{prelude}func main() {{ let v = fallible() else r {{ if r.len() > 0 {{ return }} }}\n print(v) }}"
+        ),
+        DiagnosticCode::MissingReturn,
+    );
+    valid(&format!(
+        "{prelude}func main() {{ let v = fallible() else r {{ print(r)\n return }}\n print(v) }}"
+    ));
+    // A jump leaves the block as surely as a return does.
+    valid(&format!(
+        "{prelude}func main() {{ for i in 0..2 {{ let v = fallible() else r {{ continue }}\n print(v) }} }}"
+    ));
+}
+
+#[test]
+fn an_escape_block_unwraps_an_option_or_a_result() {
+    fails(
+        "func main() { let v = 42 else { return }\n print(v) }",
+        DiagnosticCode::TypeMismatch,
+    );
+    // An Option carries no error, so there is nothing to name.
+    fails(
+        "func maybe() -> Option<int> { return 1 }\nfunc main() { let v = maybe() else r { return }\n print(v) }",
+        DiagnosticCode::TypeMismatch,
+    );
+    valid(
+        "func maybe() -> Option<int> { return 1 }\nfunc main() { let v = maybe() else { return }\n print(v) }",
+    );
+}
+
+#[test]
+fn an_unwrapped_name_has_the_payload_type() {
+    let source = "func fallible() -> Result<int, string> { return Ok(1) }\nfunc main() { let v = fallible() else r { return }\n print(v) }";
+    let typed = check(source).expect("a valid escape binding");
+    let start = source.rfind("v) }").expect("the use");
+    assert_eq!(
+        typed.expression_type(crate::span::Span::new(start, start + 1)),
+        Some(Type::INT)
+    );
+}

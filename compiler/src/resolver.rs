@@ -474,6 +474,21 @@ impl Resolver {
             StatementKind::Variable(variable) => {
                 // A binding becomes visible only after its initializer.
                 self.expression(&variable.initializer);
+                // The escape block runs when there is no value, so the name
+                // being declared is not in scope inside it; the error it names
+                // is, and nowhere else.
+                if let Some(otherwise) = &variable.otherwise {
+                    self.enter(otherwise.block.span);
+                    if let Some(binding) = &otherwise.binding {
+                        self.declare(
+                            binding,
+                            SymbolKind::Variable(Mutability::Immutable),
+                            Visibility::Private,
+                        );
+                    }
+                    self.statements(&otherwise.block);
+                    self.leave();
+                }
                 self.declare(
                     &variable.name,
                     SymbolKind::Variable(variable.mutability),

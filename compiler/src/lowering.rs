@@ -207,10 +207,35 @@ fn statement(source: &ast::Statement, cx: &Lowering<'_>) -> h::Statement {
     let kind = match &source.kind {
         ast::StatementKind::Variable(variable) => {
             let id = cx.decl(variable.name.span);
-            h::StatementKind::Variable {
-                id,
-                ty: cx.typed.symbol_types[id.0],
-                initializer: expression(&variable.initializer, cx),
+            match &variable.otherwise {
+                Some(otherwise) => {
+                    let value = expression(&variable.initializer, cx);
+                    let (pattern, error_ty) = match value.ty {
+                        Type::Option(_) => (h::IfLetPattern::Some, Type::Void),
+                        Type::Result(result) => {
+                            (h::IfLetPattern::Ok, cx.typed.results[result.0].err)
+                        }
+                        _ => unreachable!("internal compiler bug: unchecked escape binding"),
+                    };
+                    let error = otherwise
+                        .binding
+                        .as_ref()
+                        .map(|binding| cx.decl(binding.span));
+                    h::StatementKind::GuardVariable {
+                        id,
+                        ty: cx.typed.symbol_types[id.0],
+                        pattern,
+                        value,
+                        error,
+                        error_ty,
+                        otherwise: block(&otherwise.block, cx),
+                    }
+                }
+                None => h::StatementKind::Variable {
+                    id,
+                    ty: cx.typed.symbol_types[id.0],
+                    initializer: expression(&variable.initializer, cx),
+                },
             }
         }
         ast::StatementKind::Expression(expr) => h::StatementKind::Expression(expression(expr, cx)),

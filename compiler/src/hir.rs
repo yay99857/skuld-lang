@@ -86,6 +86,19 @@ pub(crate) enum StatementKind {
         then_block: Block,
         else_branch: Option<Box<Statement>>,
     },
+    /// A declaration that unwraps, with the block that runs when there is
+    /// nothing to unwrap. That block never falls through, so the binding below
+    /// it is always initialised.
+    GuardVariable {
+        id: SymbolId,
+        ty: Type,
+        pattern: IfLetPattern,
+        value: Expr,
+        /// The error the escape block names, when it names one.
+        error: Option<SymbolId>,
+        error_ty: Type,
+        otherwise: Block,
+    },
     IfLet {
         pattern: IfLetPattern,
         binding: SymbolId,

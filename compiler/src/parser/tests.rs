@@ -920,3 +920,53 @@ fn a_member_access_is_not_a_qualified_struct_literal() {
         ExprKind::Member { .. }
     ));
 }
+
+#[test]
+fn a_declaration_may_carry_an_escape_block() {
+    let program = program(
+        "func main() { let a = f() else reason { return }\n let b = g() else { return }\n let c = h() }",
+    );
+    let statements = &program.functions[0].body.statements;
+    let named = match &statements[0].kind {
+        StatementKind::Variable(declaration) => declaration,
+        _ => panic!("variable"),
+    };
+    assert_eq!(
+        named
+            .otherwise
+            .as_ref()
+            .expect("an escape block")
+            .binding
+            .as_ref()
+            .map(|name| name.text.as_str()),
+        Some("reason")
+    );
+    let anonymous = match &statements[1].kind {
+        StatementKind::Variable(declaration) => declaration,
+        _ => panic!("variable"),
+    };
+    assert!(
+        anonymous
+            .otherwise
+            .as_ref()
+            .expect("a block")
+            .binding
+            .is_none()
+    );
+    let plain = match &statements[2].kind {
+        StatementKind::Variable(declaration) => declaration,
+        _ => panic!("variable"),
+    };
+    assert!(plain.otherwise.is_none());
+}
+
+#[test]
+fn an_else_after_an_if_still_belongs_to_the_if() {
+    // `else` binds to a declaration only where a declaration is being parsed.
+    let program = program("func main() { if flag { print(1) } else { print(2) } }");
+    let StatementKind::If { else_branch, .. } = &program.functions[0].body.statements[0].kind
+    else {
+        panic!("if statement")
+    };
+    assert!(else_branch.is_some());
+}

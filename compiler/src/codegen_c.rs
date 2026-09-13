@@ -1025,6 +1025,53 @@ impl Emitter {
                 ));
                 self.line(&format!("(void)skuld_v{};", id.0));
             }
+            StatementKind::GuardVariable {
+                id,
+                ty,
+                pattern,
+                value,
+                error,
+                error_ty,
+                otherwise,
+            } => {
+                let (present, slot) = match (pattern, value.ty) {
+                    (IfLetPattern::Some, Type::Option(_)) => {
+                        (".some".to_owned(), ".value".to_owned())
+                    }
+                    (IfLetPattern::Ok, Type::Result(_)) => (
+                        format!(".tag == {}", crate::types::ResultInfo::OK),
+                        format!(".payload.v{}", crate::types::ResultInfo::OK),
+                    ),
+                    _ => unreachable!("checked escape binding"),
+                };
+                let rendered = self.expression(value);
+                // The escape block never falls through, so the declaration
+                // below it is reached only when there was a value.
+                self.line(&format!("if (!({rendered}{present})) {{"));
+                self.indent += 1;
+                if let Some(error) = error {
+                    let payload = format!("{rendered}.payload.v{}", crate::types::ResultInfo::ERR);
+                    self.line(&format!(
+                        "{}{} skuld_v{} = {};",
+                        self.cleanup(*error_ty),
+                        self.c_type(*error_ty),
+                        error.0,
+                        self.retained(*error_ty, &payload)
+                    ));
+                    self.line(&format!("(void)skuld_v{};", error.0));
+                }
+                self.block_contents(otherwise);
+                self.indent -= 1;
+                self.line("}");
+                let initial = self.retained(*ty, &format!("{rendered}{slot}"));
+                let cleanup = self.cleanup(*ty);
+                self.line(&format!(
+                    "{cleanup}{} skuld_v{} = {initial};",
+                    self.c_type(*ty),
+                    id.0
+                ));
+                self.line(&format!("(void)skuld_v{};", id.0));
+            }
             StatementKind::Expression(expr) => {
                 let value = self.expression(expr);
                 if expr.ty != Type::Void {

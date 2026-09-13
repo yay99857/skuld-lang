@@ -140,28 +140,19 @@ pub func get(url: string) -> Result<Response, HttpError> {
     for byte in request.bytes() {
         bytes.push(byte)
     }
-    match net.open(target.host, target.port) {
-        Ok(connection): {
-            match connection.send_all(bytes) {
-                Ok(sent): { }
-                Err(reason): {
-                    connection.close()
-                    return Err(HttpError.Network(reason))
-                }
-            }
-            match connection.receive_all() {
-                Ok(raw): {
-                    connection.close()
-                    return parse_response(raw)
-                }
-                Err(reason): {
-                    connection.close()
-                    return Err(HttpError.Network(reason))
-                }
-            }
-        }
-        Err(reason): return Err(HttpError.Network(reason))
+    let connection = net.open(target.host, target.port) else reason {
+        return Err(HttpError.Network(reason))
     }
+    let sent = connection.send_all(bytes) else reason {
+        connection.close()
+        return Err(HttpError.Network(reason))
+    }
+    let raw = connection.receive_all() else reason {
+        connection.close()
+        return Err(HttpError.Network(reason))
+    }
+    connection.close()
+    return parse_response(raw)
 }
 
 // The head is ASCII by definition, so it is decoded before being split; the
@@ -179,10 +170,8 @@ pub func parse_response(raw: []u8) -> Result<Response, HttpError> {
     if boundary < 0 {
         return Err(HttpError.Malformed("no blank line after the headers"))
     }
-    var head = ""
-    match bytes_to_string(raw[0..boundary]) {
-        Ok(text): head = text
-        Err(reason): return Err(HttpError.Malformed("headers are not text"))
+    let head = bytes_to_string(raw[0..boundary]) else reason {
+        return Err(HttpError.Malformed("headers are not text"))
     }
     let body_bytes = raw[boundary + 4..raw.len()]
     let lines = strings.split(head, "\r\n")
@@ -196,10 +185,7 @@ pub func parse_response(raw: []u8) -> Result<Response, HttpError> {
     if !strings.starts_with(status_line[0], "HTTP/1.") {
         return Err(HttpError.Malformed("not an HTTP/1.x response"))
     }
-    var status = 0
-    if let value = digits(status_line[1]) {
-        status = value
-    } else {
+    let status = digits(status_line[1]) else {
         return Err(HttpError.Malformed("status code"))
     }
     var reason = ""
@@ -242,15 +228,13 @@ pub func parse_response(raw: []u8) -> Result<Response, HttpError> {
             }
         }
     }
-    match bytes_to_string(body) {
-        Ok(text): {
-            return Ok(new Response(
-                status: status,
-                reason: reason,
-                headers: headers,
-                body: text
-            ))
-        }
-        Err(reason): return Err(HttpError.Encoding(reason))
+    let text = bytes_to_string(body) else invalid {
+        return Err(HttpError.Encoding(invalid))
     }
+    return Ok(new Response(
+        status: status,
+        reason: reason,
+        headers: headers,
+        body: text
+    ))
 }

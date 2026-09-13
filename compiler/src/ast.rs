@@ -312,6 +312,22 @@ pub struct VariableDecl {
     pub mutability: Mutability,
     pub type_ref: Option<TypeRef>,
     pub initializer: Expr,
+    /// `let value = fallible() else reason { ... }`: the binding takes the
+    /// payload, and the block runs instead when there is none. Present only on
+    /// a declaration whose initializer is an `Option` or a `Result`.
+    pub otherwise: Option<Otherwise>,
+    pub span: Span,
+}
+
+/// The escape half of a declaration that unwraps. It must not fall through:
+/// the name it guards is in scope after the statement, so reaching past the
+/// block would leave it unbound.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Otherwise {
+    /// The error a `Result` carried, named here and visible only in `block`.
+    /// An `Option` has nothing to name.
+    pub binding: Option<Name>,
+    pub block: Block,
     pub span: Span,
 }
 

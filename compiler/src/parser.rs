@@ -806,11 +806,33 @@ impl Parser<'_> {
                 };
                 self.expect(&Equal, "`=` and a variable initializer")?;
                 let initializer = self.expression()?;
+                // `else` cannot continue an expression, so seeing it here is
+                // unambiguous however the initializer ended.
+                let otherwise = if self.at(&Else) {
+                    let otherwise_start = self.bump().span.start;
+                    // `else reason {` names the error; `else {` names nothing.
+                    let binding = if matches!(self.current().kind, Identifier(_))
+                        && matches!(self.peek_kind(1), LeftBrace)
+                    {
+                        Some(self.name("a name for the error")?)
+                    } else {
+                        None
+                    };
+                    let block = self.block()?;
+                    Some(Otherwise {
+                        binding,
+                        span: Span::new(otherwise_start, block.span.end),
+                        block,
+                    })
+                } else {
+                    None
+                };
                 StatementKind::Variable(VariableDecl {
                     name,
                     mutability,
                     type_ref,
                     initializer,
+                    otherwise,
                     span: Span::new(start, self.previous_end()),
                 })
             }
