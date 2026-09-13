@@ -90,6 +90,21 @@ pub fn outline(program: &Program) -> Vec<Symbol> {
     symbols
 }
 
+/// The outline flattened to one entry per symbol, each paired with the name
+/// of the declaration that holds it. A workspace search wants a flat list —
+/// there is no tree to expand in a list of results from many files — but the
+/// container is what tells two `name` fields of two classes apart.
+pub fn flatten(symbols: &[Symbol]) -> Vec<(&Symbol, Option<&str>)> {
+    let mut flat = Vec::new();
+    for symbol in symbols {
+        flat.push((symbol, None));
+        for child in &symbol.children {
+            flat.push((child, Some(symbol.name.as_str())));
+        }
+    }
+    flat
+}
+
 fn type_symbol(declaration: &StructDecl) -> Symbol {
     let mut children: Vec<Symbol> = declaration
         .fields

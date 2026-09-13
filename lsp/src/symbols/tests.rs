@@ -102,3 +102,20 @@ fn writes_the_compound_types_the_way_the_formatter_does() {
         Some("(a: []u8, b: Option<int>, c: Result<int, string>, d: weak User, e: (int) -> bool)")
     );
 }
+
+#[test]
+fn flattening_pairs_each_child_with_what_holds_it() {
+    let outline = outline_of("class User {\n  name: string\n  hello() { }\n}\nfunc main() { }\n");
+    let flat = flatten(&outline);
+    assert_eq!(
+        flat.iter()
+            .map(|(symbol, container)| (symbol.name.as_str(), *container))
+            .collect::<Vec<_>>(),
+        [
+            ("User", None),
+            ("name", Some("User")),
+            ("hello", Some("User")),
+            ("main", None),
+        ]
+    );
+}

@@ -1374,3 +1374,97 @@ fn a_document_that_never_checked_has_no_semantic_tokens() {
         Some(&Json::Array(Vec::new()))
     );
 }
+
+/// A `workspace/symbol` request for one query.
+fn workspace_symbol(id: i64, query: &str) -> Json {
+    Json::object([
+        ("jsonrpc", Json::string("2.0")),
+        ("id", Json::number(id as f64)),
+        ("method", Json::string("workspace/symbol")),
+        ("params", Json::object([("query", Json::string(query))])),
+    ])
+}
+
+/// Each result as `(name, containerName)`.
+fn named(result: &Json) -> Vec<(&str, Option<&str>)> {
+    result
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|symbol| {
+            (
+                symbol.get("name").and_then(Json::as_str).expect("a name"),
+                symbol.get("containerName").and_then(Json::as_str),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_server_advertises_and_answers_workspace_symbols() {
+    let path = "/tmp/skuld-lsp-test/workspace.skuld";
+    let source = "class User {\n    name: string\n    rename(to: string) {\n        print(to)\n    }\n}\n\nfunc main() {\n    let u = new User(name: \"a\")\n    u.rename(\"b\")\n}\n";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        workspace_symbol(2, "name"),
+        workspace_symbol(3, ""),
+    ]);
+    assert_eq!(
+        out[0].path(&["result", "capabilities", "workspaceSymbolProvider"]),
+        Some(&Json::Bool(true))
+    );
+    // A field and a method both hold the query, and each says what holds it.
+    assert_eq!(
+        named(result_of(&out, 2)),
+        [("name", Some("User")), ("rename", Some("User"))]
+    );
+    // An empty query matches everything the outline knows.
+    assert_eq!(
+        named(result_of(&out, 3)),
+        [
+            ("User", None),
+            ("name", Some("User")),
+            ("rename", Some("User")),
+            ("main", None),
+        ]
+    );
+}
+
+#[test]
+fn workspace_symbols_reach_a_module_through_the_file_that_imports_it() {
+    let entry = fixture_path("lsp_entry.skuld");
+    let (out, _) = converse(&[
+        did_open(
+            &entry,
+            "import \"modules/geometry\"\nfunc main() { print(geometry.origin().sum()) }\n",
+        ),
+        workspace_symbol(2, "point"),
+    ]);
+    let found = named(result_of(&out, 2));
+    assert!(
+        found.iter().any(|(name, _)| *name == "Point"),
+        "a declaration in an imported module is part of the workspace: {found:?}"
+    );
+    // It is reported in the module's own file, not in the entry document.
+    let uri = result_of(&out, 2).as_array().unwrap()[0]
+        .path(&["location", "uri"])
+        .and_then(Json::as_str)
+        .expect("a location");
+    assert!(uri.ends_with("modules/geometry/point.skuld"), "{uri}");
+}
+
+#[test]
+fn the_standard_library_is_not_part_of_the_workspace() {
+    // Its files are embedded in the compiler, so their paths name nothing an
+    // editor could open.
+    let path = "/tmp/skuld-lsp-test/uses-std.skuld";
+    let (out, _) = converse(&[
+        did_open(
+            path,
+            "import \"std/strings\"\nfunc main() {\n    print(strings.trim(\" a \"))\n}\n",
+        ),
+        workspace_symbol(2, "trim"),
+    ]);
+    assert_eq!(result_of(&out, 2), &Json::Array(Vec::new()));
+}

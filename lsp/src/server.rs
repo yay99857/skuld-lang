@@ -36,6 +36,11 @@ const SEVERITY_ERROR: f64 = 1.0;
 /// was checked as, which is that program's first file.
 const ENTRY: FileId = FileId(0);
 
+/// How many workspace symbols one answer carries. An empty query asks for
+/// everything, and a client that renders a list does not want every name in
+/// every open program at once.
+const WORKSPACE_SYMBOL_LIMIT: usize = 256;
+
 /// LSP `InlayHintKind::Type`. The other kind is a parameter name at a call
 /// site, which this server does not produce.
 const INLAY_TYPE: f64 = 1.0;
@@ -186,6 +191,12 @@ impl Server {
             (Some("textDocument/completion"), Some(id)) => {
                 let items = self.completions(message);
                 respond(output, id.clone(), items);
+                None
+            }
+
+            (Some("workspace/symbol"), Some(id)) => {
+                let symbols = self.workspace_symbols(message);
+                respond(output, id.clone(), symbols);
                 None
             }
 
@@ -655,6 +666,71 @@ impl Server {
         };
         skuld_compiler::check_program(&name, &source, &mut loader)
             .map_err(|errors| first_message(&errors))
+    }
+
+    /// Answer `workspace/symbol` with every declaration whose name matches,
+    /// across every program the editor has checked.
+    ///
+    /// The workspace is what is open, as it is for references: a program no
+    /// open document reaches is not searched, and cannot be — the server is
+    /// told about documents, not about a directory tree. The standard library
+    /// is left out for a sharper reason: its files are embedded in the
+    /// compiler, so their paths name nothing the editor could open.
+    fn workspace_symbols(&self, message: &Json) -> Json {
+        let query = message
+            .path(&["params", "query"])
+            .and_then(Json::as_str)
+            .unwrap_or("")
+            .to_lowercase();
+        let mut seen: std::collections::BTreeSet<(String, usize)> =
+            std::collections::BTreeSet::new();
+        let mut found = Vec::new();
+        for (document, typed) in &self.checked {
+            for (index, file) in typed.program().files.iter().enumerate() {
+                let id = FileId(index);
+                if library_file(typed, id) {
+                    continue;
+                }
+                let Some(path) = file_path(document, typed, id) else {
+                    continue;
+                };
+                let positions = Positions::new(file.source.clone());
+                let outline = symbols::outline(&file.program);
+                for (symbol, container) in symbols::flatten(&outline) {
+                    // A plain case-insensitive substring, which is what a
+                    // reader predicts. Clients filter and rank the result
+                    // again anyway, and a fuzzy match here would only disagree
+                    // with the one they apply.
+                    if !symbol.name.to_lowercase().contains(&query) {
+                        continue;
+                    }
+                    // The same file is reached through every open document
+                    // that imports it, and its declarations are the same ones.
+                    if !seen.insert((path.clone(), symbol.selection.start)) {
+                        continue;
+                    }
+                    let mut fields = vec![
+                        ("name", Json::string(&symbol.name)),
+                        ("kind", Json::number(symbol.kind)),
+                        (
+                            "location",
+                            Json::object([
+                                ("uri", Json::string(path_to_uri(&path))),
+                                ("range", range_json(&positions, symbol.range)),
+                            ]),
+                        ),
+                    ];
+                    if let Some(container) = container {
+                        fields.push(("containerName", Json::string(container)));
+                    }
+                    found.push(Json::object(fields));
+                    if found.len() >= WORKSPACE_SYMBOL_LIMIT {
+                        return Json::Array(found);
+                    }
+                }
+            }
+        }
+        Json::Array(found)
     }
 
     /// Answer `textDocument/documentHighlight` with every place this file
@@ -1183,6 +1259,7 @@ fn initialize_result() -> Json {
             ("positionEncoding", Json::string("utf-16")),
             ("hoverProvider", Json::Bool(true)),
             ("documentHighlightProvider", Json::Bool(true)),
+            ("workspaceSymbolProvider", Json::Bool(true)),
             // No `resolveProvider`: a hint is a short string the server
             // already had, and there is nothing to fill in on a second call.
             ("inlayHintProvider", Json::Bool(true)),
