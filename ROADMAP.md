@@ -856,18 +856,25 @@ let ada = new Account(owner: "Ada", balance: 120)
   would compare Skuld's library against a third party rather than a language;
   Go's uses `encoding/json` into `map[string]any`, which is comparable work and
   not the same code.
-- **Results** (fastest of three, Xeon E5-2640 v3, clang 22 `-O2`, rustc 1.98
-  `-O`, Go 1.27): arrays 42 ms against 21/240; strings 179 ms against 47/86;
-  dispatch 89 ms against 73/126; JSON 582 ms against Go's 689; map 20 ms
-  against 8/8. Between **1.2x and 3.8x** the faster of Rust and Go, and faster
-  than Go on two workloads. The full report, including peak memory and the
-  compiler's own timings, is in [`BENCHMARKS.md`](BENCHMARKS.md).
-- **Found by measuring:** the compiler's share of a build is under 1% — 5 ms to
-  check a 646-line file, 1127 ms for the whole build — so the edit-compile loop
-  is a question of what is asked of clang. Strings are the weakest workload,
-  paying a bounds check and a reference-count update per push with no way to
-  reserve capacity; that is where an optimisation would start, with
-  before-and-after evidence.
+- **Results** (Xeon E5-2640 v3, clang 22 `-O2`, rustc 1.98 `-O`, Go 1.27):
+  arrays 40 ms against 18/219; strings 111 ms against 46/64; dispatch 86 ms
+  against 66/144; JSON 265 ms against Go's 487; map 14 ms against 7/6. Between
+  **1.3x and 2.4x** the faster of Rust and Go, and faster than Go on two
+  workloads. The full report, including peak memory and the compiler's own
+  timings, is in [`BENCHMARKS.md`](BENCHMARKS.md).
+- **Found by measuring, and fixed:** every read of a managed local took a
+  counted copy of it for the length of an expression — a retain and a release
+  per index, per field access, per comparison. A binding nothing can reassign
+  already holds that reference, so the read borrows it now: JSON went from
+  582 ms to 265 ms and a byte scan from 433 ms to 121 ms, with
+  `tests/pass/borrowed_reads.skuld` added to keep it safe. Iterating a string's
+  bytes no longer builds the array `bytes()` would answer, either.
+- **Found by measuring, and left alone:** the compiler's share of a build is
+  under 1% — 4 ms to check a 646-line file against 871 ms for the build — so
+  the edit-compile loop is a question of what is asked of clang, not of the
+  compiler. Strings remain the weakest workload, paying a bounds check per push
+  with no way to reserve capacity; that is where the next optimisation would
+  start, with before-and-after evidence.
 - **Closing marker — reached:** `tests/bench/` holds the programs, the checked-in
   input and `run.sh`; `BENCHMARKS.md` is the report; and
   `cli/tests/portability.rs` builds and runs every `tests/pass` fixture on the

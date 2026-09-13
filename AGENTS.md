@@ -393,11 +393,14 @@ accurate; documenting a future feature is not a request to implement it.
   then the defaults of the fields nobody wrote, in declaration order.
 - Performance is measured, not asserted. `tests/bench/` holds the programs and
   `run.sh`, `BENCHMARKS.md` the report: between 1.2x and 3.8x the faster of
-  Rust and Go across five workloads, faster than Go on two. A benchmark is a
+  Rust and Go across five workloads, faster than Go on two — the spread moved
+  once already, when measuring found that every read of a managed local was
+  taking a counted copy of it. A benchmark is a
   comparison only if the Skuld, Rust and Go versions print the same checksum,
   which is why each prints one before it is timed. An optimisation needs
-  before-and-after evidence from these benchmarks and unchanged semantics; no
-  speed ratio is promised anywhere.
+  before-and-after evidence from these benchmarks and unchanged semantics, and
+  the numbers in `BENCHMARKS.md` are updated with it; no speed ratio is
+  promised anywhere.
 - The second native target is i686-linux-gnu, and `cli/tests/portability.rs`
   runs every `tests/pass` fixture on it: 58 of 59 produce identical output with
   no change to the runtime. The exception is the foreign boundary, which is the
