@@ -970,3 +970,34 @@ fn an_else_after_an_if_still_belongs_to_the_if() {
     };
     assert!(else_branch.is_some());
 }
+
+#[test]
+fn an_interface_declares_signatures_without_bodies() {
+    let program = program(
+        "pub interface Renderer {\n  render(value: int) -> string\n  reset()\n}\nfunc main() { }",
+    );
+    let interface = &program.interfaces[0];
+    assert_eq!(interface.visibility, Visibility::Public);
+    assert_eq!(interface.name.text, "Renderer");
+    assert_eq!(interface.methods.len(), 2);
+    assert_eq!(interface.methods[0].parameters[0].name.text, "value");
+    assert!(interface.methods[0].return_type.is_some());
+    // A signature with no result is void, as a declaration with none is.
+    assert!(interface.methods[1].return_type.is_none());
+}
+
+#[test]
+fn a_class_declares_the_interfaces_it_implements() {
+    let program = program(
+        "class User: Printable, other.Comparable { name: string }\nstruct Point { x: int }\nfunc main() { }",
+    );
+    let conforms = &program.structs[0].conforms;
+    assert_eq!(conforms.len(), 2);
+    assert_eq!(conforms[0].name.text, "Printable");
+    // A conformance may name an imported interface like any other type.
+    assert_eq!(
+        conforms[1].module.as_ref().map(|m| m.text.as_str()),
+        Some("other")
+    );
+    assert!(program.structs[1].conforms.is_empty());
+}

@@ -146,6 +146,28 @@ pub(crate) fn type_check(
             enum_sites.push((FileId(index), position));
         }
     }
+    // Interfaces parse but are not yet resolved; reporting them is better than
+    // accepting a declaration that would mean nothing.
+    for (index, file) in program.files.iter().enumerate() {
+        checker.file = FileId(index);
+        checker.module = file.module;
+        for declaration in &file.program.interfaces {
+            checker.error(
+                DiagnosticCode::UnsupportedFeature,
+                declaration.name.span,
+                "interfaces are not implemented yet",
+            );
+        }
+        for declaration in &file.program.structs {
+            for conformance in &declaration.conforms {
+                checker.error(
+                    DiagnosticCode::UnsupportedFeature,
+                    conformance.span,
+                    "interfaces are not implemented yet",
+                );
+            }
+        }
+    }
     // Structs are collected before signatures so functions may use them, and
     // before field types so a struct can refer to one declared later.
     for (index, file) in program.files.iter().enumerate() {

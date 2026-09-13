@@ -5,6 +5,7 @@ use crate::span::Span;
 pub struct Program {
     /// `import "net/socket"`, in source order, always before any declaration.
     pub imports: Vec<ImportDecl>,
+    pub interfaces: Vec<InterfaceDecl>,
     pub structs: Vec<StructDecl>,
     pub enums: Vec<EnumDecl>,
     pub functions: Vec<FunctionDecl>,
@@ -76,6 +77,26 @@ pub struct ExternFunctionDecl {
     pub span: Span,
 }
 
+/// `interface Renderer { render(value: int) -> string }`. Signatures only: a
+/// method body belongs to the class that declares it implements this.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InterfaceDecl {
+    pub visibility: Visibility,
+    pub name: Name,
+    pub methods: Vec<MethodSignature>,
+    pub span: Span,
+}
+
+/// A method signature with no body. `this` is implicit, as it is on a class.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MethodSignature {
+    pub name: Name,
+    pub parameters: Vec<Parameter>,
+    /// None means an implicit void return type.
+    pub return_type: Option<TypeRef>,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnumDecl {
     pub visibility: Visibility,
@@ -104,6 +125,9 @@ pub struct StructDecl {
     pub visibility: Visibility,
     pub kind: TypeDeclKind,
     pub name: Name,
+    /// `class User: Printable, Comparable`. Conformance is declared here
+    /// rather than inferred from the methods that happen to be present.
+    pub conforms: Vec<Path>,
     pub fields: Vec<FieldDecl>,
     /// Declared without `func` and without an explicit receiver; `this` is
     /// bound implicitly inside the body.

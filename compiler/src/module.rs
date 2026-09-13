@@ -189,6 +189,7 @@ impl Loader {
         // already recorded against it keep pointing at the right source.
         let program = output.program.unwrap_or_else(|| Program {
             imports: Vec::new(),
+            interfaces: Vec::new(),
             structs: Vec::new(),
             enums: Vec::new(),
             functions: Vec::new(),

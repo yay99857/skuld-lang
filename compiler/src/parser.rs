@@ -279,6 +279,7 @@ impl Parser<'_> {
 
     fn program(mut self) -> ParseOutput {
         let mut imports = Vec::new();
+        let mut interfaces = Vec::new();
         let mut functions = Vec::new();
         let mut structs = Vec::new();
         let mut enums = Vec::new();
@@ -338,6 +339,16 @@ impl Parser<'_> {
                 }
                 continue;
             }
+            if self.at(&TokenKind::Interface) {
+                match self.interface_declaration(visibility) {
+                    Ok(declaration) => interfaces.push(declaration),
+                    Err(diagnostic) => {
+                        self.diagnostics.push(diagnostic);
+                        self.recover_declaration(start);
+                    }
+                }
+                continue;
+            }
             if self.at(&TokenKind::Enum) {
                 match self.enum_declaration(visibility) {
                     Ok(declaration) => enums.push(declaration),
@@ -363,6 +374,7 @@ impl Parser<'_> {
         }
         let program = self.diagnostics.is_empty().then_some(Program {
             imports,
+            interfaces,
             structs,
             enums,
             functions,
@@ -379,6 +391,7 @@ impl Parser<'_> {
             self.bump();
         }
         while !self.at(&TokenKind::Function)
+            && !self.at(&TokenKind::Interface)
             && !self.at(&TokenKind::Pub)
             && !self.at(&TokenKind::Import)
             && !self.at(&TokenKind::Struct)
@@ -544,6 +557,53 @@ impl Parser<'_> {
         })
     }
     /// One field per line, matching the statement-boundary rule elsewhere.
+    /// `interface Name { method(a: int) -> string ... }`. The bodies live on
+    /// the classes that declare they implement it.
+    fn interface_declaration(&mut self, visibility: Visibility) -> Parsed<InterfaceDecl> {
+        let start = self
+            .expect(&TokenKind::Interface, "`interface`")?
+            .span
+            .start;
+        let name = self.name("an interface name")?;
+        self.expect(&TokenKind::LeftBrace, "`{` to begin the interface body")?;
+        let mut methods = Vec::new();
+        while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
+            let method_start = self.current().span.start;
+            let name = self.name("a method name")?;
+            let parameters = self.parameter_list()?;
+            let return_type = if self.take(&TokenKind::Colon).is_some()
+                || self.take(&TokenKind::Arrow).is_some()
+            {
+                Some(self.type_ref()?)
+            } else {
+                None
+            };
+            methods.push(MethodSignature {
+                name,
+                parameters,
+                return_type,
+                span: Span::new(method_start, self.previous_end()),
+            });
+            let has_comma = self.take(&TokenKind::Comma).is_some();
+            if !has_comma
+                && !self.at(&TokenKind::RightBrace)
+                && !self.at(&TokenKind::Eof)
+                && !self.newline_before()
+            {
+                return Err(self.expected("a newline, `,` or `}` after the signature"));
+            }
+        }
+        let end = self
+            .expect(&TokenKind::RightBrace, "`}` to close the interface body")?
+            .span
+            .end;
+        Ok(InterfaceDecl {
+            visibility,
+            name,
+            methods,
+            span: Span::new(start, end),
+        })
+    }
     fn struct_declaration(&mut self, visibility: Visibility) -> Parsed<StructDecl> {
         let (kind, noun) = if self.at(&TokenKind::Class) {
             (TypeDeclKind::Reference, "class")
@@ -552,6 +612,17 @@ impl Parser<'_> {
         };
         let start = self.bump().span.start;
         let name = self.name(&format!("a {noun} name"))?;
+        // `class User: Printable, Comparable`. Parsed for a struct too, so
+        // that refusing it is a diagnostic rather than a syntax error.
+        let mut conforms = Vec::new();
+        if self.take(&TokenKind::Colon).is_some() {
+            loop {
+                conforms.push(self.path("an interface name")?);
+                if self.take(&TokenKind::Comma).is_none() {
+                    break;
+                }
+            }
+        }
         self.expect(&TokenKind::LeftBrace, "`{` to begin the body")?;
         let mut fields = Vec::new();
         let mut methods = Vec::new();
@@ -586,6 +657,7 @@ impl Parser<'_> {
             visibility,
             kind,
             name,
+            conforms,
             fields,
             methods,
             span: Span::new(start, end),

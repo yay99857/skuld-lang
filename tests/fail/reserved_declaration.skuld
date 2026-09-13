@@ -1,4 +1,8 @@
+// A tripwire: `interface` parses, and the checker refuses it until the
+// milestone that gives it meaning lands. When that happens this fixture goes
+// green and should be promoted, not deleted.
 interface Point {
+    show() -> string
 }
 
 func main() {
