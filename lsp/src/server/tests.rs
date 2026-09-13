@@ -1136,3 +1136,101 @@ fn highlighting_nothing_answers_an_empty_list() {
     ]);
     assert_eq!(result_of(&out, 2), &Json::Array(Vec::new()));
 }
+
+/// An inlay hint request over an explicit line range.
+fn inlay_hints(id: i64, path: &str, first: i64, last: i64) -> Json {
+    Json::object([
+        ("jsonrpc", Json::string("2.0")),
+        ("id", Json::number(id as f64)),
+        ("method", Json::string("textDocument/inlayHint")),
+        (
+            "params",
+            Json::object([
+                (
+                    "textDocument",
+                    Json::object([("uri", Json::string(path_to_uri(path)))]),
+                ),
+                (
+                    "range",
+                    Json::object([
+                        (
+                            "start",
+                            Json::object([
+                                ("line", Json::number(first as f64)),
+                                ("character", Json::number(0.0)),
+                            ]),
+                        ),
+                        (
+                            "end",
+                            Json::object([
+                                ("line", Json::number(last as f64)),
+                                ("character", Json::number(0.0)),
+                            ]),
+                        ),
+                    ]),
+                ),
+            ]),
+        ),
+    ])
+}
+
+/// The label of each hint in a response.
+fn labels_of(result: &Json) -> Vec<&str> {
+    result
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|hint| hint.get("label").and_then(Json::as_str).expect("a label"))
+        .collect()
+}
+
+#[test]
+fn the_server_advertises_and_answers_inlay_hints() {
+    let path = "/tmp/skuld-lsp-test/hints.skuld";
+    let source = "func main() {\n    let count = 1\n    let name: string = \"a\"\n    print(count)\n    print(name)\n}\n";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        inlay_hints(2, path, 0, 6),
+    ]);
+    assert_eq!(
+        out[0].path(&["result", "capabilities", "inlayHintProvider"]),
+        Some(&Json::Bool(true))
+    );
+    let hints = result_of(&out, 2);
+    assert_eq!(
+        labels_of(hints),
+        [": int"],
+        "the written type is not repeated"
+    );
+    // The hint is drawn just after the name, at the end of `    let count`.
+    assert_eq!(
+        hints.as_array().unwrap()[0]
+            .path(&["position", "character"])
+            .and_then(Json::as_i64),
+        Some(13)
+    );
+}
+
+#[test]
+fn inlay_hints_answer_only_the_range_asked_about() {
+    let path = "/tmp/skuld-lsp-test/hints-range.skuld";
+    let source = "func main() {\n    let first = 1\n    let second = 2.0\n    print(first)\n    print(second)\n}\n";
+    let (out, _) = converse(&[
+        did_open(path, source),
+        inlay_hints(2, path, 0, 2),
+        inlay_hints(3, path, 2, 3),
+    ]);
+    assert_eq!(labels_of(result_of(&out, 2)), [": int"]);
+    assert_eq!(labels_of(result_of(&out, 3)), [": float"]);
+}
+
+#[test]
+fn a_document_that_never_checked_has_no_hints() {
+    let path = "/tmp/skuld-lsp-test/hints-broken.skuld";
+    let (out, _) = converse(&[
+        did_open(path, "func main() {\n    let x =\n}\n"),
+        inlay_hints(2, path, 0, 3),
+    ]);
+    assert_eq!(result_of(&out, 2), &Json::Array(Vec::new()));
+}

@@ -7,6 +7,7 @@
 //! a later stage, not a bigger version of this one.
 
 use crate::complete;
+use crate::hints;
 use crate::json::Json;
 use crate::query;
 use crate::rename::{self, Refusal};
@@ -32,6 +33,10 @@ const SEVERITY_ERROR: f64 = 1.0;
 /// The document a request names is always the entry file of the program it
 /// was checked as, which is that program's first file.
 const ENTRY: FileId = FileId(0);
+
+/// LSP `InlayHintKind::Type`. The other kind is a parameter name at a call
+/// site, which this server does not produce.
+const INLAY_TYPE: f64 = 1.0;
 
 /// Full document sync. The incremental form would mean applying ranges to a
 /// buffer, which is a source of drift bugs for no gain at this size: a Skuld
@@ -137,6 +142,12 @@ impl Server {
             (Some("textDocument/documentHighlight"), Some(id)) => {
                 let highlights = self.document_highlights(message);
                 respond(output, id.clone(), highlights);
+                None
+            }
+
+            (Some("textDocument/inlayHint"), Some(id)) => {
+                let hints = self.inlay_hints(message);
+                respond(output, id.clone(), hints);
                 None
             }
 
@@ -666,6 +677,42 @@ impl Server {
         )
     }
 
+    /// Answer `textDocument/inlayHint` with the type of every binding that
+    /// does not write one.
+    ///
+    /// The answer comes from the last check that succeeded, like completion
+    /// and hover, so a hint is a moment stale while a line is being typed
+    /// rather than gone. The client asks about a range and only that range is
+    /// answered: a hint outside the window would be work nobody sees.
+    fn inlay_hints(&self, message: &Json) -> Json {
+        let empty = Json::Array(Vec::new());
+        let Some(path) = document_path(message) else {
+            return empty;
+        };
+        let (Some(source), Some(typed)) = (self.open.get(&path), self.checked.get(&path)) else {
+            return empty;
+        };
+        let positions = Positions::new(source.clone());
+        let window = requested_range(message, &positions, source.len());
+        Json::Array(
+            hints::type_hints(source, typed)
+                .into_iter()
+                .filter(|hint| window.contains(&hint.offset))
+                .map(|hint| {
+                    Json::object([
+                        ("position", position_json(positions.position(hint.offset))),
+                        ("label", Json::string(&hint.label)),
+                        // `Type`, which is what a client dims differently from
+                        // a parameter name.
+                        ("kind", Json::number(INLAY_TYPE)),
+                        ("paddingLeft", Json::Bool(false)),
+                        ("paddingRight", Json::Bool(false)),
+                    ])
+                })
+                .collect(),
+        )
+    }
+
     /// Answer `textDocument/documentSymbol` with the outline of the file.
     ///
     /// The outline comes from the syntax, so it is the one answer that needs
@@ -986,6 +1033,28 @@ fn range_json(positions: &Positions, span: Span) -> Json {
     ])
 }
 
+/// The byte range a ranged request asks about. A request that names none, or
+/// names one this text cannot hold, is answered over the whole document.
+fn requested_range(message: &Json, positions: &Positions, length: usize) -> std::ops::Range<usize> {
+    let offset = |end: &str| -> Option<usize> {
+        let line = message
+            .path(&["params", "range", end, "line"])
+            .and_then(Json::as_i64)?
+            .max(0) as usize;
+        let character = message
+            .path(&["params", "range", end, "character"])
+            .and_then(Json::as_i64)?
+            .max(0) as usize;
+        Some(positions.offset(crate::text::Position { line, character }))
+    };
+    match (offset("start"), offset("end")) {
+        // A hint sits after a name, so the end is inclusive: a range ending
+        // exactly where the hint is drawn still wants it.
+        (Some(start), Some(end)) if start <= end => start..end + 1,
+        _ => 0..length + 1,
+    }
+}
+
 fn document_path(message: &Json) -> Option<String> {
     message
         .path(&["params", "textDocument", "uri"])
@@ -1004,6 +1073,9 @@ fn initialize_result() -> Json {
             ("positionEncoding", Json::string("utf-16")),
             ("hoverProvider", Json::Bool(true)),
             ("documentHighlightProvider", Json::Bool(true)),
+            // No `resolveProvider`: a hint is a short string the server
+            // already had, and there is nothing to fill in on a second call.
+            ("inlayHintProvider", Json::Bool(true)),
             ("documentSymbolProvider", Json::Bool(true)),
             // Whole-document only: the formatter reads a program, not a
             // fragment, so there is no honest answer for a range.

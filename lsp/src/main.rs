@@ -5,6 +5,7 @@
 //! external dependencies: rust-analyzer, clangd and gopls each do the same.
 
 mod complete;
+mod hints;
 mod json;
 mod query;
 mod rename;
