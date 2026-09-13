@@ -119,12 +119,13 @@ Being able to look inside a string and build one from bytes.
   the same fixture. That is the whole of `res.json()` except for where the
   bytes come from. The compiler gained nothing: the parser is ordinary user
   code, which is the point of the marker.
-- **Found by the marker, not fixed by it:** the expected width of a conversion
-  call reaches into its argument, so `u8(128 + n % 64)` is rejected where `n`
-  is an `int` and only a named intermediate gets through. Range-checking a
+- **Found by the marker, fixed after it:** the expected width of a conversion
+  call reached into its whole argument, so `u8(128 + n % 64)` was rejected where
+  `n` is an `int` and only a named intermediate got through. Range-checking a
   literal argument at compile time is what the context is for; propagating it
-  through a whole expression tree is not. Left as it stands, since it is a
-  checker change rather than a milestone one.
+  through an expression tree is not. The width now reaches a literal and stops
+  there (`a062a8a`), and the fixture's `encode_utf8` no longer needs the
+  intermediates the limitation forced on it.
 
 ## M5 — `extern "C"` FFI and linking — Implemented
 

@@ -80,32 +80,21 @@ func encode_utf8(code: int) -> []u8 {
         out.push(u8(code))
         return out
     }
-    // The expected width of a conversion reaches into its argument, so each
-    // byte is computed as an `int` first and converted on its own.
     if code < 2048 {
-        let first = 192 + code / 64
-        let second = 128 + code % 64
-        out.push(u8(first))
-        out.push(u8(second))
+        out.push(u8(192 + code / 64))
+        out.push(u8(128 + code % 64))
         return out
     }
     if code < 65536 {
-        let first = 224 + code / 4096
-        let second = 128 + (code / 64) % 64
-        let third = 128 + code % 64
-        out.push(u8(first))
-        out.push(u8(second))
-        out.push(u8(third))
+        out.push(u8(224 + code / 4096))
+        out.push(u8(128 + (code / 64) % 64))
+        out.push(u8(128 + code % 64))
         return out
     }
-    let first = 240 + code / 262144
-    let second = 128 + (code / 4096) % 64
-    let third = 128 + (code / 64) % 64
-    let fourth = 128 + code % 64
-    out.push(u8(first))
-    out.push(u8(second))
-    out.push(u8(third))
-    out.push(u8(fourth))
+    out.push(u8(240 + code / 262144))
+    out.push(u8(128 + (code / 4096) % 64))
+    out.push(u8(128 + (code / 64) % 64))
+    out.push(u8(128 + code % 64))
     return out
 }
 
