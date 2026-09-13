@@ -73,7 +73,13 @@ pub fn build(c_source: &str, executable: &Path, link_flags: &[String]) -> Result
     emit_and_compile(c_source, &temp.path, executable, link_flags)
 }
 
-pub fn run(c_source: &str, link_flags: &[String]) -> Result<u8, String> {
+/// `arguments` are the program's own, from `--args`; the compiler passes them
+/// through without reading them.
+pub fn run(
+    c_source: &str,
+    link_flags: &[String],
+    arguments: &[std::ffi::OsString],
+) -> Result<u8, String> {
     let temp = TempDir::create()
         .map_err(|error| format!("cannot create temporary build directory: {error}"))?;
     let executable = temp.path.join(if cfg!(windows) {
@@ -83,6 +89,7 @@ pub fn run(c_source: &str, link_flags: &[String]) -> Result<u8, String> {
     });
     emit_and_compile(c_source, &temp.path, &executable, link_flags)?;
     let status = Command::new(&executable)
+        .args(arguments)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -183,6 +190,16 @@ mod unix_tests {
     }
     #[test]
     fn driver_forwards_real_child_exit_code() {
-        assert_eq!(run("int main(void) { return 37; }", &[]), Ok(37));
+        assert_eq!(run("int main(void) { return 37; }", &[], &[]), Ok(37));
+    }
+    #[test]
+    fn a_program_receives_the_arguments_it_was_given() {
+        // The count includes the program itself, so two arguments make three.
+        let program = "int main(int argc, char **argv) { (void)argv; return argc; }";
+        let arguments = [
+            std::ffi::OsString::from("one"),
+            std::ffi::OsString::from("two"),
+        ];
+        assert_eq!(run(program, &[], &arguments), Ok(3));
     }
 }

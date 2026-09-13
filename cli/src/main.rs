@@ -39,6 +39,7 @@ commands:
 
 options:
     -o <path>        where `build` writes the executable
+    --args ...       hand every later argument to the program        (run)
     -l<library>      link a library, e.g. -lm            (build and run)
     -L<directory>    add a library search directory      (build and run)
     --check          only check if formatting would change the file (fmt)
@@ -53,6 +54,7 @@ exit codes:
 
 examples:
     skuld run examples/hello.skuld
+    skuld run tool.skuld --args document.json user.name
     skuld check src/main.skuld
     skuld test src/main_tests.skuld
     skuld build program.skuld -o bin/program -lm
@@ -105,6 +107,8 @@ struct Invocation {
     /// Only `build` writes a file, and only `-o` chooses where.
     output: Option<PathBuf>,
     check_only: bool,
+    /// Everything after `--args`, handed to the program `run` executes.
+    program_arguments: Vec<OsString>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -126,7 +130,16 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
     let mut check_only = false;
     let mut flags_over = false;
     let mut pending_output = false;
+    let mut program_arguments: Vec<OsString> = Vec::new();
+    let mut forwarding = false;
     for argument in arguments {
+        // `--args` ends this command line and starts the program's. Nothing
+        // after it is read here, not even `--`: a program's own arguments are
+        // none of the compiler's business.
+        if forwarding {
+            program_arguments.push(argument.clone());
+            continue;
+        }
         if pending_output {
             output = Some(PathBuf::from(argument));
             pending_output = false;
@@ -141,6 +154,7 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
         let flag = text.unwrap_or_default();
         match flag {
             "--" => flags_over = true,
+            "--args" => forwarding = true,
             "-h" | "--help" => return Command::Print(HELP.to_owned()),
             "-V" | "--version" => {
                 return Command::Print(format!("skuld {}\n", env!("CARGO_PKG_VERSION")));
@@ -212,6 +226,11 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
             "`-o` chooses where `build` writes its executable, and applies to nothing else\n{USAGE}"
         ));
     }
+    if forwarding && action != Action::Run {
+        return Command::Misuse(format!(
+            "`--args` passes arguments to the program `run` executes, and applies to nothing else\n{USAGE}"
+        ));
+    }
     if check_only && action != Action::Fmt {
         return Command::Misuse(format!("`--check` is only meaningful for `fmt`\n{USAGE}"));
     }
@@ -221,6 +240,7 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
         link_flags,
         output,
         check_only,
+        program_arguments,
     }))
 }
 
@@ -365,13 +385,15 @@ fn main() -> ExitCode {
                 }
             }
         }
-        Ok(output) if matches!(action, Action::Run) => match native::run(&output, &link_flags) {
-            Ok(code) => ExitCode::from(code),
-            Err(error) => {
-                eprintln!("error: {error}");
-                ExitCode::FAILURE
+        Ok(output) if matches!(action, Action::Run) => {
+            match native::run(&output, &link_flags, &invocation.program_arguments) {
+                Ok(code) => ExitCode::from(code),
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    ExitCode::FAILURE
+                }
             }
-        },
+        }
         Ok(output) if matches!(action, Action::Build) => {
             let executable = match executable_path(&entry, invocation.output.as_deref()) {
                 Ok(path) => path,
@@ -592,6 +614,7 @@ mod tests {
             link_flags: vec!["-lm".to_owned()],
             output: None,
             check_only: false,
+            program_arguments: Vec::new(),
         };
         assert_eq!(invocation(&["run", "program.skuld", "-lm"]), expected);
         assert_eq!(invocation(&["run", "-lm", "program.skuld"]), expected);
@@ -606,6 +629,7 @@ mod tests {
             link_flags: Vec::new(),
             output: None,
             check_only: true,
+            program_arguments: Vec::new(),
         };
         assert_eq!(invocation(&["fmt", "--check", "program.skuld"]), expected);
         assert_eq!(invocation(&["fmt", "program.skuld", "--check"]), expected);
@@ -616,9 +640,38 @@ mod tests {
             link_flags: Vec::new(),
             output: None,
             check_only: false,
+            program_arguments: Vec::new(),
         };
         assert_eq!(invocation(&["fmt", "program.skuld"]), uncheck);
         assert!(misuse(&["run", "program.skuld", "--check"]).contains("`--check`"));
+    }
+
+    #[test]
+    fn args_hands_the_rest_to_the_program() {
+        // Everything after `--args` belongs to the program, including things
+        // this command line would otherwise read as its own.
+        let parsed = invocation(&["run", "program.skuld", "--args", "-o", "--", "file.json"]);
+        assert_eq!(parsed.action, Action::Run);
+        assert_eq!(parsed.file, PathBuf::from("program.skuld"));
+        assert!(parsed.output.is_none());
+        assert_eq!(
+            parsed.program_arguments,
+            vec![
+                OsString::from("-o"),
+                OsString::from("--"),
+                OsString::from("file.json")
+            ]
+        );
+        // An empty list is still a forwarded list, not an error.
+        assert!(
+            invocation(&["run", "program.skuld", "--args"])
+                .program_arguments
+                .is_empty()
+        );
+        // Nothing else runs a program, so nothing else may forward to one.
+        assert!(misuse(&["build", "program.skuld", "--args", "x"]).contains("`--args`"));
+        // After `--`, it is a path like anything else — and a second one.
+        assert!(misuse(&["run", "--", "program.skuld", "--args"]).contains("one file at a time"));
     }
 
     #[test]

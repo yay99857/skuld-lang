@@ -99,6 +99,44 @@ fn a_program_reads_its_arguments_and_picks_its_status() {
 }
 
 #[test]
+fn run_forwards_what_follows_args_and_returns_the_program_status() {
+    if !clang_available() {
+        eprintln!("skipping: clang is not on PATH");
+        return;
+    }
+    let scratch = Scratch::new("forward");
+    let program = scratch.directory.join("main.skuld");
+    fs::write(&program, PROGRAM).expect("program source");
+    // `--args` ends the compiler's command line: `-o` after it belongs to the
+    // program, and would otherwise be read as where to write an executable.
+    let output = Command::new(env!("CARGO_BIN_EXE_skuld"))
+        .arg("run")
+        .arg(&program)
+        .arg("--args")
+        .arg("-o")
+        .arg("two three")
+        .output()
+        .expect("run skuld");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "count 2\n[-o]\n[two three]\n"
+    );
+
+    // No arguments, and the program's own exit status reaches the shell.
+    let output = Command::new(env!("CARGO_BIN_EXE_skuld"))
+        .arg("run")
+        .arg(&program)
+        .output()
+        .expect("run skuld");
+    assert_eq!(output.status.code(), Some(3));
+}
+
+#[test]
 fn everything_after_a_double_dash_reaches_the_program_unchanged() {
     if !clang_available() {
         eprintln!("skipping: clang is not on PATH");
