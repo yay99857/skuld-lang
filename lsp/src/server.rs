@@ -13,6 +13,7 @@ use crate::json::Json;
 use crate::query;
 use crate::rename::{self, Refusal};
 use crate::rpc::{self, ReadError};
+use crate::selection;
 use crate::signature;
 use crate::symbols::{self, Symbol};
 use crate::text::{Positions, path_to_uri, uri_to_path};
@@ -174,6 +175,12 @@ impl Server {
             (Some("textDocument/semanticTokens/full"), Some(id)) => {
                 let tokens = self.semantic_tokens(message);
                 respond(output, id.clone(), tokens);
+                None
+            }
+
+            (Some("textDocument/selectionRange"), Some(id)) => {
+                let ranges = self.selection_ranges(message);
+                respond(output, id.clone(), ranges);
                 None
             }
 
@@ -908,6 +915,61 @@ impl Server {
         Json::object([("data", Json::Array(data))])
     }
 
+    /// Answer `textDocument/selectionRange`: what each cursor should reach as
+    /// the selection is expanded, as a chain from the word outwards.
+    ///
+    /// The request carries a list of positions and the answer carries one
+    /// chain each, in the same order — a client with several cursors expands
+    /// them together.
+    fn selection_ranges(&self, message: &Json) -> Json {
+        let empty = Json::Array(Vec::new());
+        let Some(path) = document_path(message) else {
+            return empty;
+        };
+        let Some(source) = self.open.get(&path) else {
+            return empty;
+        };
+        let Some(asked) = message
+            .path(&["params", "positions"])
+            .and_then(Json::as_array)
+        else {
+            return empty;
+        };
+        let positions = Positions::new(source.clone());
+        Json::Array(
+            asked
+                .iter()
+                .map(|position| {
+                    let line = position
+                        .get("line")
+                        .and_then(Json::as_i64)
+                        .unwrap_or(0)
+                        .max(0);
+                    let character = position
+                        .get("character")
+                        .and_then(Json::as_i64)
+                        .unwrap_or(0)
+                        .max(0);
+                    let offset = positions.offset(crate::text::Position {
+                        line: line as usize,
+                        character: character as usize,
+                    });
+                    // The chain is built innermost first and nests outwards,
+                    // so it is assembled from the outside in.
+                    let mut built = Json::Null;
+                    for span in selection::chain(source, offset).into_iter().rev() {
+                        let mut fields = vec![("range", range_json(&positions, span))];
+                        if built != Json::Null {
+                            fields.push(("parent", built));
+                        }
+                        built = Json::object(fields);
+                    }
+                    built
+                })
+                .collect(),
+        )
+    }
+
     /// Answer `textDocument/foldingRange` with the runs of lines an editor may
     /// collapse.
     ///
@@ -1385,6 +1447,7 @@ fn initialize_result() -> Json {
             ),
             ("documentSymbolProvider", Json::Bool(true)),
             ("foldingRangeProvider", Json::Bool(true)),
+            ("selectionRangeProvider", Json::Bool(true)),
             // Whole-document only: the formatter reads a program, not a
             // fragment, so there is no honest answer for a range.
             ("documentFormattingProvider", Json::Bool(true)),

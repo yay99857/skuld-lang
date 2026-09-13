@@ -1624,3 +1624,75 @@ fn folding_answers_a_document_that_does_not_parse() {
     ]);
     assert_eq!(result_of(&out, 3).as_array().map(<[Json]>::len), Some(1));
 }
+
+#[test]
+fn the_server_advertises_and_answers_selection_ranges() {
+    let path = "/tmp/skuld-lsp-test/selection.skuld";
+    let source = "func main() {\n    print(count)\n}\n";
+    let request_with_positions = Json::object([
+        ("jsonrpc", Json::string("2.0")),
+        ("id", Json::number(2.0)),
+        ("method", Json::string("textDocument/selectionRange")),
+        (
+            "params",
+            Json::object([
+                (
+                    "textDocument",
+                    Json::object([("uri", Json::string(path_to_uri(path)))]),
+                ),
+                (
+                    "positions",
+                    Json::Array(vec![Json::object([
+                        ("line", Json::number(1.0)),
+                        ("character", Json::number(12.0)),
+                    ])]),
+                ),
+            ]),
+        ),
+    ]);
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        request_with_positions,
+    ]);
+    assert_eq!(
+        out[0].path(&["result", "capabilities", "selectionRangeProvider"]),
+        Some(&Json::Bool(true))
+    );
+    let chains = result_of(&out, 2)
+        .as_array()
+        .expect("one chain per position");
+    assert_eq!(chains.len(), 1);
+    // The innermost range is the word, and each parent contains it.
+    assert_eq!(
+        chains[0]
+            .path(&["range", "start", "character"])
+            .and_then(Json::as_i64),
+        Some(10)
+    );
+    assert_eq!(
+        chains[0]
+            .path(&["range", "end", "character"])
+            .and_then(Json::as_i64),
+        Some(15)
+    );
+    let parent = chains[0].get("parent").expect("a parent");
+    assert_eq!(
+        parent
+            .path(&["range", "start", "character"])
+            .and_then(Json::as_i64),
+        Some(9),
+        "the parentheses of the call"
+    );
+    // The chain ends at the whole document, which has no parent of its own.
+    let mut outermost = parent;
+    while let Some(next) = outermost.get("parent") {
+        outermost = next;
+    }
+    assert_eq!(
+        outermost
+            .path(&["range", "start", "line"])
+            .and_then(Json::as_i64),
+        Some(0)
+    );
+}

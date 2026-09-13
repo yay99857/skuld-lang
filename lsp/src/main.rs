@@ -11,6 +11,7 @@ mod json;
 mod query;
 mod rename;
 mod rpc;
+mod selection;
 mod server;
 mod signature;
 mod symbols;
