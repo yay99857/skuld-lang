@@ -28,6 +28,23 @@ pub fn check_program(
     entry_source: &str,
     loader: &mut dyn module::ModuleLoader,
 ) -> Result<type_checker::TypedProgram, module::Errors> {
+    check_program_with(
+        entry_name,
+        entry_source,
+        loader,
+        type_checker::Entrypoint::Required,
+    )
+}
+
+/// The same check, with the entrypoint rule the caller needs. A compiler
+/// requires one; a tool showing a file that may be a module does not, and
+/// `Entrypoint::Optional` is how it says so.
+pub fn check_program_with(
+    entry_name: &str,
+    entry_source: &str,
+    loader: &mut dyn module::ModuleLoader,
+    entrypoint: type_checker::Entrypoint,
+) -> Result<type_checker::TypedProgram, module::Errors> {
     let program = module::load(entry_name, entry_source, loader)?;
     let resolved = resolve(&program);
     let Some(resolution) = resolved.resolution else {
@@ -36,7 +53,7 @@ pub fn check_program(
             diagnostics: resolved.diagnostics,
         });
     };
-    type_checker::type_check(program, resolution)
+    type_checker::type_check(program, resolution, entrypoint)
 }
 
 /// Parse, resolve and type-check a program that is exactly one source, with

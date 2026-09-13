@@ -40,7 +40,9 @@ pub struct TypedProgram {
     /// Foreign functions, which have a signature but no body. The C name is the
     /// declared name: the backend calls it verbatim.
     pub(crate) externs: BTreeMap<SymbolId, ExternInfo>,
-    pub(crate) entry: SymbolId,
+    /// The program's `main`, when it has one. A program checked for a tool may
+    /// not: see `Entrypoint`.
+    pub(crate) entry: Option<SymbolId>,
     pub(crate) structs: Vec<StructInfo>,
     pub(crate) enums: Vec<EnumInfo>,
     pub(crate) interfaces: Vec<InterfaceInfo>,
@@ -91,6 +93,11 @@ impl TypedProgram {
     pub fn function_signatures(&self) -> &[FunctionTypeInfo] {
         &self.function_signatures
     }
+    /// The program's entrypoint, which a program checked with
+    /// `Entrypoint::Optional` may not have.
+    pub fn entry(&self) -> Option<SymbolId> {
+        self.entry
+    }
     /// The checked type of a resolved symbol: a local, a parameter or a
     /// binding. A symbol that names a function has no value type, and reads
     /// as `Type::Error` here; ask `signature` for that instead.
@@ -111,11 +118,25 @@ impl TypedProgram {
     }
 }
 
+/// Whether a program must have an entrypoint.
+///
+/// A compiler always requires one. A tool showing one file of a program — an
+/// editor — must not: a module is a library, and the file on screen may not be
+/// a program at all. Nothing else about the check changes, which is the point:
+/// the tool sees exactly what the compiler sees, minus a rule that is about
+/// building rather than about meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Entrypoint {
+    Required,
+    Optional,
+}
+
 /// The resolution must belong to this exact parser AST. All source-facing
 /// callers should use `check`, which enforces phase ordering and ownership.
 pub(crate) fn type_check(
     program: LoadedProgram,
     resolution: Resolution,
+    entrypoint: Entrypoint,
 ) -> Result<TypedProgram, Errors> {
     let mut checker = Checker {
         symbol_types: vec![Type::Error; resolution.symbols.len()],
@@ -579,11 +600,12 @@ pub(crate) fn type_check(
             );
         }
         Some(_) => {}
-        None => checker.error(
+        None if entrypoint == Entrypoint::Required => checker.error(
             DiagnosticCode::InvalidEntrypoint,
             Span::new(0, 0),
             "missing entrypoint `func main()`",
         ),
+        None => {}
     }
     // Field defaults, now that every signature exists and before any body:
     // the expression is checked once, where it is written, and evaluated at
@@ -655,8 +677,8 @@ pub(crate) fn type_check(
         implicit_wraps,
         ..
     } = checker;
-    // A missing entry always produces a diagnostic above.
-    let entry = entry.expect("internal compiler bug: checked program has no entrypoint");
+    // A missing entry is a diagnostic above unless the caller allowed one, and
+    // then there is no entrypoint to record.
     let enum_names = module_types.into_iter().map(|types| types.enums).collect();
     Ok(TypedProgram {
         program,

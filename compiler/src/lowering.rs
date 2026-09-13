@@ -173,7 +173,11 @@ pub fn lower(typed: TypedProgram) -> h::Program {
         options: typed.options.clone(),
         results: typed.results.clone(),
         functions,
-        entry: typed.entry,
+        // Only a program checked with `Entrypoint::Required` is lowered, and
+        // that check refuses a program with no `main`.
+        entry: typed
+            .entry()
+            .expect("internal compiler bug: lowering a program with no entrypoint"),
         span: typed.program.files[0].program.span,
     }
 }

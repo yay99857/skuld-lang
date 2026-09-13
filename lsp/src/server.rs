@@ -375,7 +375,19 @@ impl Server {
             root: root.clone(),
             open: &self.open,
         };
-        let result = skuld_compiler::check_program(&name, &source, &mut loader);
+        // The entrypoint is optional here, and that is what makes a module
+        // file a first-class document: whether a program has a `main` is a
+        // property of the program, and an editor showing one file cannot know
+        // which program that file belongs to. Requiring one left every module
+        // — and everything under `std/` — permanently unchecked, which is not
+        // only a red underline: hover, completion, hints and tokens all read
+        // the last successful check, and there never was one.
+        let result = skuld_compiler::check_program_with(
+            &name,
+            &source,
+            &mut loader,
+            skuld_compiler::type_checker::Entrypoint::Optional,
+        );
         // A failed check leaves the previous good one in place: that is what
         // completion answers from while the file is mid-edit.
         let result = match result {
@@ -386,13 +398,6 @@ impl Server {
             Err(errors) => Err(errors),
         };
 
-        // Whether a program has an entrypoint is a property of the program,
-        // and an editor showing one file cannot know which program that file
-        // belongs to. A module file, or anything under `std/`, would otherwise
-        // be permanently red for a mistake it is not making. A file that does
-        // declare `main` is a program, and keeps every diagnostic about it.
-        let declares_main = declares_main(&source);
-
         // Every file the program touched gets a report, so fixing the last
         // error in an imported module actually clears its underline. A file
         // with no diagnostics is published as an empty list, which is how LSP
@@ -402,12 +407,6 @@ impl Server {
 
         if let Err(errors) = result {
             for entry in &errors.diagnostics {
-                if !declares_main
-                    && entry.diagnostic.code
-                        == skuld_compiler::diagnostic::DiagnosticCode::InvalidEntrypoint
-                {
-                    continue;
-                }
                 let Some(file) = errors.sources.get(entry.file.0) else {
                     continue;
                 };
@@ -928,8 +927,13 @@ impl Server {
             root,
             open: overlay,
         };
-        skuld_compiler::check_program(&name, &source, &mut loader)
-            .map_err(|errors| first_message(&errors))
+        skuld_compiler::check_program_with(
+            &name,
+            &source,
+            &mut loader,
+            skuld_compiler::type_checker::Entrypoint::Optional,
+        )
+        .map_err(|errors| first_message(&errors))
     }
 
     /// Answer `workspace/symbol` with every declaration whose name matches,
@@ -1516,14 +1520,6 @@ impl Direction {
             Self::Outgoing => "to",
         }
     }
-}
-
-/// Whether the text declares a top-level `main`, which is what makes it an
-/// entry file rather than a module the editor happens to be showing.
-fn declares_main(source: &str) -> bool {
-    skuld_compiler::parse(source)
-        .program
-        .is_some_and(|program| program.functions.iter().any(|f| f.name.text == "main"))
 }
 
 /// The occurrences of one declaration, and where the declaration itself is.

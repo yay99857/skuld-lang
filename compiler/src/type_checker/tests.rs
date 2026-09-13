@@ -1057,3 +1057,36 @@ fn a_field_with_a_default_may_be_left_out_of_a_construction() {
         "struct Point {\n    x: int = 0\n    y: int = 0\n}\nfunc main() { let p = Point { y: 2 }\nprint(p.x) }",
     );
 }
+
+#[test]
+fn an_entrypoint_is_required_of_a_program_and_optional_for_a_tool() {
+    // A library file is not a program, and a tool showing one must be able to
+    // check it; the compiler must still refuse to build it.
+    let library = "pub func twice(value: int) -> int {\n    return value * 2\n}\n";
+    let errors = check(library).expect_err("a program needs an entrypoint");
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.code == DiagnosticCode::InvalidEntrypoint)
+    );
+
+    let typed = crate::check_program_with(
+        "library.skuld",
+        library,
+        &mut crate::module::NoModules,
+        crate::type_checker::Entrypoint::Optional,
+    )
+    .expect("a library checks when the entrypoint is optional");
+    assert_eq!(typed.entry(), None);
+    // Everything else is checked exactly as it would have been.
+    assert!(typed.resolution().symbols.iter().any(|s| s.name == "twice"));
+
+    // A mistake in the file is still a mistake, entrypoint or not.
+    crate::check_program_with(
+        "library.skuld",
+        "pub func twice(value: int) -> int {\n    return \"two\"\n}\n",
+        &mut crate::module::NoModules,
+        crate::type_checker::Entrypoint::Optional,
+    )
+    .expect_err("a wrong return type is still wrong");
+}

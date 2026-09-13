@@ -1904,3 +1904,41 @@ fn semantic_tokens_answer_a_window_when_one_is_asked_for() {
     ];
     assert_eq!(data, expected);
 }
+
+#[test]
+fn a_file_with_no_entrypoint_is_a_document_like_any_other() {
+    // A module is a library, and an editor showing one cannot know which
+    // program it belongs to. Requiring a `main` left it unchecked, and every
+    // answer that reads the last successful check was dead in it.
+    let path = "/tmp/skuld-lsp-test/library.skuld";
+    let source =
+        "pub func twice(value: int) -> int {\n    let doubled = value * 2\n    return doubled\n}\n";
+    let (out, _) = converse(&[
+        did_open(path, source),
+        hover_at(path, 2, 12),
+        document_request(3, "textDocument/semanticTokens/full", path),
+        inlay_hints(4, path, 0, 4),
+    ]);
+    assert_eq!(
+        diagnostics_for(&out, path),
+        &[] as &[Json],
+        "a library file reports nothing about a `main` it is not missing"
+    );
+    let hover = out
+        .iter()
+        .rfind(|message| message.get("id").and_then(Json::as_i64) == Some(9))
+        .and_then(|message| message.get("result"))
+        .expect("a hover response");
+    assert_eq!(
+        hover.path(&["contents", "value"]).and_then(Json::as_str),
+        Some("```skuld\nlet doubled: int\n```")
+    );
+    assert!(
+        !result_of(&out, 3)
+            .get("data")
+            .and_then(Json::as_array)
+            .expect("a token stream")
+            .is_empty()
+    );
+    assert_eq!(labels_of(result_of(&out, 4)), [": int"]);
+}
