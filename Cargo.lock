@@ -12,3 +12,10 @@ dependencies = [
 [[package]]
 name = "skuld-compiler"
 version = "0.1.0"
+
+[[package]]
+name = "skuld-lsp"
+version = "0.1.0"
+dependencies = [
+ "skuld-compiler",
+]
