@@ -262,29 +262,54 @@ of the error types the language had no way to name.
   beyond interpolation, time, randomness, filesystem traversal, threads,
   networking, and any way to add to the library except by changing the compiler.
 
-## M8 — Function values, callbacks and interfaces — Planned
+## M8 — Function values and lambdas — Planned
 
 ```skuld
-numbers.sort((a, b) => a - b)
+numbers.sort(func(a: int, b: int) -> int { return a - b })
 ```
 
 The abstraction milestone the earlier ones kept deferring. Sorting has demanded
-it since M2 and the sketch in `test.skuld` is marked unsatisfactory by the user,
-so the syntax is an open question, not a decision this document may take.
+it since M2. The user delegated this milestone's three open questions; the
+answers are below, and each is a consequence of a constraint the project
+already had rather than a preference.
 
-- **In scope:** function types as values, a lambda form, passing them as
-  arguments, `sort()` over arrays as the first consumer, and interfaces with
-  `impl` as the named-abstraction half.
-- **Out of scope:** closures capturing mutable state, generic functions,
-  higher-kinded anything, dynamic dispatch beyond what interfaces need.
-- **Open risk:** capture and the reference-counted model. A lambda that
-  captures a managed value must retain it, which makes the lambda itself a
-  managed value, and capturing `this` inside a class creates exactly the cycle
-  the project has no collector for. The cheapest answer — non-capturing
-  function values only, enough for `sort()` — is on the table and would keep
-  this milestone small.
-- **Open question:** whether interfaces belong here at all or in a milestone of
-  their own. `LANGUAGE.md` lists them as Planned with unsettled receiver syntax.
+- **Decision — syntax.** A lambda is `func(params) -> Type { body }`: the
+  function declaration form without a name. The function *type* is
+  `func(int, int) -> int`. Parameter and return types may be omitted when the
+  expected type is known, which is the local inference `let` already does. The
+  sketch's `=>` is not adopted: the user marked it for revision, and importing
+  the TypeScript arrow into a language that already spells functions `func` and
+  returns `->` would buy brevity with a second way to say the same thing.
+- **Decision — capture.** A lambda may capture, by value, and a function value
+  **may not escape**: it can be a parameter or a local, never a field, a return
+  type, an array element or a payload of `Option`, `Result` or an enum. That is
+  not a restriction chosen for comfort. Non-atomic reference counting with no
+  collector means any managed object able to reach a closure that captured it is
+  an uncollectable cycle; forbidding the closure from being stored anywhere
+  managed removes the reachability instead of asking the user to reason about
+  weak captures, which is the ownership burden `AGENTS.md` rules out. Because a
+  function value cannot outlive the call it is passed to, it is stack-allocated
+  and needs no retain, no release and no allocation at all.
+- **Decision — interfaces are not part of this.** They are a different
+  mechanism — named abstraction and dispatch, with receiver syntax `LANGUAGE.md`
+  still lists as unsettled — and bundling them would double a milestone whose
+  point is to stay small. They get their own milestone, after this one. Much of
+  what interfaces are reached for in practice is callbacks, which this milestone
+  covers, so the urgency drops rather than rises.
+- **In scope:** function types, the lambda form, passing them as arguments,
+  calling a function value, the escape rule as a diagnostic, and `sort()` over
+  arrays as the first consumer.
+- **Out of scope:** escaping or heap-allocated closures, capturing `this`,
+  function values in fields or return types, generic functions, currying, and
+  dispatch of any kind.
+- **`sort()`:** in place, returning `void`, like `push`, `insert`, `pop` and
+  `remove` before it — an array is a shared reference, so a sort that returned a
+  new one would invite the reader to think the original was untouched. Stable,
+  because predictability is worth more here than the last constant factor.
+- **Validation:** sorting ints, floats and strings by a comparator; a lambda
+  capturing a local scalar and a local managed value; a named function passed
+  where a lambda is expected; and fail fixtures for each way a function value
+  can try to escape.
 
 ## M9 — Sockets, HTTP and the long-range target — Planned
 
@@ -334,9 +359,10 @@ above.
    for slices of string literals, whose bytes are static. Whether a retaining
    slice earns its danger is a question for a benchmark, not for this document.
 3. Recursive enum variants: automatic boxing, or the user's responsibility?
-4. Callback and lambda syntax, deferred by M2 but eventually demanded by
-   sorting, and now the subject of M8. The current sketch in `test.skuld` is
-   marked unsatisfactory by the user.
+4. ~~Callback and lambda syntax?~~ Answered by M8, which the user delegated:
+   `func(a: int, b: int) -> int { ... }` as the literal and `func(int, int) -> int`
+   as the type, with the types omissible under a known expected type. The
+   sketch's `=>` is not adopted.
 5. ~~JSON objects as a list of key/value fields, or waiting for a real map
    type?~~ Answered by M4's closing marker: a list of key/value pairs in source
    order, with linear lookup and duplicate keys preserved. Waiting for a map
@@ -351,11 +377,14 @@ above.
    module path is **rooted** was left open by M6 and answered separately by the
    user for M7: a reserved `std` prefix over sources embedded in the compiler
    binary, with every other path still relative to the program root.
-7. Whether function values may capture. Non-capturing values are enough for
-   `sort()` and create no cycles; capturing ones make a lambda a managed value
-   and can capture `this`, which the reference counter cannot collect.
-8. Whether interfaces are part of the callback milestone or a milestone of
-   their own.
+7. ~~Whether function values may capture?~~ Answered by M8: they may, by value,
+   and in exchange a function value may not escape into any managed location. A
+   closure nothing managed can reach cannot be half of a cycle, so capture costs
+   nothing the reference counter has to collect — and a non-escaping function
+   value needs no allocation at all.
+8. ~~Whether interfaces are part of the callback milestone or a milestone of
+   their own?~~ Answered: their own, after M8. Their receiver syntax is still
+   unsettled, and M8 covers what callbacks are usually wanted for.
 9. ~~Where NUL-terminated C strings are built — a language helper, or a
    standard library function over `[]u8`?~~ Answered by M7: `std/cstring.to_c`,
    in the library. The language keeps knowing nothing about C's terminator, and

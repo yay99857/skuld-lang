@@ -189,8 +189,14 @@ accurate; documenting a future feature is not a request to implement it.
   diagnostic. Its rules are set out in their own entry below, as are M7's. M6 was selected
   without waiting for M5, which modules do not depend on; M5 landed
   concurrently in another session (`2606206`, `e3d84c2`) and owns its own
-  status entry. No milestone is active. Do not infer authorization for further
-  features without explicit decision.
+  status entry. M8 (function values and lambdas) is the active milestone: the
+  user delegated its three open design questions, and the answers are recorded
+  in `ROADMAP.md` — `func(params) -> Type { body }` as the lambda and
+  `func(int, int) -> int` as the type, with no `=>`; capture by value in
+  exchange for function values that may not escape into any managed location,
+  which is what keeps a closure out of an uncollectable cycle and out of the
+  heap entirely; and interfaces deferred to a milestone of their own. Do not
+  infer authorization for further features without explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
   and string slices → `extern "C"` FFI → modules → standard library → function
   values → sockets. It is a plan, not a selection: a remaining entry is Planned,
@@ -269,6 +275,12 @@ Demo 1 adds the working function/variable example printing `42`; Demo 2 adds
 conditional flow. Loops follow Demo 2. Classes, fields, methods, construction,
 implicit `this` and string interpolation belong to Demo 3, after functions and type
 checking are stable.
+
+Function values arrive in M8 as non-escaping, stack-allocated values: a
+parameter or a local, never a field, a return type, an array element or a
+payload. That rule is the milestone's safety argument, not a detail — relaxing
+it reintroduces cycles the reference counter cannot collect. Interfaces stay
+future work with unsettled receiver syntax.
 
 Do not implement generics, macros, async/await, threads, channels, reflection,
 decorators, annotations, a package registry, compiler plugins, compile-time
