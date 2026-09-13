@@ -62,6 +62,10 @@ pub struct Server {
     checked: BTreeMap<String, skuld_compiler::type_checker::TypedProgram>,
     /// Set once `shutdown` arrives, so `exit` can report the right code.
     shutting_down: bool,
+    /// Whether the client said it understands a nested outline. The protocol's
+    /// default is that it does not, and a client that cannot parse the nested
+    /// form shows nothing at all, so the flat one is what silence buys.
+    hierarchical_symbols: bool,
 }
 
 impl Default for Server {
@@ -76,6 +80,7 @@ impl Server {
             open: BTreeMap::new(),
             checked: BTreeMap::new(),
             shutting_down: false,
+            hierarchical_symbols: false,
         }
     }
 
@@ -246,6 +251,18 @@ impl Server {
             }
 
             (Some("initialize"), Some(id)) => {
+                // What the client can read decides what some answers look
+                // like, so it is recorded before the first of them is sent.
+                self.hierarchical_symbols = matches!(
+                    message.path(&[
+                        "params",
+                        "capabilities",
+                        "textDocument",
+                        "documentSymbol",
+                        "hierarchicalDocumentSymbolSupport",
+                    ]),
+                    Some(Json::Bool(true))
+                );
                 respond(output, id.clone(), initialize_result());
                 None
             }
@@ -1209,10 +1226,37 @@ impl Server {
             },
         };
         let positions = Positions::new(text);
+        let outline = symbols::outline(&program);
+        if self.hierarchical_symbols {
+            return Json::Array(
+                outline
+                    .iter()
+                    .map(|symbol| symbol_json(&positions, symbol))
+                    .collect(),
+            );
+        }
+        // The flat form: every entry carries a location and names what holds
+        // it, since there is no nesting left to say so.
         Json::Array(
-            symbols::outline(&program)
-                .iter()
-                .map(|symbol| symbol_json(&positions, symbol))
+            symbols::flatten(&outline)
+                .into_iter()
+                .map(|(symbol, container)| {
+                    let mut fields = vec![
+                        ("name", Json::string(&symbol.name)),
+                        ("kind", Json::number(symbol.kind)),
+                        (
+                            "location",
+                            Json::object([
+                                ("uri", Json::string(path_to_uri(&path))),
+                                ("range", range_json(&positions, symbol.range)),
+                            ]),
+                        ),
+                    ];
+                    if let Some(container) = container {
+                        fields.push(("containerName", Json::string(container)));
+                    }
+                    Json::object(fields)
+                })
                 .collect(),
         )
     }

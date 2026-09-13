@@ -959,7 +959,7 @@ fn the_server_advertises_and_answers_the_outline() {
     let path = "/tmp/skuld-lsp-test/outline.skuld";
     let source = "class User {\n    name: string\n    hello() {\n        print(this.name)\n    }\n}\n\nfunc main() {\n    let u = new User(name: \"a\")\n    u.hello()\n}\n";
     let (out, _) = converse(&[
-        request(1, "initialize"),
+        initialize_with_hierarchical_symbols(1),
         did_open(path, source),
         document_request(2, "textDocument/documentSymbol", path),
     ]);
@@ -996,6 +996,7 @@ fn the_outline_survives_a_document_that_stopped_parsing() {
     // back to the last text that parsed rather than emptying itself.
     let path = "/tmp/skuld-lsp-test/half-typed.skuld";
     let (out, _) = converse(&[
+        initialize_with_hierarchical_symbols(1),
         did_open(path, "func main() {\n}\n"),
         did_change(path, "func main() {\n}\nfunc half("),
         document_request(2, "textDocument/documentSymbol", path),
@@ -1790,4 +1791,57 @@ fn a_call_hierarchy_on_something_that_is_not_a_function_is_null() {
         position_request(2, "textDocument/prepareCallHierarchy", path, 1, 9),
     ]);
     assert_eq!(result_of(&out, 2), &Json::Null);
+}
+
+/// An `initialize` from a client that reads a nested outline, which is what
+/// every editor in use does and what the protocol nonetheless makes optional.
+fn initialize_with_hierarchical_symbols(id: i64) -> Json {
+    Json::object([
+        ("jsonrpc", Json::string("2.0")),
+        ("id", Json::number(id as f64)),
+        ("method", Json::string("initialize")),
+        (
+            "params",
+            Json::object([(
+                "capabilities",
+                Json::object([(
+                    "textDocument",
+                    Json::object([(
+                        "documentSymbol",
+                        Json::object([("hierarchicalDocumentSymbolSupport", Json::Bool(true))]),
+                    )]),
+                )]),
+            )]),
+        ),
+    ])
+}
+
+#[test]
+fn a_client_that_never_claimed_nesting_gets_the_flat_outline() {
+    // The protocol's default is that a client cannot read the nested form,
+    // and one that cannot shows nothing at all when it is sent.
+    let path = "/tmp/skuld-lsp-test/flat-outline.skuld";
+    let source = "class User {\n    name: string\n}\n\nfunc main() {\n    let u = new User(name: \"a\")\n    print(u.name)\n}\n";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        document_request(2, "textDocument/documentSymbol", path),
+    ]);
+    let symbols = result_of(&out, 2).as_array().expect("an outline");
+    assert_eq!(
+        symbols
+            .iter()
+            .map(|symbol| (
+                symbol.get("name").and_then(Json::as_str).unwrap(),
+                symbol.get("containerName").and_then(Json::as_str),
+            ))
+            .collect::<Vec<_>>(),
+        [("User", None), ("name", Some("User")), ("main", None)]
+    );
+    // Flat entries carry a location instead of nesting.
+    assert!(symbols[1].get("children").is_none());
+    assert_eq!(
+        symbols[1].path(&["location", "uri"]).and_then(Json::as_str),
+        Some(path_to_uri(path).as_str())
+    );
 }
