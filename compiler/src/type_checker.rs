@@ -1965,6 +1965,13 @@ impl Checker<'_> {
                                 "array element cannot be `void`",
                             );
                             has_error = true;
+                        } else if matches!(found, Type::Function(_)) {
+                            // An array is a heap value; a function value's
+                            // environment is on the stack. One must never hold
+                            // the other, whether the element type was written
+                            // or inferred from the elements themselves.
+                            self.reject_stored_function(found, elem.span, "an array element");
+                            has_error = true;
                         } else {
                             match elem_ty {
                                 Some(expected) => {
@@ -2375,6 +2382,9 @@ impl Checker<'_> {
                         arguments[0].span,
                         "Some cannot contain void",
                     );
+                    Type::Error
+                } else if matches!(element, Type::Function(_)) {
+                    self.reject_stored_function(element, arguments[0].span, "an Option payload");
                     Type::Error
                 } else if element == Type::Error {
                     Type::Error

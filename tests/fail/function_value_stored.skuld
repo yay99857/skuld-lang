@@ -8,3 +8,11 @@ func main() {
     let actions: [](int) -> int = []
     let maybe: Option<(int) -> int> = null
 }
+
+func inferred() {
+    let f = (n: int): int { return n }
+    // Neither of these writes a type, so the escape rule has to reach what
+    // was inferred rather than only what was annotated.
+    let collected = [f]
+    let wrapped = Some(f)
+}
