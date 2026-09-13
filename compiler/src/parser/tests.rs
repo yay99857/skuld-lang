@@ -728,3 +728,57 @@ fn for_loop_statements_parse() {
         }
     ));
 }
+
+#[test]
+fn extern_blocks_declare_foreign_signatures() {
+    let program = program(
+        "unsafe extern \"C\" {\n    func write(fd: i32, buffer: *u8, count: u64) -> i64\n    func flush()\n}\nfunc main() {}",
+    );
+    assert_eq!(program.externs.len(), 1);
+    let block = &program.externs[0];
+    assert_eq!(block.abi, "C");
+    assert_eq!(block.functions.len(), 2);
+    assert_eq!(block.functions[0].name.text, "write");
+    assert!(matches!(
+        block.functions[0].parameters[1].type_ref,
+        TypeRef::Pointer { .. }
+    ));
+    // An omitted return type is void, exactly as for an ordinary function.
+    assert!(block.functions[1].return_type.is_none());
+    // The block spans from `unsafe` to its closing brace.
+    assert_eq!(block.span.start, 0);
+}
+
+#[test]
+fn extern_blocks_reject_bodies_other_abis_and_a_missing_marker() {
+    for source in [
+        "unsafe extern \"C\" { func abs(value: i32) -> i32 { return value } }\nfunc main() {}",
+        "unsafe extern \"Rust\" { func abs(value: i32) -> i32 }\nfunc main() {}",
+        "extern \"C\" { func abs(value: i32) -> i32 }\nfunc main() {}",
+        "unsafe func main() {}",
+    ] {
+        let output = parse(source);
+        assert!(output.program.is_none(), "{source}");
+        assert!(
+            output.diagnostics.iter().any(|d| matches!(
+                d.code,
+                DiagnosticCode::UnsupportedSyntax | DiagnosticCode::ExpectedSyntax
+            )),
+            "{source}: {:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn pointer_types_nest_and_keep_spans() {
+    let program = program("unsafe extern \"C\" { func f(a: *void, b: *u8) }\nfunc main() {}");
+    let parameters = &program.externs[0].functions[0].parameters;
+    for parameter in parameters {
+        let TypeRef::Pointer { pointee, span } = &parameter.type_ref else {
+            panic!("pointer type")
+        };
+        assert!(matches!(**pointee, TypeRef::Named(_)));
+        assert_eq!(*span, parameter.type_ref.span());
+    }
+}

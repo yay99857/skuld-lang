@@ -23,6 +23,9 @@ pub enum Builtin {
     IntConvert(IntType),
     /// `bytes_to_string(bytes)`, which validates UTF-8 and can fail.
     BytesToString,
+    /// `ptr(value)`, which borrows the bytes of a string or `[]u8` as a raw
+    /// pointer for the foreign boundary. It keeps nothing alive.
+    Ptr,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
@@ -90,6 +93,7 @@ pub fn resolve(program: &Program) -> ResolveOutput {
         SymbolKind::Builtin(Builtin::BytesToString),
         None,
     );
+    resolver.insert("ptr", SymbolKind::Builtin(Builtin::Ptr), None);
     // `int` and `i64` name one type, so both spellings convert to it.
     for kind in IntType::ALL {
         resolver.insert(
@@ -106,6 +110,14 @@ pub fn resolve(program: &Program) -> ResolveOutput {
     resolver.enter(program.span);
     for declaration in &program.enums {
         resolver.declare(&declaration.name, SymbolKind::Enum);
+    }
+    // Foreign functions are ordinary value names: only the backend knows they
+    // are calls into another object file. Their parameter names are
+    // documentation, so they get no symbols of their own.
+    for block in &program.externs {
+        for function in &block.functions {
+            resolver.declare(&function.name, SymbolKind::Function);
+        }
     }
     for function in &program.functions {
         resolver.declare(&function.name, SymbolKind::Function);

@@ -12,7 +12,33 @@ pub fn emit_c(program: &Program) -> String {
         options: program.options.clone(),
         results: program.results.clone(),
         current_return: Type::Void,
+        extern_names: program
+            .externs
+            .iter()
+            .map(|function| (function.id, function.name.clone()))
+            .collect(),
     };
+    // Foreign declarations first: they name symbols from another object file
+    // and depend on nothing this backend generates.
+    for function in &program.externs {
+        let parameters = if function.parameters.is_empty() {
+            "void".to_owned()
+        } else {
+            function
+                .parameters
+                .iter()
+                .map(|ty| type_name(&program.structs, *ty))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        emitter.line(&format!(
+            "extern {} {}({parameters}); /* extern \"C\": source bytes {}..{} */",
+            type_name(&program.structs, function.return_type),
+            function.name,
+            function.span.start,
+            function.span.end
+        ));
+    }
     for index in 0..program.arrays.len() {
         emitter.line(&format!("typedef struct skuld_a{index} skuld_a{index};"));
     }
@@ -264,6 +290,8 @@ struct Emitter {
     /// The enclosing function's return type, which `?` needs to build its
     /// early `Err` return without carrying it through the whole HIR.
     current_return: Type,
+    /// Linker names for foreign functions, which are emitted verbatim.
+    extern_names: std::collections::BTreeMap<crate::resolver::SymbolId, String>,
 }
 fn type_name(structs: &[StructInfo], ty: Type) -> String {
     match ty {
@@ -273,6 +301,7 @@ fn type_name(structs: &[StructInfo], ty: Type) -> String {
         Type::String => "skuld_string".into(),
         Type::Void => "void".into(),
         Type::Weak(_) => "skuld_weak".into(),
+        Type::Pointer(pointee) => format!("{} *", pointee.c_type()),
         Type::Option(id) => format!("skuld_o{}", id.0),
         Type::Result(id) => format!("skuld_r{}", id.0),
         Type::Enum(id) => format!("skuld_e{}", id.0),
@@ -1169,6 +1198,20 @@ impl Emitter {
                 self.line("}");
                 result
             }
+            // A borrowed pointer into bytes the program still owns. Nothing is
+            // retained: the borrow is only valid while the operand is alive,
+            // which the temporary holding it guarantees for this statement.
+            ExprKind::Ptr(value) => {
+                let ty = value.ty;
+                let value = self.expression(value);
+                let cast = self.c_type(expr.ty);
+                let bytes = match ty {
+                    Type::String => format!("({cast}){value}.data"),
+                    Type::Array(_) => format!("({cast}){value}->data"),
+                    _ => unreachable!("internal compiler bug: unchecked `ptr` operand"),
+                };
+                self.temporary(expr.ty, &bytes)
+            }
             ExprKind::StringLen(value) => {
                 let value = self.expression(value);
                 self.temporary(Type::INT, &format!("(int64_t){value}.len"))
@@ -1495,6 +1538,10 @@ impl Emitter {
                 let values: Vec<_> = arguments.iter().map(|arg| self.expression(arg)).collect();
                 let call = match target {
                     CallTarget::Function(id) => format!("skuld_f{}({})", id.0, values.join(", ")),
+                    // The foreign name is the linker's, not the generator's.
+                    CallTarget::Extern(id) => {
+                        format!("{}({})", self.extern_names[id], values.join(", "))
+                    }
                     CallTarget::Print if arguments.is_empty() => format!(
                         "skuld_print_string((skuld_string){{(const unsigned char *)\"\", 0, NULL}}, {})",
                         expr.span.start

@@ -737,3 +737,75 @@ fn for_loop_type_checking() {
         DiagnosticCode::ImmutableAssignment,
     );
 }
+
+#[test]
+fn extern_signatures_accept_only_c_representable_types() {
+    valid(
+        "unsafe extern \"C\" { func write(fd: i32, buffer: *u8, count: u64) -> i64\n    func flush() }\nfunc main() { let n = write(1, ptr(\"hi\"), 2) }",
+    );
+    for source in [
+        "unsafe extern \"C\" { func f(text: string) }\nfunc main() {}",
+        "unsafe extern \"C\" { func f(bytes: []u8) }\nfunc main() {}",
+        "unsafe extern \"C\" { func f(value: Option<int>) }\nfunc main() {}",
+        "unsafe extern \"C\" { func f() -> string }\nfunc main() {}",
+        "unsafe extern \"C\" { func f(p: *string) }\nfunc main() {}",
+        // `void` is a return type, never a parameter or a payload.
+        "unsafe extern \"C\" { func f(nothing: void) }\nfunc main() {}",
+    ] {
+        fails(source, DiagnosticCode::InvalidValueType);
+    }
+}
+
+#[test]
+fn extern_names_may_not_shadow_generated_symbols() {
+    for source in [
+        "unsafe extern \"C\" { func main() }\nfunc start() {}",
+        "unsafe extern \"C\" { func skuld_fail() }\nfunc main() {}",
+    ] {
+        fails(source, DiagnosticCode::InvalidValueType);
+    }
+}
+
+#[test]
+fn foreign_calls_check_arguments_like_any_other_call() {
+    let source =
+        "unsafe extern \"C\" { func abs(value: i32) -> i32 }\nfunc main() { let n = abs(-1) }";
+    let typed = check(source).expect("checked");
+    let start = source.find("abs(-1)").expect("call site");
+    assert_eq!(
+        typed.expression_type(crate::span::Span::new(start, start + "abs(-1)".len())),
+        Some(Type::Int(crate::types::IntType::I32))
+    );
+    // Widths never mix implicitly, at the boundary as anywhere else. A literal
+    // still takes the width its context expects, so only a typed value clashes.
+    fails(
+        "unsafe extern \"C\" { func abs(value: i32) -> i32 }\nfunc main() { let x = 1\nlet n = abs(1) + x }",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "unsafe extern \"C\" { func abs(value: i32) -> i32 }\nfunc main() { abs() }",
+        DiagnosticCode::ArgumentCount,
+    );
+}
+
+#[test]
+fn ptr_borrows_strings_and_scalar_arrays() {
+    valid(
+        "func main() { let a = ptr(\"hi\")\nvar bytes: []u8 = []\nlet b = ptr(bytes)\nvar reals: []float = []\nlet c = ptr(reals) }",
+    );
+    for source in [
+        "func main() { let p = ptr(1) }",
+        "func main() { var names: []string = []\nlet p = ptr(names) }",
+        "func main() { let p = ptr }",
+        "func main() { let p = ptr(\"a\", \"b\") }",
+    ] {
+        let errors = check(source).expect_err("must fail");
+        assert!(
+            errors.iter().any(|error| matches!(
+                error.code,
+                DiagnosticCode::InvalidValueType | DiagnosticCode::ArgumentCount
+            )),
+            "{source}: {errors:?}"
+        );
+    }
+}

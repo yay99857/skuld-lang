@@ -159,6 +159,36 @@ impl IntType {
     }
 }
 
+/// What a raw pointer points at. Only unmanaged, C-representable values are
+/// possible: a pointer never carries a reference count across the boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Pointee {
+    /// `*void`: an opaque handle, which Skuld can only pass back to C.
+    Void,
+    Int(IntType),
+    Float,
+    Bool,
+}
+
+impl Pointee {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Void => "void",
+            Self::Int(kind) => kind.name(),
+            Self::Float => "float",
+            Self::Bool => "bool",
+        }
+    }
+    pub fn c_type(self) -> &'static str {
+        match self {
+            Self::Void => "void",
+            Self::Int(kind) => kind.c_type(),
+            Self::Float => "double",
+            Self::Bool => "bool",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Type {
     Int(IntType),
@@ -178,6 +208,9 @@ pub enum Type {
     Result(ResultId),
     /// A non-owning class reference, which may be empty or expired.
     Weak(StructId),
+    /// A raw, unmanaged pointer. It exists for the `extern "C"` boundary and
+    /// keeps nothing alive; Skuld cannot read or write through it.
+    Pointer(Pointee),
     /// Recovery only; never present in a successfully checked program.
     Error,
 }
@@ -196,6 +229,9 @@ impl Type {
 }
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Self::Pointer(pointee) = self {
+            return write!(f, "*{}", pointee.name());
+        }
         f.write_str(match self {
             Self::Int(kind) => kind.name(),
             Self::Float => "float",
@@ -209,6 +245,7 @@ impl fmt::Display for Type {
             Self::Option(_) => "<option>",
             Self::Result(_) => "<result>",
             Self::Weak(_) => "<weak>",
+            Self::Pointer(_) => unreachable!("rendered above"),
             Self::Error => "<error>",
         })
     }

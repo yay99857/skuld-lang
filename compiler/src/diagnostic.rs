@@ -74,6 +74,11 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
+    /// Attach guidance to a diagnostic built by a helper that has none.
+    pub fn with_help(mut self, help: impl Into<String>) -> Self {
+        self.help = Some(help.into());
+        self
+    }
     pub fn render(&self, source: &SourceFile) -> String {
         let (line, column) = source.location(self.span.start);
         let text = source.line(line).unwrap_or("");

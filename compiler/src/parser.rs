@@ -200,6 +200,24 @@ impl Parser<'_> {
             let span = Span::new(start, class.span.end);
             return Ok(TypeRef::Weak { class, span });
         }
+        if self.at(&TokenKind::Star) {
+            let start = self.bump().span.start;
+            let pointee = self.type_ref()?;
+            let end = pointee.span().end;
+            return Ok(TypeRef::Pointer {
+                pointee: Box::new(pointee),
+                span: Span::new(start, end),
+            });
+        }
+        if self.at(&TokenKind::Star) {
+            let start = self.bump().span.start;
+            let pointee = self.type_ref()?;
+            let end = pointee.span().end;
+            return Ok(TypeRef::Pointer {
+                pointee: Box::new(pointee),
+                span: Span::new(start, end),
+            });
+        }
         if self.at(&TokenKind::LeftBracket) {
             let start = self.bump().span.start;
             self.expect(&TokenKind::RightBracket, "`]` after `[` in an array type")?;
@@ -218,8 +236,19 @@ impl Parser<'_> {
         let mut functions = Vec::new();
         let mut structs = Vec::new();
         let mut enums = Vec::new();
+        let mut externs = Vec::new();
         while !self.at(&TokenKind::Eof) {
             let start = self.position;
+            if self.at(&TokenKind::Unsafe) || self.at(&TokenKind::Extern) {
+                match self.extern_block() {
+                    Ok(declaration) => externs.push(declaration),
+                    Err(diagnostic) => {
+                        self.diagnostics.push(diagnostic);
+                        self.recover_declaration(start);
+                    }
+                }
+                continue;
+            }
             if self.at(&TokenKind::Struct) || self.at(&TokenKind::Class) {
                 match self.struct_declaration() {
                     Ok(declaration) => structs.push(declaration),
@@ -257,6 +286,7 @@ impl Parser<'_> {
             structs,
             enums,
             functions,
+            externs,
             span: Span::new(0, self.source.len()),
         });
         ParseOutput {
@@ -272,10 +302,91 @@ impl Parser<'_> {
             && !self.at(&TokenKind::Struct)
             && !self.at(&TokenKind::Class)
             && !self.at(&TokenKind::Enum)
+            && !self.at(&TokenKind::Unsafe)
+            && !self.at(&TokenKind::Extern)
             && !self.at(&TokenKind::Eof)
         {
             self.bump();
         }
+    }
+    /// `unsafe extern "C" { func name(...) -> type ... }`. The declarations
+    /// inside carry no body: the definition lives in the linked library.
+    fn extern_block(&mut self) -> Parsed<ExternBlock> {
+        // A missing `unsafe` is reported, then the block is parsed anyway: the
+        // rest of the file still deserves real diagnostics.
+        let start = match self.take(&TokenKind::Unsafe) {
+            Some(token) => token.span.start,
+            None => {
+                let diagnostic = self
+                    .error(
+                        DiagnosticCode::UnsupportedSyntax,
+                        "an `extern` block must be written `unsafe extern \"C\"`",
+                    )
+                    .with_help(
+                        "the compiler cannot check a foreign signature against the linked library, so the declaration is marked unsafe",
+                    );
+                self.diagnostics.push(diagnostic);
+                self.current().span.start
+            }
+        };
+        self.expect(&TokenKind::Extern, "`extern` after `unsafe`")?;
+        let abi_token = self.current().clone();
+        let TokenKind::String(abi) = abi_token.kind else {
+            return Err(self.expected("an ABI string, as in `extern \"C\"`"));
+        };
+        self.bump();
+        if abi != "C" {
+            return Err(Diagnostic {
+                code: DiagnosticCode::UnsupportedSyntax,
+                message: format!("unsupported ABI `{abi}`; only `\"C\"` is supported"),
+                span: abi_token.span,
+                help: None,
+            });
+        }
+        self.expect(&TokenKind::LeftBrace, "`{` to begin the extern block")?;
+        let mut functions = Vec::new();
+        while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
+            functions.push(self.nested(|parser| parser.extern_function())?);
+        }
+        let end = self
+            .expect(&TokenKind::RightBrace, "`}` to close the extern block")?
+            .span
+            .end;
+        Ok(ExternBlock {
+            abi,
+            abi_span: abi_token.span,
+            functions,
+            span: Span::new(start, end),
+        })
+    }
+    fn extern_function(&mut self) -> Parsed<ExternFunctionDecl> {
+        let start = self
+            .expect(&TokenKind::Function, "`func` or `}` in an extern block")?
+            .span
+            .start;
+        let name = self.name("a function name")?;
+        let parameters = self.parameter_list()?;
+        let return_type =
+            if self.take(&TokenKind::Colon).is_some() || self.take(&TokenKind::Arrow).is_some() {
+                Some(self.type_ref()?)
+            } else {
+                None
+            };
+        if self.at(&TokenKind::LeftBrace) {
+            return Err(self
+                .error(
+                    DiagnosticCode::UnsupportedSyntax,
+                    "an extern function is a declaration and has no body",
+                )
+                .with_help("remove the body; the definition comes from the linked library"));
+        }
+        let span = Span::new(start, self.previous_end());
+        Ok(ExternFunctionDecl {
+            name,
+            parameters,
+            return_type,
+            span,
+        })
     }
     fn enum_declaration(&mut self) -> Parsed<EnumDecl> {
         let start = self.expect(&TokenKind::Enum, "`enum`")?.span.start;

@@ -5,11 +5,17 @@ use crate::{
     resolver::{Builtin, Resolution, SymbolId, SymbolKind},
     span::Span,
     types::{
-        ArrayId, ArrayInfo, EnumId, EnumInfo, IntType, OptionId, OptionInfo, ResultId, ResultInfo,
-        StructId, Type, VariantInfo,
+        ArrayId, ArrayInfo, EnumId, EnumInfo, IntType, OptionId, OptionInfo, Pointee, ResultId,
+        ResultInfo, StructId, Type, VariantInfo,
     },
 };
 use std::collections::BTreeMap;
+
+#[derive(Debug, Clone)]
+pub struct ExternInfo {
+    pub name: String,
+    pub span: Span,
+}
 
 #[derive(Debug, Clone)]
 pub struct Signature {
@@ -26,6 +32,9 @@ pub struct TypedProgram {
     pub(crate) expressions: BTreeMap<(usize, usize), Type>,
     pub(crate) symbol_types: Vec<Type>,
     pub(crate) signatures: BTreeMap<SymbolId, Signature>,
+    /// Foreign functions, which have a signature but no body. The C name is the
+    /// declared name: the backend calls it verbatim.
+    pub(crate) externs: BTreeMap<SymbolId, ExternInfo>,
     pub(crate) entry: SymbolId,
     pub(crate) structs: Vec<StructInfo>,
     pub(crate) enums: Vec<EnumInfo>,
@@ -70,6 +79,7 @@ pub(crate) fn type_check(
         resolution: &resolution,
         expressions: BTreeMap::new(),
         signatures: BTreeMap::new(),
+        externs: BTreeMap::new(),
         diagnostics: Vec::new(),
         return_type: Type::Void,
         loops: Vec::new(),
@@ -306,6 +316,53 @@ pub(crate) fn type_check(
         }
         checker.structs[index].methods = methods;
     }
+    // Foreign signatures come first: an ordinary function may call one, and
+    // nothing about them depends on the rest of the program.
+    for block in &syntax.externs {
+        for function in &block.functions {
+            let id = checker.declaration(&function.name);
+            let mut parameters = Vec::new();
+            for parameter in &function.parameters {
+                let ty = checker.type_ref(&parameter.type_ref, false);
+                checker.foreign_type(ty, parameter.type_ref.span(), false);
+                parameters.push(ty);
+            }
+            let return_type = match &function.return_type {
+                Some(reference) => {
+                    let ty = checker.type_ref(reference, true);
+                    checker.foreign_type(ty, reference.span(), true);
+                    ty
+                }
+                None => Type::Void,
+            };
+            // The declared name is the linker name, so it must not collide with
+            // what the backend emits for the program itself.
+            if function.name.text == "main" || function.name.text.starts_with("skuld_") {
+                checker.error(
+                    DiagnosticCode::InvalidValueType,
+                    function.name.span,
+                    format!(
+                        "`{}` cannot be declared as a foreign function; the generated program already defines that symbol",
+                        function.name.text
+                    ),
+                );
+            }
+            checker.externs.insert(
+                id,
+                ExternInfo {
+                    name: function.name.text.clone(),
+                    span: function.span,
+                },
+            );
+            checker.signatures.insert(
+                id,
+                Signature {
+                    parameters,
+                    return_type,
+                },
+            );
+        }
+    }
     for function in &syntax.functions {
         let id = checker.declaration(&function.name);
         let mut parameters = Vec::new();
@@ -397,6 +454,7 @@ pub(crate) fn type_check(
         expressions,
         symbol_types,
         signatures,
+        externs,
         implicit_wraps,
         ..
     } = checker;
@@ -415,6 +473,7 @@ pub(crate) fn type_check(
         expressions,
         symbol_types,
         signatures,
+        externs,
         entry,
     })
 }
@@ -424,6 +483,7 @@ struct Checker<'a> {
     symbol_types: Vec<Type>,
     expressions: BTreeMap<(usize, usize), Type>,
     signatures: BTreeMap<SymbolId, Signature>,
+    externs: BTreeMap<SymbolId, ExternInfo>,
     diagnostics: Vec<Diagnostic>,
     return_type: Type,
     /// One frame per enclosing loop, recording whether a `break` can exit it.
@@ -510,6 +570,25 @@ impl Checker<'_> {
             ),
             Type::Weak(id) => format!("weak {}", self.structs[id.0].name),
             other => other.to_string(),
+        }
+    }
+    /// Managed values never cross the foreign boundary: a C function knows
+    /// nothing about retain and release, so only scalars, raw pointers and a
+    /// `void` return may appear in an `extern` signature.
+    fn foreign_type(&mut self, ty: Type, span: Span, is_return: bool) {
+        let allowed = matches!(
+            ty,
+            Type::Int(_) | Type::Float | Type::Bool | Type::Pointer(_) | Type::Error
+        ) || (is_return && ty == Type::Void);
+        if !allowed {
+            self.error(
+                DiagnosticCode::InvalidValueType,
+                span,
+                format!(
+                    "`{}` cannot cross the `extern \"C\"` boundary; only scalars and raw pointers can",
+                    self.type_name(ty)
+                ),
+            );
         }
     }
     fn option_type(&mut self, element: Type) -> Type {
@@ -614,6 +693,27 @@ impl Checker<'_> {
                     Type::Error
                 } else {
                     ty
+                }
+            }
+            TypeRef::Pointer { pointee, span } => {
+                let inner = self.type_ref(pointee, true);
+                match inner {
+                    Type::Error => Type::Error,
+                    Type::Void => Type::Pointer(Pointee::Void),
+                    Type::Int(kind) => Type::Pointer(Pointee::Int(kind)),
+                    Type::Float => Type::Pointer(Pointee::Float),
+                    Type::Bool => Type::Pointer(Pointee::Bool),
+                    other => {
+                        self.error(
+                            DiagnosticCode::InvalidValueType,
+                            *span,
+                            format!(
+                                "a pointer may only point at a scalar or `void`, not `{}`",
+                                self.type_name(other)
+                            ),
+                        );
+                        Type::Error
+                    }
                 }
             }
             TypeRef::Array { element, span } => {
@@ -1148,6 +1248,14 @@ impl Checker<'_> {
                             DiagnosticCode::ArgumentCount,
                             expr.span,
                             "`bytes_to_string` is a function; call it with a `[]u8`",
+                        );
+                        Type::Error
+                    }
+                    SymbolKind::Builtin(Builtin::Ptr) => {
+                        self.error(
+                            DiagnosticCode::ArgumentCount,
+                            expr.span,
+                            "`ptr` is a function; call it with a string or an array",
                         );
                         Type::Error
                     }
@@ -1885,6 +1993,48 @@ impl Checker<'_> {
                     Type::Error
                 } else {
                     self.option_type(element)
+                }
+            }
+            Some((_, SymbolKind::Builtin(Builtin::Ptr))) => {
+                if arguments.len() != 1 {
+                    for argument in arguments {
+                        self.expression(argument);
+                    }
+                    self.error(
+                        DiagnosticCode::ArgumentCount,
+                        span,
+                        "`ptr` expects exactly one argument",
+                    );
+                    return Type::Error;
+                }
+                let previous = self.expected_context;
+                self.expected_context = None;
+                let found = self.expression(&arguments[0]);
+                self.expected_context = previous;
+                let pointee = match found {
+                    Type::Error => return Type::Error,
+                    Type::String => Some(Pointee::Int(IntType::U8)),
+                    Type::Array(id) => match self.arrays[id.0].element {
+                        Type::Int(kind) => Some(Pointee::Int(kind)),
+                        Type::Float => Some(Pointee::Float),
+                        Type::Bool => Some(Pointee::Bool),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                match pointee {
+                    Some(pointee) => Type::Pointer(pointee),
+                    None => {
+                        self.error(
+                            DiagnosticCode::InvalidValueType,
+                            arguments[0].span,
+                            format!(
+                                "`ptr` borrows the bytes of a string or an array of scalars, not `{}`",
+                                self.type_name(found)
+                            ),
+                        );
+                        Type::Error
+                    }
                 }
             }
             Some((_, SymbolKind::Builtin(Builtin::BytesToString))) => {

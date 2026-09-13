@@ -9,6 +9,20 @@ use crate::{
 
 pub fn lower(typed: TypedProgram) -> h::Program {
     let mut functions = Vec::new();
+    let mut externs = Vec::new();
+    for block in &typed.syntax.externs {
+        for function in &block.functions {
+            let id = typed.resolution.declarations[&function.name.span.start];
+            let signature = &typed.signatures[&id];
+            externs.push(h::ExternFunction {
+                id,
+                name: typed.externs[&id].name.clone(),
+                parameters: signature.parameters.clone(),
+                return_type: signature.return_type,
+                span: function.span,
+            });
+        }
+    }
     for declaration in &typed.syntax.structs {
         for method in &declaration.methods {
             let id = typed.resolution.declarations[&method.name.span.start];
@@ -61,6 +75,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
         }
     }
     h::Program {
+        externs,
         structs: typed.structs.clone(),
         enums: typed.enums.clone(),
         arrays: typed.arrays.clone(),
@@ -526,8 +541,18 @@ fn expression(source: &ast::Expr, typed: &TypedProgram) -> h::Expr {
                     span: source.span,
                 };
             }
+            if typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::Ptr) {
+                return h::Expr {
+                    kind: h::ExprKind::Ptr(Box::new(expression(&arguments[0], typed))),
+                    ty: typed.expressions[&(source.span.start, source.span.end)],
+                    span: source.span,
+                };
+            }
             let target = match typed.resolution.symbols[id.0].kind {
                 SymbolKind::Builtin(Builtin::Print) => h::CallTarget::Print,
+                SymbolKind::Function if typed.externs.contains_key(&id) => {
+                    h::CallTarget::Extern(id)
+                }
                 SymbolKind::Function => h::CallTarget::Function(id),
                 _ => unreachable!("internal compiler bug: non-callable checked symbol"),
             };

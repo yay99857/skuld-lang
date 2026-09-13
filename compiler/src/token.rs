@@ -31,6 +31,7 @@ pub enum TokenKind {
     In,
     Static,
     Extern,
+    Unsafe,
     LeftParen,
     RightParen,
     LeftBrace,

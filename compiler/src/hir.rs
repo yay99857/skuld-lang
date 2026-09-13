@@ -16,6 +16,8 @@ pub struct Program {
     pub(crate) options: Vec<crate::types::OptionInfo>,
     pub(crate) results: Vec<crate::types::ResultInfo>,
     pub(crate) functions: Vec<Function>,
+    /// Foreign functions: a signature and a linker name, with no body.
+    pub(crate) externs: Vec<ExternFunction>,
     pub(crate) entry: SymbolId,
     pub(crate) span: Span,
 }
@@ -31,6 +33,16 @@ pub(crate) struct Function {
     pub parameters: Vec<Parameter>,
     pub return_type: Type,
     pub body: Block,
+    pub span: Span,
+}
+/// A function defined in another object file. Its name is emitted verbatim,
+/// unlike every generated name, because the linker has to find it.
+#[derive(Debug)]
+pub(crate) struct ExternFunction {
+    pub id: SymbolId,
+    pub name: String,
+    pub parameters: Vec<Type>,
+    pub return_type: Type,
     pub span: Span,
 }
 #[derive(Debug)]
@@ -171,6 +183,9 @@ pub(crate) enum ExprKind {
         start: Box<Expr>,
         end: Box<Expr>,
     },
+    /// `ptr(value)`. Borrows the bytes of a string or array as a raw pointer,
+    /// valid only while the borrowed value is alive.
+    Ptr(Box<Expr>),
     StringLen(Box<Expr>),
     StringBytes(Box<Expr>),
     /// `bytes_to_string(bytes)`. Yields `Result<string, string>`.
@@ -231,6 +246,8 @@ pub(crate) enum ArrayMethod {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum CallTarget {
     Function(SymbolId),
+    /// A call that leaves the program: no retain, no release, no trapping.
+    Extern(SymbolId),
     Print,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

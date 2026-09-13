@@ -294,3 +294,48 @@ fn for_loop_variable_scoped_to_body() {
     assert_eq!(result.diagnostics.len(), 1);
     assert_eq!(result.diagnostics[0].code, DiagnosticCode::UnknownName);
 }
+
+#[test]
+fn extern_functions_are_predeclared_value_names() {
+    let resolution = valid(
+        "func main() { let n = abs(-1) }\nunsafe extern \"C\" { func abs(value: i32) -> i32 }",
+    );
+    // Declared like any function, and callable before its declaration.
+    let id = resolution
+        .references
+        .values()
+        .find(|id| resolution.symbols[id.0].name == "abs")
+        .copied()
+        .expect("reference to the foreign function");
+    assert_eq!(resolution.symbols[id.0].kind, SymbolKind::Function);
+    // Parameter names inside an extern block are documentation, not bindings.
+    assert!(!resolution.symbols.iter().any(|s| s.name == "value"));
+}
+
+#[test]
+fn extern_names_collide_with_ordinary_functions() {
+    let result = output(
+        "unsafe extern \"C\" { func abs(value: i32) -> i32 }\nfunc abs() {}\nfunc main() {}",
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::DuplicateDeclaration)
+    );
+}
+
+#[test]
+fn ptr_is_a_shadowable_prelude_binding() {
+    let resolution = valid("func main() { let ptr = 1\nprint(ptr) }");
+    let id = resolution
+        .references
+        .values()
+        .find(|id| resolution.symbols[id.0].name == "ptr")
+        .copied()
+        .expect("reference to the shadowing binding");
+    assert!(matches!(
+        resolution.symbols[id.0].kind,
+        SymbolKind::Variable(_)
+    ));
+}

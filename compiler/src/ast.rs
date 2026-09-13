@@ -6,6 +6,28 @@ pub struct Program {
     pub structs: Vec<StructDecl>,
     pub enums: Vec<EnumDecl>,
     pub functions: Vec<FunctionDecl>,
+    /// Foreign declarations, which have signatures but no bodies.
+    pub externs: Vec<ExternBlock>,
+    pub span: Span,
+}
+
+/// `unsafe extern "C" { ... }`. The `unsafe` marker is the source-level record
+/// that the declared signatures are asserted, not checked: nothing in Skuld can
+/// verify them against the library that is eventually linked.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternBlock {
+    pub abi: String,
+    pub abi_span: Span,
+    pub functions: Vec<ExternFunctionDecl>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternFunctionDecl {
+    pub name: Name,
+    pub parameters: Vec<Parameter>,
+    /// None means an implicit void return type.
+    pub return_type: Option<TypeRef>,
     pub span: Span,
 }
 
@@ -82,6 +104,11 @@ pub enum TypeRef {
         element: Box<TypeRef>,
         span: Span,
     },
+    /// `*u8`, `*void`. Raw, unmanaged, and only valid at the foreign boundary.
+    Pointer {
+        pointee: Box<TypeRef>,
+        span: Span,
+    },
 }
 
 impl TypeRef {
@@ -89,6 +116,7 @@ impl TypeRef {
         match self {
             Self::Named(name) => name.span,
             Self::Array { span, .. }
+            | Self::Pointer { span, .. }
             | Self::Weak { span, .. }
             | Self::Option { span, .. }
             | Self::Result { span, .. } => *span,
