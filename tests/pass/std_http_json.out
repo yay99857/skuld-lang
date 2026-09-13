@@ -1,0 +1,20 @@
+status 200 OK
+type application/json
+{"name":"skuld","tags":["native","fast"]}
+status 404 Not Found
+type text/plain
+{}
+status 500 Internal Server Error
+type application/json
+null
+status 200 OK
+type application/json
+json: unexpected byte at 11
+malformed response: no blank line after the headers
+malformed response: not an HTTP/1.x response
+malformed response: header without a colon
+malformed response: body shorter than Content-Length
+10.0.0.7 8080 /a/b?c=d
+127.0.0.1 80 /
+`https://127.0.0.1/` needs TLS, which is not implemented
+`skuld.example` is a name, and there is no resolver; use an IPv4 address

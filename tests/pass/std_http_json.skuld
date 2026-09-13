@@ -1,0 +1,69 @@
+// The library halves of the long-range target, without a socket: an HTTP
+// response parsed from bytes, and its body decoded as JSON.
+//
+// The socket half cannot live here — `tests/pass` runs programs with no
+// server to talk to — so it is covered by `cli/tests/network.rs`, which
+// starts one on the loopback interface and stops it again.
+
+import "std/http"
+import "std/json"
+
+func bytes_of(text: string) -> []u8 {
+    var out: []u8 = []
+    for byte in text.bytes() {
+        out.push(byte)
+    }
+    return out
+}
+
+func show(raw: string) {
+    match http.parse_response(bytes_of(raw)) {
+        Ok(response): {
+            print("status ${response.status} ${response.reason}")
+            if let kind = response.header("CONTENT-TYPE") {
+                print("type ${kind}")
+            }
+            match json.parse(response.body) {
+                Ok(document): print(json.render(document))
+                Err(reason): print("json: ${json.describe(reason)}")
+            }
+        }
+        Err(reason): print(http.describe(reason))
+    }
+}
+
+func main() {
+    show("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 41\r\n\r\n{\"name\":\"skuld\",\"tags\":[\"native\",\"fast\"]}")
+
+    // A header name matches whatever case it was written in, and a declared
+    // length shorter than what arrived truncates the body.
+    show("HTTP/1.0 404 Not Found\r\ncontent-type: text/plain\r\nContent-Length: 2\r\n\r\n{}trailing")
+
+    // A reason phrase of several words survives the split.
+    show("HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\nnull")
+
+    // Failures are values.
+    show("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"broken\": }")
+    show("HTTP/1.1 200 OK")
+    show("NOT-HTTP 200 OK\r\n\r\n")
+    show("HTTP/1.1 200 OK\r\nBadHeader\r\n\r\n")
+    show("HTTP/1.1 200 OK\r\nContent-Length: 99\r\n\r\nshort")
+
+    // A URL is parsed before anything is opened.
+    match http.parse_url("http://10.0.0.7:8080/a/b?c=d") {
+        Ok(url): print("${url.host} ${url.port} ${url.path}")
+        Err(reason): print(http.describe(reason))
+    }
+    match http.parse_url("http://127.0.0.1/") {
+        Ok(url): print("${url.host} ${url.port} ${url.path}")
+        Err(reason): print(http.describe(reason))
+    }
+    match http.parse_url("https://127.0.0.1/") {
+        Ok(url): print("unexpected")
+        Err(reason): print(http.describe(reason))
+    }
+    match http.parse_url("http://skuld.example/") {
+        Ok(url): print("unexpected")
+        Err(reason): print(http.describe(reason))
+    }
+}
