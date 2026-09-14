@@ -1202,3 +1202,43 @@ fn a_binding_with_no_let_to_change_is_offered_nothing() {
         assert!(assignment.fix.is_none(), "{source}: {assignment:?}");
     }
 }
+
+#[test]
+fn a_misspelt_member_names_the_one_the_type_has() {
+    // A field in a construction, a field being read, a method being called,
+    // and an enum variant: each is searched among the members that exist.
+    for (source, title) in [
+        (
+            "class User { name: string }\nfunc main() { let u = new User(nmae: \"a\")\nprint(u.name) }",
+            "change to `name`",
+        ),
+        (
+            "class User { name: string }\nfunc main() { let u = new User(name: \"a\")\nprint(u.naem) }",
+            "change to `name`",
+        ),
+        (
+            "class User { name: string\n    hello() { print(this.name) } }\nfunc main() { let u = new User(name: \"a\")\nu.helo() }",
+            "change to `hello`",
+        ),
+        (
+            "enum Status { Pending, Active }\nfunc main() { let s = Status.Actve\nmatch s { _: print(1) } }",
+            "change to `Active`",
+        ),
+    ] {
+        let errors = check(source).expect_err("must fail");
+        let fix = errors
+            .iter()
+            .find_map(|error| error.fix.as_deref())
+            .unwrap_or_else(|| panic!("{source}: {errors:?}"));
+        assert_eq!(fix.title, title, "{source}");
+        let fixed = apply_fixes(source);
+        assert!(check(&fixed).is_ok(), "{fixed}\n{:?}", check(&fixed));
+    }
+}
+
+#[test]
+fn a_member_nothing_resembles_is_not_guessed_at() {
+    let errors = check("class User { name: string }\nfunc main() { let u = new User(name: \"a\")\nprint(u.elephant) }")
+        .expect_err("must fail");
+    assert!(errors.iter().all(|error| error.fix.is_none()), "{errors:?}");
+}

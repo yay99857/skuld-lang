@@ -6,7 +6,7 @@
 //! different things without seeing each other's imports.
 use crate::{
     ast::*,
-    diagnostic::{Diagnostic, DiagnosticCode, Fix, edit_distance},
+    diagnostic::{Diagnostic, DiagnosticCode, Fix, nearest},
     module::{FileDiagnostic, FileId, LoadedProgram, ModuleId},
     span::Span,
     types::IntType,
@@ -757,18 +757,6 @@ impl Resolver {
             }
         }
     }
-}
-
-/// The candidate a misspelling most likely meant, if one is close enough to be
-/// a slip rather than a different word. A short name gets a stricter budget: at
-/// two mistakes, `x` reaches every other short name there is.
-fn nearest<'a>(written: &str, candidates: impl Iterator<Item = &'a str>) -> Option<String> {
-    let allowed = if written.chars().count() <= 3 { 1 } else { 2 };
-    candidates
-        .map(|candidate| (edit_distance(written, candidate), candidate))
-        .filter(|(distance, _)| *distance <= allowed)
-        .min_by_key(|(distance, _)| *distance)
-        .map(|(_, candidate)| candidate.to_string())
 }
 
 #[cfg(test)]

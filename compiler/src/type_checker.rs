@@ -1,7 +1,7 @@
 //! Semantic checking; produces tables for a separate AST-to-HIR lowering pass.
 use crate::{
     ast::*,
-    diagnostic::{Diagnostic, DiagnosticCode, Fix},
+    diagnostic::{Diagnostic, DiagnosticCode, Fix, nearest},
     module::{Errors, FileDiagnostic, FileId, LoadedProgram, ModuleId, ROOT},
     resolver::{Builtin, Resolution, SymbolId, SymbolKind},
     span::Span,
@@ -832,6 +832,37 @@ impl Checker<'_> {
             },
         });
     }
+    /// Report a member that is not there, naming the one a typo probably meant
+    /// and carrying the edit that writes it. The candidates are the members
+    /// the receiver actually has, so a suggestion is never a name that would
+    /// fail for a second reason.
+    fn unknown_member(
+        &mut self,
+        code: DiagnosticCode,
+        written: &Name,
+        message: String,
+        candidates: Vec<String>,
+    ) {
+        let mut diagnostic = Diagnostic {
+            code,
+            span: written.span,
+            message,
+            help: None,
+            fix: None,
+        };
+        if let Some(meant) = nearest(&written.text, candidates.iter().map(String::as_str)) {
+            diagnostic.help = Some(format!("did you mean `{meant}`?"));
+            diagnostic = diagnostic.with_fix(Fix::new(
+                format!("change to `{meant}`"),
+                written.span,
+                meant,
+            ));
+        }
+        self.diagnostics.push(FileDiagnostic {
+            file: self.file,
+            diagnostic,
+        });
+    }
     /// The `let` in front of a declared name, turned into a `var`.
     ///
     /// The resolver records where the name was written and not where its
@@ -1632,13 +1663,20 @@ impl Checker<'_> {
                                     (None, None) => {}
                                 }
                             } else {
-                                self.error(
+                                let message = format!(
+                                    "enum `{}` has no variant `{}`",
+                                    enum_info.name, variant_name.text
+                                );
+                                let variants = enum_info
+                                    .variants
+                                    .iter()
+                                    .map(|variant| variant.name.clone())
+                                    .collect();
+                                self.unknown_member(
                                     DiagnosticCode::UnknownName,
-                                    variant_name.span,
-                                    format!(
-                                        "enum `{}` has no variant `{}`",
-                                        enum_info.name, variant_name.text
-                                    ),
+                                    variant_name,
+                                    message,
+                                    variants,
                                 );
                             }
                         }
@@ -1968,14 +2006,16 @@ impl Checker<'_> {
             let found = self.expression(&field.value);
             self.expected_context = previous;
             let Some((index, declared)) = declared_field else {
-                self.error(
-                    DiagnosticCode::UnknownName,
-                    field.name.span,
-                    format!(
-                        "`{}` has no field `{}`",
-                        self.structs[id.0].name, field.name.text
-                    ),
+                let message = format!(
+                    "`{}` has no field `{}`",
+                    self.structs[id.0].name, field.name.text
                 );
+                let names = self.structs[id.0]
+                    .fields
+                    .iter()
+                    .map(|declared| declared.name.clone())
+                    .collect();
+                self.unknown_member(DiagnosticCode::UnknownName, &field.name, message, names);
                 continue;
             };
             if initialized[index] {
@@ -2358,14 +2398,16 @@ impl Checker<'_> {
                             Type::Enum(enum_id)
                         }
                     } else {
-                        self.error(
-                            DiagnosticCode::UnknownName,
-                            member.span,
-                            format!(
-                                "enum `{}` has no variant `{}`",
-                                self.enums[enum_id.0].name, member.text
-                            ),
+                        let message = format!(
+                            "enum `{}` has no variant `{}`",
+                            self.enums[enum_id.0].name, member.text
                         );
+                        let variants = self.enums[enum_id.0]
+                            .variants
+                            .iter()
+                            .map(|variant| variant.name.clone())
+                            .collect();
+                        self.unknown_member(DiagnosticCode::UnknownName, member, message, variants);
                         Type::Error
                     }
                 } else {
@@ -2395,6 +2437,19 @@ impl Checker<'_> {
                                 if is_method {
                                     diagnostic.help =
                                         Some("call it with `()`; methods are not values".into());
+                                } else if let Some(meant) = nearest(
+                                    &member.text,
+                                    self.structs[id.0]
+                                        .fields
+                                        .iter()
+                                        .map(|field| field.name.as_str()),
+                                ) {
+                                    diagnostic.help = Some(format!("did you mean `{meant}`?"));
+                                    diagnostic = diagnostic.with_fix(Fix::new(
+                                        format!("change to `{meant}`"),
+                                        member.span,
+                                        meant,
+                                    ));
                                 }
                                 self.diagnostics.push(FileDiagnostic {
                                     file: self.file,
@@ -2788,18 +2843,24 @@ impl Checker<'_> {
             .cloned()
         else {
             let is_field = self.structs[id.0].field(&member.text).is_some();
-            self.error(
-                DiagnosticCode::NotCallable,
-                member.span,
-                if is_field {
-                    format!("field `{}` is not callable", member.text)
-                } else {
-                    format!(
-                        "`{}` has no method `{}`",
-                        self.structs[id.0].name, member.text
-                    )
-                },
+            if is_field {
+                self.error(
+                    DiagnosticCode::NotCallable,
+                    member.span,
+                    format!("field `{}` is not callable", member.text),
+                );
+                return Type::Error;
+            }
+            let message = format!(
+                "`{}` has no method `{}`",
+                self.structs[id.0].name, member.text
             );
+            let methods = self.structs[id.0]
+                .methods
+                .iter()
+                .map(|method| method.name.clone())
+                .collect();
+            self.unknown_member(DiagnosticCode::NotCallable, member, message, methods);
             return Type::Error;
         };
         let signature = self.signatures[&method.id].clone();
