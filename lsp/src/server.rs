@@ -1703,7 +1703,7 @@ impl ModuleLoader for OpenFirst<'_> {
             let file = entry.path();
             if file
                 .extension()
-                .is_none_or(|extension| extension != "skuld")
+                .is_none_or(|extension| extension != "skuld" && extension != "sk")
             {
                 continue;
             }

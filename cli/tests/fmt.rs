@@ -1,5 +1,4 @@
 use std::{
-    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -17,7 +16,7 @@ fn fixtures(category: &str) -> Vec<PathBuf> {
     let mut sources: Vec<_> = fs::read_dir(&root)
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", root.display()))
         .map(|entry| entry.expect("directory entry").path())
-        .filter(|path| path.extension() == Some(OsStr::new("skuld")))
+        .filter(|path| path.extension().is_some_and(|e| e == "skuld" || e == "sk"))
         .collect();
     sources.sort();
     assert!(!sources.is_empty(), "no fixtures in {}", root.display());

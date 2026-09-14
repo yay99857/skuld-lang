@@ -72,7 +72,7 @@ fn every_pass_fixture_runs_the_same_on_a_32_bit_target() {
     let mut sources: Vec<PathBuf> = fs::read_dir(&pass)
         .expect("read tests/pass")
         .map(|entry| entry.expect("entry").path())
-        .filter(|path| path.extension().is_some_and(|e| e == "skuld"))
+        .filter(|path| path.extension().is_some_and(|e| e == "skuld" || e == "sk"))
         .collect();
     sources.sort();
     assert!(!sources.is_empty(), "no fixtures to run");

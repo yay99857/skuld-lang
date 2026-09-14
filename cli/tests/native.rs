@@ -269,7 +269,7 @@ fn every_language_fixture_is_sanitizer_clean() {
     let mut sources: Vec<_> = fs::read_dir(&root)
         .expect("fixture directory")
         .map(|entry| entry.expect("entry").path())
-        .filter(|path| path.extension().is_some_and(|e| e == "skuld"))
+        .filter(|path| path.extension().is_some_and(|e| e == "skuld" || e == "sk"))
         .collect();
     sources.sort();
     assert!(!sources.is_empty(), "no fixtures found");

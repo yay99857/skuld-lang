@@ -197,7 +197,7 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
         // an option. Say so, rather than leaving the reader to work it out.
         if let Some(taken) = output
             .as_ref()
-            .filter(|path| path.extension().is_some_and(|e| e == "skuld"))
+            .filter(|path| path.extension().is_some_and(|e| e == "skuld" || e == "sk"))
         {
             message.push_str(&format!(
                 "\nnote: `-o` took `{}` as the path to write to; pass a file whose name begins with `-` after `--`",
@@ -522,7 +522,7 @@ impl ModuleLoader for Directories {
             let file = entry.path();
             if file
                 .extension()
-                .is_none_or(|extension| extension != "skuld")
+                .is_none_or(|extension| extension != "skuld" && extension != "sk")
             {
                 continue;
             }

@@ -287,3 +287,49 @@ fn fmt_formats_in_place_and_check_detects_drift() {
 
     std::fs::remove_file(path).expect("cleanup");
 }
+
+#[test]
+fn sk_extension_is_supported_for_source_and_modules() {
+    let dir = std::env::temp_dir().join(format!("skuld-sk-test-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("math")).expect("create math module dir");
+
+    let mod_file = dir.join("math").join("ops.sk");
+    std::fs::write(
+        &mod_file,
+        "pub func double(x: int) -> int { return x * 2 }\n",
+    )
+    .expect("write ops.sk");
+
+    let main_file = dir.join("main.sk");
+    std::fs::write(
+        &main_file,
+        "import \"math\"\nfunc main() {\n    print(math.double(21))\n}\n",
+    )
+    .expect("write main.sk");
+
+    let check = cli()
+        .arg("check")
+        .arg(&main_file)
+        .output()
+        .expect("run check");
+    assert!(
+        check.status.success(),
+        "check failed: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+
+    let run = cli()
+        .arg("run")
+        .arg(&main_file)
+        .output()
+        .expect("run program");
+    assert!(
+        run.status.success(),
+        "run failed: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout), "42\n");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
