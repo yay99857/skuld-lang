@@ -369,11 +369,18 @@ accurate; documenting a future feature is not a request to implement it.
 - A diagnostic may carry a `Fix`: the exact span to replace and the bytes to
   put there, in the diagnostic's own file. `help` stays prose for a person and
   a `Fix` is the same knowledge for a tool, so it exists only where the
-  compiler knows the whole edit and applying it is never a guess — a missing
-  `unsafe` on an `extern` block, and a name one slip from one in scope. A
-  suggestion is searched in exactly the scopes the use could have reached, and
-  a qualified name among the module's public names only; over two mistakes
-  nothing is suggested, since every short name reaches every other. The server
+  compiler knows the whole edit and applying it is never a guess: a missing
+  `unsafe` on an `extern` block, a name one slip from one in scope, a
+  misspelt field, method or enum variant, the arm a `match` does not cover,
+  and a `let` that is assigned to. A suggestion is searched among exactly the
+  names the use could have reached — the same chain of scopes `lookup` walks,
+  a module's public names only, the members the receiver actually has — so it
+  never fails for a second reason; over two mistakes nothing is suggested,
+  since every short name reaches every other. A `match` arm needs the source
+  text rather than the tree, to land at the indentation the block uses, which
+  is why the checker holds the files. A missing field is deliberately offered
+  no fix: which value goes there is the one thing the compiler does not know,
+  and Skuld has no zero value to stand in for it. The server
   turns these into `quickfix` code actions and reinterprets nothing: it keeps
   what the last check offered, replaces those offers on every check, and drops
   an edit whose span no longer fits the buffer. The other code action is a
