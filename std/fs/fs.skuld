@@ -23,18 +23,28 @@ unsafe extern "C" {
 
 // The flags this module uses, spelled out rather than imported from a header
 // the compiler never reads. They are the Linux values.
+pub const O_RDONLY: i32 = 0
+
+pub const O_WRONLY: i32 = 1
+
+pub const O_CREAT: i32 = 64
+
+pub const O_TRUNC: i32 = 512
+
+pub const MODE_0644: u32 = 0o644
+
 func read_only() -> i32 {
-    return 0
+    return O_RDONLY
 }
 
 // O_WRONLY | O_CREAT | O_TRUNC
 func write_only() -> i32 {
-    return 577
+    return O_WRONLY | O_CREAT | O_TRUNC
 }
 
 // 0644, as an octal constant would be written in C.
 func user_readable() -> u32 {
-    return 420
+    return MODE_0644
 }
 
 pub enum FsError {

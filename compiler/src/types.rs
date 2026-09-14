@@ -195,6 +195,12 @@ impl IntType {
     }
 }
 
+impl fmt::Display for IntType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 /// What a raw pointer points at. Only unmanaged, C-representable values are
 /// possible: a pointer never carries a reference count across the boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -296,3 +302,63 @@ impl fmt::Display for Type {
         })
     }
 }
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConstValue {
+    Int(i128, IntType),
+    Float(f64),
+    Bool(bool),
+    String(String),
+}
+
+impl ConstValue {
+    pub fn ty(&self) -> Type {
+        match self {
+            ConstValue::Int(_, it) => Type::Int(*it),
+            ConstValue::Float(_) => Type::Float,
+            ConstValue::Bool(_) => Type::Bool,
+            ConstValue::String(_) => Type::String,
+        }
+    }
+}
+
+pub fn int_type_min(it: IntType) -> i128 {
+    if it.signed() {
+        -(1_i128 << (it.bits() - 1))
+    } else {
+        0
+    }
+}
+
+pub fn int_type_max(it: IntType) -> i128 {
+    if it.signed() {
+        (1_i128 << (it.bits() - 1)) - 1
+    } else if it.bits() == 64 {
+        u64::MAX as i128
+    } else {
+        (1_i128 << it.bits()) - 1
+    }
+}
+
+pub fn int_type_fits(val: i128, it: IntType) -> bool {
+    val >= int_type_min(it) && val <= int_type_max(it)
+}
+
+pub fn int_type_mask(val: i128, it: IntType) -> i128 {
+    let mask = if it.bits() == 64 {
+        u64::MAX as u128
+    } else {
+        (1_u128 << it.bits()) - 1
+    };
+    (val as u128 & mask) as i128
+}
+
+pub fn sign_extend(raw: u128, it: IntType) -> i128 {
+    let sign_bit = 1_u128 << (it.bits() - 1);
+    if (raw & sign_bit) != 0 {
+        (raw as i128) - (1_i128 << it.bits())
+    } else {
+        raw as i128
+    }
+}
+

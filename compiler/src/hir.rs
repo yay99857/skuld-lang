@@ -160,6 +160,12 @@ pub(crate) enum MatchPattern {
         variant_index: usize,
         binding: Option<SymbolId>,
     },
+    Constant(Expr),
+    Range {
+        start: Expr,
+        end: Expr,
+        inclusive: bool,
+    },
     Wildcard,
 }
 #[derive(Debug)]

@@ -18,6 +18,16 @@
 
 import "std/os"
 
+pub const AF_INET: i32 = 2
+
+pub const SOCK_STREAM: i32 = 1
+
+pub const IPPROTO_IP: i32 = 0
+
+pub const MSG_NOSIGNAL: i32 = 16384
+
+pub const SOCKADDR_IN_SIZE: u32 = 16
+
 unsafe extern "C" {
     func socket(domain: i32, kind: i32, protocol: i32) -> i32
     func connect(handle: i32, address: *u8, length: u32) -> i32
@@ -97,7 +107,7 @@ pub class Connection {
         var sent = 0
         while sent < bytes.len() {
             let rest = bytes[sent..bytes.len()]
-            let wrote = send(i32(this.handle), ptr(rest), u64(rest.len()), 16384)
+            let wrote = send(i32(this.handle), ptr(rest), u64(rest.len()), MSG_NOSIGNAL)
             if wrote <= 0 {
                 return Err(NetError.SendFailed(os.failure(this.peer)))
             }
@@ -148,14 +158,13 @@ pub func open(address: string, port: int) -> Result<Connection, NetError> {
         return Err(NetError.Port(port))
     }
     let octets = parse_address(address)?
-    // AF_INET, SOCK_STREAM.
-    let handle = socket(2, 1, 0)
+    let handle = socket(AF_INET, SOCK_STREAM, IPPROTO_IP)
     if handle < 0 {
         return Err(NetError.OpenFailed(os.failure("a socket")))
     }
     var sockaddr: []u8 = []
     // sin_family: AF_INET in host order on a little-endian target.
-    sockaddr.push(2)
+    sockaddr.push(u8(AF_INET))
     sockaddr.push(0)
     // sin_port, network order.
     sockaddr.push(u8(port / 256))
@@ -169,7 +178,7 @@ pub func open(address: string, port: int) -> Result<Connection, NetError> {
         sockaddr.push(0)
         pad = pad + 1
     }
-    if connect(i32(handle), ptr(sockaddr), u32(16)) < 0 {
+    if connect(i32(handle), ptr(sockaddr), SOCKADDR_IN_SIZE) < 0 {
         let problem = os.failure("${address}:${port}")
         let ignored = close(i32(handle))
         return Err(NetError.ConnectFailed(problem))

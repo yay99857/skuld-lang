@@ -192,6 +192,7 @@ impl Loader {
             interfaces: Vec::new(),
             structs: Vec::new(),
             enums: Vec::new(),
+            constants: Vec::new(),
             functions: Vec::new(),
             externs: Vec::new(),
             span: Span::new(0, source.len()),

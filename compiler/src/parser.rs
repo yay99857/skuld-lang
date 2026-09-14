@@ -298,6 +298,7 @@ impl Parser<'_> {
         let mut functions = Vec::new();
         let mut structs = Vec::new();
         let mut enums = Vec::new();
+        let mut constants = Vec::new();
         let mut externs = Vec::new();
         // Imports come first, so that reading the top of a file is enough to
         // know every module it depends on.
@@ -338,6 +339,16 @@ impl Parser<'_> {
                 }
                 match self.extern_block() {
                     Ok(declaration) => externs.push(declaration),
+                    Err(diagnostic) => {
+                        self.diagnostics.push(diagnostic);
+                        self.recover_declaration(start);
+                    }
+                }
+                continue;
+            }
+            if self.at(&TokenKind::Const) {
+                match self.constant_declaration(visibility) {
+                    Ok(declaration) => constants.push(declaration),
                     Err(diagnostic) => {
                         self.diagnostics.push(diagnostic);
                         self.recover_declaration(start);
@@ -393,6 +404,7 @@ impl Parser<'_> {
             interfaces,
             structs,
             enums,
+            constants,
             functions,
             externs,
             span: Span::new(0, self.source.len()),
@@ -540,6 +552,25 @@ impl Parser<'_> {
             parameters,
             return_type,
             span,
+        })
+    }
+    fn constant_declaration(&mut self, visibility: Visibility) -> Parsed<ConstantDecl> {
+        let start = self.expect(&TokenKind::Const, "`const`")?.span.start;
+        let name = self.name("a constant name")?;
+        let type_ref = if self.take(&TokenKind::Colon).is_some() {
+            Some(self.type_ref()?)
+        } else {
+            None
+        };
+        self.expect(&TokenKind::Equal, "`=` before the constant value")?;
+        let value = self.expression()?;
+        let end = value.span.end;
+        Ok(ConstantDecl {
+            visibility,
+            name,
+            type_ref,
+            value,
+            span: Span::new(start, end),
         })
     }
     fn enum_declaration(&mut self, visibility: Visibility) -> Parsed<EnumDecl> {
@@ -876,7 +907,8 @@ impl Parser<'_> {
         {
             if matches!(
                 self.current().kind,
-                TokenKind::Let
+                TokenKind::Const
+                    | TokenKind::Let
                     | TokenKind::Var
                     | TokenKind::Return
                     | TokenKind::If
@@ -899,6 +931,10 @@ impl Parser<'_> {
         use TokenKind::*;
         let start = self.current().span.start;
         let kind = match self.current().kind {
+            Const => {
+                let constant = self.constant_declaration(Visibility::Private)?;
+                StatementKind::Constant(constant)
+            }
             Let | Var => {
                 let mutability = if self.bump().kind == Let {
                     Mutability::Immutable
@@ -1026,13 +1062,45 @@ impl Parser<'_> {
             {
                 let token = self.bump();
                 MatchPattern::Wildcard(token.span)
+            } else if matches!(
+                &self.current().kind,
+                TokenKind::Integer(_)
+                    | TokenKind::Float(_)
+                    | TokenKind::String(_)
+                    | TokenKind::Boolean(_)
+            ) || (self.at(&TokenKind::Minus)
+                && matches!(
+                    self.peek_kind(1),
+                    TokenKind::Integer(_) | TokenKind::Float(_)
+                )) {
+                let start_expr = self.expression_bp(22)?;
+                if self.take(&TokenKind::DotDot).is_some() {
+                    let end_expr = self.expression_bp(22)?;
+                    let span = Span::new(start_expr.span.start, end_expr.span.end);
+                    MatchPattern::Range {
+                        start: start_expr,
+                        end: end_expr,
+                        inclusive: false,
+                        span,
+                    }
+                } else if self.take(&TokenKind::DotDotEqual).is_some() {
+                    let end_expr = self.expression_bp(22)?;
+                    let span = Span::new(start_expr.span.start, end_expr.span.end);
+                    MatchPattern::Range {
+                        start: start_expr,
+                        end: end_expr,
+                        inclusive: true,
+                        span,
+                    }
+                } else {
+                    MatchPattern::Constant(start_expr)
+                }
             } else {
-                // One name is a variant whose enum comes from the matched
-                // value; two are `Enum.Variant`; three are
-                // `module.Enum.Variant`.
+                // One name is a variant or constant; two are `Enum.Variant` or
+                // `module.CONSTANT`; three are `module.Enum.Variant`.
                 let first = self.name("a pattern or `_`")?;
                 let (enum_name, variant_name) = if self.take(&TokenKind::Dot).is_some() {
-                    let second = self.name("a variant name")?;
+                    let second = self.name("a variant or constant name")?;
                     if self.take(&TokenKind::Dot).is_some() {
                         let variant = self.name("a variant name")?;
                         let span = Span::new(first.span.start, second.span.end);
@@ -1057,12 +1125,61 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                let span = Span::new(arm_start, self.previous_end());
-                MatchPattern::Variant {
-                    enum_name,
-                    variant_name,
-                    binding,
-                    span,
+                if binding.is_none()
+                    && (self.at(&TokenKind::DotDot) || self.at(&TokenKind::DotDotEqual))
+                {
+                    let inclusive = self.take(&TokenKind::DotDotEqual).is_some();
+                    if !inclusive {
+                        self.bump();
+                    }
+                    let end_expr = self.expression_bp(22)?;
+                    let start_expr = match enum_name {
+                        Some(path) => {
+                            let obj = match path.module {
+                                Some(mod_name) => Expr {
+                                    kind: ExprKind::Member {
+                                        object: Box::new(Expr {
+                                            kind: ExprKind::Identifier(mod_name.clone()),
+                                            span: mod_name.span,
+                                        }),
+                                        member: path.name,
+                                    },
+                                    span: path.span,
+                                },
+                                None => Expr {
+                                    kind: ExprKind::Identifier(path.name),
+                                    span: path.span,
+                                },
+                            };
+                            let span = Span::new(obj.span.start, variant_name.span.end);
+                            Expr {
+                                kind: ExprKind::Member {
+                                    object: Box::new(obj),
+                                    member: variant_name,
+                                },
+                                span,
+                            }
+                        }
+                        None => Expr {
+                            kind: ExprKind::Identifier(variant_name.clone()),
+                            span: variant_name.span,
+                        },
+                    };
+                    let span = Span::new(start_expr.span.start, end_expr.span.end);
+                    MatchPattern::Range {
+                        start: start_expr,
+                        end: end_expr,
+                        inclusive,
+                        span,
+                    }
+                } else {
+                    let span = Span::new(arm_start, self.previous_end());
+                    MatchPattern::Variant {
+                        enum_name,
+                        variant_name,
+                        binding,
+                        span,
+                    }
                 }
             };
             if self.take(&TokenKind::Colon).is_none() && self.take(&TokenKind::Arrow).is_none() {

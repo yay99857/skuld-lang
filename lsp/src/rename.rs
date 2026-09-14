@@ -76,9 +76,10 @@ pub fn nameable(
                 .map(|info| info.kind)
                 .ok_or(Refusal::NotAName)?;
             match kind {
-                SymbolKind::Function | SymbolKind::Parameter | SymbolKind::Variable(_) => {
-                    Ok((symbol, word))
-                }
+                SymbolKind::Function
+                | SymbolKind::Parameter
+                | SymbolKind::Variable(_)
+                | SymbolKind::Constant => Ok((symbol, word)),
                 SymbolKind::Builtin(_) => Err(Refusal::Prelude),
                 SymbolKind::Module(_) => Err(Refusal::Qualifier),
                 SymbolKind::Enum => Err(Refusal::Type),

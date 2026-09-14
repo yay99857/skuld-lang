@@ -5,7 +5,7 @@ use crate::{
     resolver::{Builtin, SymbolId, SymbolKind},
     span::Span,
     type_checker::TypedProgram,
-    types::{EnumId, Type},
+    types::{ConstValue, EnumId, Type},
 };
 use std::cell::RefCell;
 
@@ -255,6 +255,12 @@ fn statement(source: &ast::Statement, cx: &Lowering<'_>) -> h::Statement {
                 },
             }
         }
+        ast::StatementKind::Constant(constant) => {
+            h::StatementKind::Block(h::Block {
+                statements: Vec::new(),
+                span: constant.span,
+            })
+        }
         ast::StatementKind::Expression(expr) => h::StatementKind::Expression(expression(expr, cx)),
         ast::StatementKind::Return(value) => {
             h::StatementKind::Return(value.as_ref().map(|e| expression(e, cx)))
@@ -297,31 +303,60 @@ fn statement(source: &ast::Statement, cx: &Lowering<'_>) -> h::Statement {
         ast::StatementKind::Continue => h::StatementKind::Continue,
         ast::StatementKind::Match { value, arms } => {
             let lowered_value = expression(value, cx);
-            // A `Result` reaches the backend as a two-variant enum, so a match
-            // over it only differs in where the variant index comes from.
-            let variant_index = |name: &str| match lowered_value.ty {
-                Type::Enum(enum_id) => cx.typed.enums[enum_id.0]
-                    .find_variant(name)
-                    .expect("checked variant"),
-                Type::Result(_) if name == "Ok" => crate::types::ResultInfo::OK,
-                Type::Result(_) => crate::types::ResultInfo::ERR,
-                _ => unreachable!("checked match target must be an enum or Result"),
-            };
+            let is_scalar = !matches!(lowered_value.ty, Type::Enum(_) | Type::Result(_));
             let lowered_arms = arms
                 .iter()
                 .map(|arm| {
                     let pattern = match &arm.pattern {
                         ast::MatchPattern::Wildcard(_) => h::MatchPattern::Wildcard,
+                        ast::MatchPattern::Constant(c_expr) => {
+                            h::MatchPattern::Constant(expression(c_expr, cx))
+                        }
+                        ast::MatchPattern::Range {
+                            start,
+                            end,
+                            inclusive,
+                            ..
+                        } => h::MatchPattern::Range {
+                            start: expression(start, cx),
+                            end: expression(end, cx),
+                            inclusive: *inclusive,
+                        },
                         ast::MatchPattern::Variant {
                             variant_name,
                             binding,
                             ..
                         } => {
-                            let variant_index = variant_index(&variant_name.text);
-                            let binding_id = binding.as_ref().map(|name| cx.decl(name.span));
-                            h::MatchPattern::Variant {
-                                variant_index,
-                                binding: binding_id,
+                            if is_scalar {
+                                let sym_id = cx.reference(variant_name.span);
+                                let const_val = &cx.typed.constants[&sym_id];
+                                let kind = match const_val {
+                                    ConstValue::Int(val, _) => h::ExprKind::Int(*val as i64),
+                                    ConstValue::Float(val) => h::ExprKind::Float(*val),
+                                    ConstValue::Bool(val) => h::ExprKind::Bool(*val),
+                                    ConstValue::String(val) => h::ExprKind::String(val.clone()),
+                                };
+                                h::MatchPattern::Constant(h::Expr {
+                                    kind,
+                                    ty: const_val.ty(),
+                                    span: variant_name.span,
+                                })
+                            } else {
+                                let variant_index = match lowered_value.ty {
+                                    Type::Enum(id) => cx.typed.enums[id.0]
+                                        .find_variant(&variant_name.text)
+                                        .expect("checked variant"),
+                                    Type::Result(_) if variant_name.text == "Ok" => {
+                                        crate::types::ResultInfo::OK
+                                    }
+                                    Type::Result(_) => crate::types::ResultInfo::ERR,
+                                    _ => unreachable!("checked match target"),
+                                };
+                                let binding_id = binding.as_ref().map(|name| cx.decl(name.span));
+                                h::MatchPattern::Variant {
+                                    variant_index,
+                                    binding: binding_id,
+                                }
                             }
                         }
                     };
@@ -508,6 +543,20 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     variant_index,
                     payload: None,
                 }
+            } else if let Some(&sym_id) = cx
+                .typed
+                .resolution
+                .references
+                .get(&(cx.file.get(), member.span.start))
+                && matches!(cx.typed.resolution.symbols[sym_id.0].kind, SymbolKind::Constant)
+            {
+                let const_val = &cx.typed.constants[&sym_id];
+                match const_val {
+                    ConstValue::Int(val, _) => h::ExprKind::Int(*val as i64),
+                    ConstValue::Float(val) => h::ExprKind::Float(*val),
+                    ConstValue::Bool(val) => h::ExprKind::Bool(*val),
+                    ConstValue::String(val) => h::ExprKind::String(val.clone()),
+                }
             } else {
                 let Some(Type::Struct(id)) = cx.ty(object.span) else {
                     unreachable!("internal compiler bug: unchecked field access")
@@ -533,6 +582,15 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
         ast::ExprKind::Identifier(name) => {
             let id = cx.reference(name.span);
             match cx.typed.resolution.symbols[id.0].kind {
+                SymbolKind::Constant => {
+                    let const_val = &cx.typed.constants[&id];
+                    match const_val {
+                        ConstValue::Int(val, _) => h::ExprKind::Int(*val as i64),
+                        ConstValue::Float(val) => h::ExprKind::Float(*val),
+                        ConstValue::Bool(val) => h::ExprKind::Bool(*val),
+                        ConstValue::String(val) => h::ExprKind::String(val.clone()),
+                    }
+                }
                 SymbolKind::Builtin(Builtin::None) => h::ExprKind::None,
                 // A declared function named where a value is expected becomes
                 // a function value with nothing captured.

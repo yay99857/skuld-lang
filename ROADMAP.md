@@ -1,10 +1,9 @@
 # Skuld roadmap
 
 This document records completed milestones and a **proposed** next sequence.
-M1–M18 are implemented and finished the sequence that built an applications
-language. M19–M26 propose the next one, towards the language a system could be
-written in; every one of them is **Planned**, which means proposed and not
-authorized. No implementation milestone is active, and starting one still
+M1–M20 are implemented. M21–M26 propose the continuation of the systems sequence,
+towards the language a system could be written in; every one of them is **Planned**,
+which means proposed and not authorized. Starting one still
 needs an explicit decision recorded in `AGENTS.md`. See `LANGUAGE.md` for
 semantics and `README.md` for usage.
 
@@ -1025,7 +1024,7 @@ let cleared = flags & ~0b0001
 - **Out:** rotate operators, saturating or wrapping operators, and bitfield
   syntax on struct fields.
 
-## M20 — Constants and value patterns — Planned
+## M20 — Constants and value patterns — Implemented
 
 A named constant is what makes the numbers in M19 readable, and once values
 have names they belong in patterns too.
@@ -1042,47 +1041,19 @@ match signal {
 }
 ```
 
-- **In:** `const NAME: Type = expression` at module level and inside a
-  function, `pub const` as an export, and `match` over integer and string
-  values with constant patterns, ranges and a required `_`.
-- **Semantics to settle:** a `const` is evaluated at compile time, which means
-  the compiler gains a small constant evaluator — literals, the arithmetic and
-  bit operators, and other constants. It is not general compile-time
-  execution, and the milestone says so explicitly.
+- **Implemented:** `const NAME: Type = expression` and `pub const` at module
+  and local function scope; compile-time evaluation for literals, unary and
+  binary arithmetic, bitwise operators, string concatenation, and type conversion
+  calls; constants lowered inline without registers or stack slots; `match`
+  extended to scalar and string values with constant patterns, half-open ranges
+  `a..b`, inclusive ranges `a..=b`, and mandatory wildcard `_` for exhaustiveness.
 - **Decision taken — `const` does not replace `let`, and `let` stays the
-  default.** Three words, three places, no overlap: `const` is module level and
-  compile-time, `let` is a runtime binding inside a function that cannot be
-  reassigned, and `var` is the one that can. The obvious economy — drop `let`
-  and let `var` be the only local — was considered and refused, because in
-  Skuld an immutable binding is not a style rule but information the backend
-  reads: `lowering.rs` marks every non-`var` local `settled`, and the C
-  generator then reads it borrowed, with no retain, no release and no
-  temporary. That is the difference M18 measured between 582 ms and 211 ms on
-  the JSON benchmark. It also carries M8's capture rule, which allows only
-  immutable bindings because a copy of a `var` can go stale. The other economy
-  — Zig's, where `const` *is* the immutable binding and `let` disappears —
-  keeps immutability but gives one word two natures depending on where it is
-  written, and Skuld has no `comptime` to make that difference visible.
-- **What the evidence does not support, and is worth writing down:** the usual
-  argument for immutable-by-default is frequency, and here it is weak. Counted
-  over the sources in this repository, `let` is 59% of bindings in `std`, 57%
-  in `std/json` and exactly **50%** in `std/net`; it only reaches 70% in
-  `tests/pass`, which is more declarative code. So the default rests on what
-  the compiler gets from it, not on how often it is typed. Two consequences
-  follow. In M26's freestanding subset there are no managed values at all, so
-  `let` earns nothing mechanical there and is legibility only. And if systems
-  code written after M22-M26 settles around 70-80% `var`, the question to ask
-  is not whether to swap the keywords but whether a local flow analysis can
-  prove a `var` is never reassigned past a point and treat it as `settled`
-  anyway — which would buy the performance without charging for the word, and
-  is a local analysis rather than a borrow checker.
-- **Open decision — does a `const` of a managed type exist?** A `const string`
-  is a literal and costs nothing; a `const []int` would be an allocation that
-  has to happen somewhere. The narrow answer is to allow scalars and strings
-  only and revisit when something needs more.
-- **Closing marker:** `std/net`, `std/dns` and `std/fs` name every protocol
-  number and `errno` value they use, and no bare literal is left in a call
-  where a constant would say what it means.
+  default.** Three words, three places, no overlap: `const` is compile-time,
+  `let` is a runtime binding inside a function that cannot be reassigned, and
+  `var` is the one that can.
+- **Closing marker:** `std/net`, `std/dns`, `std/fs` and `std/os` name every
+  protocol number, flag and `errno` value used; verified in
+  `tests/pass/constants_and_patterns.skuld`.
 - **Out:** generic constants, `const fn`, and constant expressions in type
   position — which is what a fixed-size array wants and M22 has to settle.
 

@@ -1,0 +1,76 @@
+const BUFFER_SIZE: int = 1024
+
+pub const MAX_PACKET: int = BUFFER_SIZE * 4
+
+const PROTOCOL_VERSION: int = 1
+
+const FLAG_ENABLED: bool = true
+
+const GREETING: string = "hello" + " " + "skuld"
+
+const MASK: u32 = (1 << 8) - 1
+
+const HTTP_OK: int = 200
+
+const HTTP_NOT_FOUND: int = 404
+
+const HTTP_SERVER_ERROR: int = 500
+
+func classify_status(code: int) -> string {
+    match code {
+        HTTP_OK: return "OK"
+        HTTP_NOT_FOUND: return "Not Found"
+        HTTP_SERVER_ERROR: return "Server Error"
+        _: return "Unknown Status"
+    }
+}
+
+func classify_score(score: int) -> string {
+    match score {
+        90..=100: return "grade A"
+        80..90: return "grade B"
+        70..80: return "grade C"
+        0..70: return "failing"
+        _: return "invalid"
+    }
+}
+
+func describe_fruit(fruit: string) -> string {
+    match fruit {
+        "apple": return "red fruit"
+        "banana": return "yellow fruit"
+        "lime": return "green fruit"
+        _: return "other fruit"
+    }
+}
+
+func main() {
+    const LOCAL_FACTOR: int = 3
+    let computed = BUFFER_SIZE * LOCAL_FACTOR
+
+    print(BUFFER_SIZE)
+    print(MAX_PACKET)
+    print(FLAG_ENABLED)
+    print(GREETING)
+    print(MASK)
+    print(computed)
+
+    print(classify_status(200))
+    print(classify_status(404))
+    print(classify_status(500))
+    print(classify_status(418))
+
+    print(classify_score(95))
+    print(classify_score(90))
+    print(classify_score(89))
+    print(classify_score(80))
+    print(classify_score(75))
+    print(classify_score(50))
+    print(classify_score(-5))
+    print(classify_score(105))
+
+    print(describe_fruit("apple"))
+    print(describe_fruit("banana"))
+    print(describe_fruit("lime"))
+    print(describe_fruit("orange"))
+}

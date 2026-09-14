@@ -1372,66 +1372,147 @@ impl Emitter {
             StatementKind::Continue => self.line("continue;"),
             StatementKind::Match { value, arms } => {
                 // Enums and `Result` share the tag-plus-payload layout, so the
-                // only difference here is where a variant's payload type lives.
-                let payloads: Vec<Option<Type>> = match value.ty {
-                    Type::Enum(id) => self.enums[id.0]
-                        .variants
-                        .iter()
-                        .map(|variant| variant.payload)
-                        .collect(),
-                    Type::Result(id) => {
-                        let info = self.results[id.0];
-                        vec![Some(info.ok), Some(info.err)]
-                    }
-                    _ => unreachable!("checked match"),
-                };
-                let target = self.expression(value);
-                let mut first = true;
-                for arm in arms {
-                    match &arm.pattern {
-                        MatchPattern::Variant {
-                            variant_index,
-                            binding,
-                        } => {
-                            let cond = if first {
-                                first = false;
-                                format!("if ({target}.tag == {variant_index}) {{")
-                            } else {
-                                format!("else if ({target}.tag == {variant_index}) {{")
-                            };
-                            self.line(&cond);
-                            self.indent += 1;
-                            if let Some(binding_id) = binding {
-                                let payload_ty =
-                                    payloads[*variant_index].expect("checked variant payload");
-                                self.line(&format!(
-                                    "{}{} skuld_v{} = {};",
-                                    self.cleanup(payload_ty),
-                                    self.c_type(payload_ty),
-                                    binding_id.0,
-                                    self.retained(
-                                        payload_ty,
-                                        &format!("{target}.payload.v{variant_index}")
-                                    )
-                                ));
-                                self.line(&format!("(void)skuld_v{};", binding_id.0));
+                let is_scalar_match = !matches!(value.ty, Type::Enum(_) | Type::Result(_));
+                if is_scalar_match {
+                    let (target_expr, _has_temp) = if matches!(value.kind, ExprKind::Local { .. }) {
+                        (self.expression(value), false)
+                    } else {
+                        let temp_name = format!("skuld_t{}", self.next_temp);
+                        self.next_temp += 1;
+                        let val_expr = self.expression(value);
+                        let cleanup_str = self.cleanup(value.ty);
+                        let ty_str = self.c_type(value.ty);
+                        self.line(&format!("{cleanup_str}{ty_str} {temp_name} = {val_expr};"));
+                        (temp_name, true)
+                    };
+                    let mut first = true;
+                    for arm in arms {
+                        match &arm.pattern {
+                            MatchPattern::Constant(c_expr) => {
+                                let c_val = self.expression(c_expr);
+                                let comparison = if value.ty == Type::String {
+                                    format!("skuld_string_equal({target_expr}, {c_val})")
+                                } else {
+                                    format!("{target_expr} == {c_val}")
+                                };
+                                let cond = if first {
+                                    first = false;
+                                    format!("if ({comparison}) {{")
+                                } else {
+                                    format!("else if ({comparison}) {{")
+                                };
+                                self.line(&cond);
+                                self.indent += 1;
+                                self.block_contents(&arm.body);
+                                self.indent -= 1;
+                                self.line("}");
                             }
-                            self.block_contents(&arm.body);
-                            self.indent -= 1;
-                            self.line("}");
+                            MatchPattern::Range {
+                                start,
+                                end,
+                                inclusive,
+                            } => {
+                                let s_val = self.expression(start);
+                                let e_val = self.expression(end);
+                                let op = if *inclusive { "<=" } else { "<" };
+                                let comparison = format!(
+                                    "{target_expr} >= {s_val} && {target_expr} {op} {e_val}"
+                                );
+                                let cond = if first {
+                                    first = false;
+                                    format!("if ({comparison}) {{")
+                                } else {
+                                    format!("else if ({comparison}) {{")
+                                };
+                                self.line(&cond);
+                                self.indent += 1;
+                                self.block_contents(&arm.body);
+                                self.indent -= 1;
+                                self.line("}");
+                            }
+                            MatchPattern::Wildcard => {
+                                let cond = if first {
+                                    first = false;
+                                    "if (true) {".to_string()
+                                } else {
+                                    "else {".to_string()
+                                };
+                                self.line(&cond);
+                                self.indent += 1;
+                                self.block_contents(&arm.body);
+                                self.indent -= 1;
+                                self.line("}");
+                            }
+                            MatchPattern::Variant { .. } => {
+                                unreachable!("scalar match pattern was lowered to constant")
+                            }
                         }
-                        MatchPattern::Wildcard => {
-                            let cond = if first {
-                                first = false;
-                                "if (true) {".to_string()
-                            } else {
-                                "else {".to_string()
-                            };
-                            self.line(&cond);
-                            self.indent += 1;
-                            self.block_contents(&arm.body);
-                            self.indent -= 1;
-                            self.line("}");
+                    }
+                } else {
+                    // A `Result` matches like a two-variant enum, so the arm
+                    // code generation is shared rather than repeated; the
+                    // only difference here is where a variant's payload type lives.
+                    let payloads: Vec<Option<Type>> = match value.ty {
+                        Type::Enum(id) => self.enums[id.0]
+                            .variants
+                            .iter()
+                            .map(|variant| variant.payload)
+                            .collect(),
+                        Type::Result(id) => {
+                            let info = self.results[id.0];
+                            vec![Some(info.ok), Some(info.err)]
+                        }
+                        _ => unreachable!("checked match"),
+                    };
+                    let target = self.expression(value);
+                    let mut first = true;
+                    for arm in arms {
+                        match &arm.pattern {
+                            MatchPattern::Variant {
+                                variant_index,
+                                binding,
+                            } => {
+                                let cond = if first {
+                                    first = false;
+                                    format!("if ({target}.tag == {variant_index}) {{")
+                                } else {
+                                    format!("else if ({target}.tag == {variant_index}) {{")
+                                };
+                                self.line(&cond);
+                                self.indent += 1;
+                                if let Some(binding_id) = binding {
+                                    let payload_ty =
+                                        payloads[*variant_index].expect("checked variant payload");
+                                    self.line(&format!(
+                                        "{}{} skuld_v{} = {};",
+                                        self.cleanup(payload_ty),
+                                        self.c_type(payload_ty),
+                                        binding_id.0,
+                                        self.retained(
+                                            payload_ty,
+                                            &format!("{target}.payload.v{variant_index}")
+                                        )
+                                    ));
+                                    self.line(&format!("(void)skuld_v{};", binding_id.0));
+                                }
+                                self.block_contents(&arm.body);
+                                self.indent -= 1;
+                                self.line("}");
+                            }
+                            MatchPattern::Wildcard => {
+                                let cond = if first {
+                                    first = false;
+                                    "if (true) {".to_string()
+                                } else {
+                                    "else {".to_string()
+                                };
+                                self.line(&cond);
+                                self.indent += 1;
+                                self.block_contents(&arm.body);
+                                self.indent -= 1;
+                                self.line("}");
+                            }
+                            _ => unreachable!("enum match pattern must be variant or wildcard"),
                         }
                     }
                 }

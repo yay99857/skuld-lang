@@ -26,6 +26,7 @@ pub mod kind {
     pub const ENUM: f64 = 13.0;
     pub const KEYWORD: f64 = 14.0;
     pub const ENUM_MEMBER: f64 = 20.0;
+    pub const CONSTANT: f64 = 21.0;
     pub const STRUCT: f64 = 22.0;
 }
 
@@ -362,6 +363,11 @@ fn item_for(typed: &TypedProgram, name: &str, id: SymbolId) -> Item {
         SymbolKind::Enum => Item::new(name, kind::ENUM, None),
         SymbolKind::Module(_) => Item::new(name, kind::MODULE, None),
         SymbolKind::Builtin(_) => Item::new(name, kind::FUNCTION, None),
+        SymbolKind::Constant => Item::new(
+            name,
+            kind::CONSTANT,
+            Some(type_name(typed, typed.symbol_type(id))),
+        ),
         SymbolKind::Parameter | SymbolKind::Variable(_) => Item::new(
             name,
             kind::VARIABLE,

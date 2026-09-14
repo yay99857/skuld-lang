@@ -39,6 +39,7 @@ pub enum SymbolKind {
     Function,
     Parameter,
     Variable(Mutability),
+    Constant,
     Enum,
     /// An import qualifier. It names a module, never a value, so it is only
     /// ever the left half of a qualified name.
@@ -173,6 +174,9 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
             for declaration in &syntax.enums {
                 resolver.declare(&declaration.name, SymbolKind::Enum, declaration.visibility);
             }
+            for declaration in &syntax.constants {
+                resolver.declare(&declaration.name, SymbolKind::Constant, declaration.visibility);
+            }
             // Foreign functions are ordinary value names: only the backend
             // knows they are calls into another object file. Their parameter
             // names are documentation, so they get no symbols of their own.
@@ -272,6 +276,10 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
             // Parameters and the outermost function body share one lexical scope.
             resolver.statements(&function.body);
             resolver.leave();
+        }
+        for constant in &syntax.constants {
+            resolver.current = file_scope;
+            resolver.expression(&constant.value);
         }
     }
     ResolveOutput {
@@ -581,6 +589,14 @@ impl Resolver {
                     Visibility::Private,
                 );
             }
+            StatementKind::Constant(constant) => {
+                self.expression(&constant.value);
+                self.declare(
+                    &constant.name,
+                    SymbolKind::Constant,
+                    Visibility::Private,
+                );
+            }
             StatementKind::Expression(expr) => self.expression(expr),
             StatementKind::Return(value) => {
                 if let Some(expr) = value {
@@ -632,16 +648,52 @@ impl Resolver {
                 self.expression(value);
                 for arm in arms {
                     self.enter(arm.body.span);
-                    if let MatchPattern::Variant {
-                        binding: Some(binding),
-                        ..
-                    } = &arm.pattern
-                    {
-                        self.declare(
-                            binding,
-                            SymbolKind::Variable(Mutability::Immutable),
-                            Visibility::Private,
-                        );
+                    match &arm.pattern {
+                        MatchPattern::Variant {
+                            binding: Some(binding),
+                            ..
+                        } => {
+                            self.declare(
+                                binding,
+                                SymbolKind::Variable(Mutability::Immutable),
+                                Visibility::Private,
+                            );
+                        }
+                        MatchPattern::Variant {
+                            enum_name,
+                            variant_name,
+                            binding: None,
+                            ..
+                        } => {
+                            if let Some(path) = enum_name {
+                                if path.module.is_none() {
+                                    if let Some(sym) = self.lookup(&path.name.text) {
+                                        if let SymbolKind::Module(mod_id) =
+                                            self.result.symbols[sym.0].kind
+                                        {
+                                            self.result
+                                                .references
+                                                .insert((self.file, path.name.span.start), sym);
+                                            self.module_member(mod_id, &path.name, variant_name);
+                                        }
+                                    }
+                                }
+                            } else if let Some(sym) = self.lookup(&variant_name.text) {
+                                if matches!(self.result.symbols[sym.0].kind, SymbolKind::Constant) {
+                                    self.result
+                                        .references
+                                        .insert((self.file, variant_name.span.start), sym);
+                                }
+                            }
+                        }
+                        MatchPattern::Constant(expr) => {
+                            self.expression(expr);
+                        }
+                        MatchPattern::Range { start, end, .. } => {
+                            self.expression(start);
+                            self.expression(end);
+                        }
+                        MatchPattern::Wildcard(_) => {}
                     }
                     self.statements(&arm.body);
                     self.leave();

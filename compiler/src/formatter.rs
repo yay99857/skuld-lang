@@ -94,6 +94,7 @@ enum Decl<'a> {
     Interface(&'a InterfaceDecl),
     Struct(&'a StructDecl),
     Enum(&'a EnumDecl),
+    Constant(&'a ConstantDecl),
     Function(&'a FunctionDecl),
     Extern(&'a ExternBlock),
 }
@@ -105,6 +106,7 @@ impl Decl<'_> {
             Decl::Interface(d) => d.span,
             Decl::Struct(d) => d.span,
             Decl::Enum(d) => d.span,
+            Decl::Constant(d) => d.span,
             Decl::Function(d) => d.span,
             Decl::Extern(d) => d.span,
         }
@@ -269,6 +271,9 @@ impl<'a> Formatter<'a> {
         for en in &program.enums {
             decls.push(Decl::Enum(en));
         }
+        for c in &program.constants {
+            decls.push(Decl::Constant(c));
+        }
         for func in &program.functions {
             decls.push(Decl::Function(func));
         }
@@ -302,6 +307,7 @@ impl<'a> Formatter<'a> {
                 Decl::Interface(i) => self.format_interface(i),
                 Decl::Struct(s) => self.format_struct(s),
                 Decl::Enum(e) => self.format_enum(e),
+                Decl::Constant(c) => self.format_constant(c),
                 Decl::Function(f) => self.format_top_function(f),
                 Decl::Extern(e) => self.format_extern(e),
             }
@@ -456,6 +462,19 @@ impl<'a> Formatter<'a> {
         self.emit_trailing_comment(en.span.end);
     }
 
+    fn format_constant(&mut self, c: &ConstantDecl) {
+        self.format_visibility(c.visibility);
+        self.push("const ");
+        self.push(&c.name.text);
+        if let Some(ty) = &c.type_ref {
+            self.push(": ");
+            self.format_type(ty);
+        }
+        self.push(" = ");
+        self.format_expr(&c.value);
+        self.emit_trailing_comment(c.span.end);
+    }
+
     /// A top-level function: has `func` prefix and its own visibility.
     fn format_top_function(&mut self, f: &FunctionDecl) {
         self.format_visibility(f.visibility);
@@ -558,6 +577,17 @@ impl<'a> Formatter<'a> {
                     self.format_block_inline(&otherwise.block);
                     return; // trailing comment handled by block
                 }
+                self.emit_trailing_comment(stmt.span.end);
+            }
+            StatementKind::Constant(c) => {
+                self.push("const ");
+                self.push(&c.name.text);
+                if let Some(t) = &c.type_ref {
+                    self.push(": ");
+                    self.format_type(t);
+                }
+                self.push(" = ");
+                self.format_expr(&c.value);
                 self.emit_trailing_comment(stmt.span.end);
             }
             StatementKind::Expression(e) => {
@@ -761,6 +791,21 @@ impl<'a> Formatter<'a> {
                 }
             }
             MatchPattern::Wildcard(_) => self.push("_"),
+            MatchPattern::Constant(expr) => self.format_expr(expr),
+            MatchPattern::Range {
+                start,
+                end,
+                inclusive,
+                ..
+            } => {
+                self.format_expr(start);
+                if *inclusive {
+                    self.push("..=");
+                } else {
+                    self.push("..");
+                }
+                self.format_expr(end);
+            }
         }
     }
 

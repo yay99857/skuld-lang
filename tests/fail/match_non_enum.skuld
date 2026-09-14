@@ -1,6 +1,11 @@
+struct Point {
+    x: int
+    y: int
+}
+
 func main() {
-    let x = 10
-    match x {
+    let p = Point { x: 1, y: 2 }
+    match p {
         _: {}
     }
 }

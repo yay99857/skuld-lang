@@ -6,9 +6,9 @@ use crate::{
     resolver::{Builtin, Resolution, SymbolId, SymbolKind},
     span::Span,
     types::{
-        ArrayId, ArrayInfo, EnumId, EnumInfo, FunctionTypeId, FunctionTypeInfo, IntType,
+        ArrayId, ArrayInfo, ConstValue, EnumId, EnumInfo, FunctionTypeId, FunctionTypeInfo, IntType,
         InterfaceId, InterfaceInfo, InterfaceMethod, OptionId, OptionInfo, Pointee, ResultId,
-        ResultInfo, StructId, Type, VariantInfo,
+        ResultInfo, StructId, Type, VariantInfo, int_type_fits, int_type_min, sign_extend,
     },
 };
 use std::collections::BTreeMap;
@@ -54,8 +54,12 @@ pub struct TypedProgram {
     pub(crate) results: Vec<ResultInfo>,
     pub(crate) implicit_wraps: BTreeMap<(FileId, usize, usize), Type>,
     pub(crate) function_signatures: Vec<FunctionTypeInfo>,
+    pub(crate) constants: BTreeMap<SymbolId, ConstValue>,
 }
 impl TypedProgram {
+    pub fn constants(&self) -> &BTreeMap<SymbolId, ConstValue> {
+        &self.constants
+    }
     pub fn enums(&self) -> &[EnumInfo] {
         &self.enums
     }
@@ -167,6 +171,9 @@ pub(crate) fn type_check(
         function_types: BTreeMap::new(),
         expected_context: None,
         implicit_wraps: BTreeMap::new(),
+        constants: BTreeMap::new(),
+        evaluating_constants: Vec::new(),
+        constant_decls: BTreeMap::new(),
     };
     // Where each type was declared, aligned with the ids handed out below, so
     // that a later pass finds its syntax without searching for it.
@@ -608,6 +615,21 @@ pub(crate) fn type_check(
         ),
         None => {}
     }
+    // Constants, collected across all files and evaluated.
+    for (file_idx, file) in program.files.iter().enumerate() {
+        let file_id = FileId(file_idx);
+        for constant in &file.program.constants {
+            let sym_id = checker.resolution.declarations[&(file_id, constant.name.span.start)];
+            checker.constant_decls.insert(sym_id, (file_id, constant.clone()));
+        }
+    }
+    for (file_idx, file) in program.files.iter().enumerate() {
+        let file_id = FileId(file_idx);
+        for constant in &file.program.constants {
+            let sym_id = checker.resolution.declarations[&(file_id, constant.name.span.start)];
+            checker.ensure_constant_evaluated(sym_id);
+        }
+    }
     // Field defaults, now that every signature exists and before any body:
     // the expression is checked once, where it is written, and evaluated at
     // every construction.
@@ -676,6 +698,7 @@ pub(crate) fn type_check(
         signatures,
         externs,
         implicit_wraps,
+        constants,
         ..
     } = checker;
     // A missing entry is a diagnostic above unless the caller allowed one, and
@@ -699,6 +722,7 @@ pub(crate) fn type_check(
         externs,
         function_signatures,
         entry,
+        constants,
     })
 }
 
@@ -753,6 +777,9 @@ struct Checker<'a> {
     function_types: BTreeMap<FunctionTypeInfo, FunctionTypeId>,
     expected_context: Option<Type>,
     implicit_wraps: BTreeMap<(FileId, usize, usize), Type>,
+    constants: BTreeMap<SymbolId, ConstValue>,
+    evaluating_constants: Vec<SymbolId>,
+    constant_decls: BTreeMap<SymbolId, (FileId, ConstantDecl)>,
 }
 
 /// One module's type namespace, which is separate from its value scope: a
@@ -1451,6 +1478,11 @@ impl Checker<'_> {
                 self.symbol_types[id.0] = ty;
                 false
             }
+            StatementKind::Constant(constant) => {
+                let id = self.declaration(&constant.name);
+                self.check_constant_decl(constant, id);
+                false
+            }
             StatementKind::Expression(expr) => {
                 self.expression(expr);
                 false
@@ -1582,6 +1614,125 @@ impl Checker<'_> {
                     }
                     return false;
                 }
+                if !matches!(target_ty, Type::Enum(_) | Type::Result(_)) {
+                    let is_scalar = matches!(
+                        target_ty,
+                        Type::Int(_) | Type::Float | Type::Bool | Type::String
+                    );
+                    if !is_scalar {
+                        self.error(
+                            DiagnosticCode::TypeMismatch,
+                            value.span,
+                            format!(
+                                "match expects an enum, Result, integer, float, bool, or string, found `{}`",
+                                self.type_name(target_ty)
+                            ),
+                        );
+                        for arm in arms {
+                            self.block(&arm.body);
+                        }
+                        return false;
+                    }
+                    let mut has_wildcard = false;
+                    let mut all_arms_return = !arms.is_empty();
+                    for arm in arms {
+                        match &arm.pattern {
+                            MatchPattern::Wildcard(_) => {
+                                has_wildcard = true;
+                            }
+                            MatchPattern::Constant(c_expr) => {
+                                self.expected_context = Some(target_ty);
+                                let const_ty = self.expression(c_expr);
+                                self.expected_context = None;
+                                self.expect_type(target_ty, const_ty, c_expr.span);
+                            }
+                            MatchPattern::Range {
+                                start,
+                                end,
+                                inclusive: _,
+                                span,
+                            } => {
+                                if target_ty.int_type().is_none() {
+                                    self.error(
+                                        DiagnosticCode::InvalidOperator,
+                                        *span,
+                                        format!(
+                                            "range patterns are only supported for integer types, found `{target_ty}`"
+                                        ),
+                                    );
+                                }
+                                self.expected_context = Some(target_ty);
+                                let start_ty = self.expression(start);
+                                let end_ty = self.expression(end);
+                                self.expected_context = None;
+                                self.expect_type(target_ty, start_ty, start.span);
+                                self.expect_type(target_ty, end_ty, end.span);
+                            }
+                            MatchPattern::Variant {
+                                enum_name: _,
+                                variant_name,
+                                binding,
+                                span: _,
+                            } => {
+                                if binding.is_some() {
+                                    self.error(
+                                        DiagnosticCode::ArgumentCount,
+                                        variant_name.span,
+                                        "scalar match pattern does not support payload bindings",
+                                    );
+                                }
+                                if let Some(&sym_id) = self
+                                    .resolution
+                                    .references
+                                    .get(&(self.file, variant_name.span.start))
+                                {
+                                    if matches!(
+                                        self.resolution.symbols[sym_id.0].kind,
+                                        SymbolKind::Constant
+                                    ) {
+                                        let sym_ty = self.symbol_types[sym_id.0];
+                                        let const_ty = if sym_ty == Type::Error {
+                                            self.ensure_constant_evaluated(sym_id)
+                                                .map(|v| v.ty())
+                                                .unwrap_or(Type::Error)
+                                        } else {
+                                            sym_ty
+                                        };
+                                        self.expect_type(target_ty, const_ty, variant_name.span);
+                                    } else {
+                                        self.error(
+                                            DiagnosticCode::TypeMismatch,
+                                            variant_name.span,
+                                            format!(
+                                                "`{}` is not a constant",
+                                                variant_name.text
+                                            ),
+                                        );
+                                    }
+                                } else {
+                                    self.error(
+                                        DiagnosticCode::UnknownName,
+                                        variant_name.span,
+                                        format!(
+                                            "unknown constant `{}` in pattern",
+                                            variant_name.text
+                                        ),
+                                    );
+                                }
+                            }
+                        }
+                        let returns = self.block(&arm.body);
+                        all_arms_return &= returns;
+                    }
+                    if !has_wildcard {
+                        self.error(
+                            DiagnosticCode::NonExhaustiveMatch,
+                            statement.span,
+                            "non-exhaustive match: value matches require a wildcard `_` arm",
+                        );
+                    }
+                    return all_arms_return && has_wildcard;
+                }
                 // A `Result` matches like a two-variant enum, so the arm and
                 // exhaustiveness checking below is shared rather than repeated.
                 let target_enum = match target_ty {
@@ -1591,20 +1742,7 @@ impl Checker<'_> {
                 let enum_info = match target_ty {
                     Type::Enum(enum_id) => self.enums[enum_id.0].clone(),
                     Type::Result(result_id) => result_as_enum(self.results[result_id.0]),
-                    other => {
-                        self.error(
-                            DiagnosticCode::TypeMismatch,
-                            value.span,
-                            format!(
-                                "match expects an enum or Result value, found `{}`",
-                                self.type_name(other)
-                            ),
-                        );
-                        for arm in arms {
-                            self.block(&arm.body);
-                        }
-                        return false;
-                    }
+                    _ => unreachable!(),
                 };
                 let mut covered = vec![false; enum_info.variants.len()];
                 let mut has_wildcard = false;
@@ -1614,6 +1752,20 @@ impl Checker<'_> {
                     match &arm.pattern {
                         MatchPattern::Wildcard(_) => {
                             has_wildcard = true;
+                        }
+                        MatchPattern::Constant(c_expr) => {
+                            self.error(
+                                DiagnosticCode::TypeMismatch,
+                                c_expr.span,
+                                "constant pattern is not valid when matching an enum or Result",
+                            );
+                        }
+                        MatchPattern::Range { span, .. } => {
+                            self.error(
+                                DiagnosticCode::TypeMismatch,
+                                *span,
+                                "range pattern is not valid when matching an enum or Result",
+                            );
                         }
                         MatchPattern::Variant {
                             enum_name,
@@ -2158,6 +2310,18 @@ impl Checker<'_> {
                 let id = self.reference(name);
                 match self.resolution.symbols[id.0].kind {
                     SymbolKind::Variable(_) | SymbolKind::Parameter => self.symbol_types[id.0],
+                    SymbolKind::Constant => {
+                        let ty = self.symbol_types[id.0];
+                        if ty == Type::Error {
+                            if let Some(val) = self.ensure_constant_evaluated(id) {
+                                val.ty()
+                            } else {
+                                Type::Error
+                            }
+                        } else {
+                            ty
+                        }
+                    }
                     SymbolKind::Builtin(Builtin::None) => {
                         match expected {
                             Some(ty @ Type::Option(_)) => ty,
@@ -2432,6 +2596,21 @@ impl Checker<'_> {
                 self.call(callee, arguments, expr.span, expected)
             }
             ExprKind::Member { object, member } => {
+                if matches!(&object.kind, ExprKind::Identifier(qualifier) if self.resolution.module_in_file(self.file, &qualifier.text).is_some())
+                    && let Some(&sym_id) = self.resolution.references.get(&(self.file, member.span.start))
+                    && matches!(self.resolution.symbols[sym_id.0].kind, SymbolKind::Constant)
+                {
+                    let ty = self.symbol_types[sym_id.0];
+                    return if ty == Type::Error {
+                        if let Some(val) = self.ensure_constant_evaluated(sym_id) {
+                            val.ty()
+                        } else {
+                            Type::Error
+                        }
+                    } else {
+                        ty
+                    };
+                }
                 if let Some(enum_id) = self.enum_prefix(object) {
                     let enum_info = &self.enums[enum_id.0];
                     if let Some(variant_index) = enum_info.find_variant(&member.text) {
@@ -3443,6 +3622,753 @@ impl Checker<'_> {
             }
             ExprKind::Group(inner) => self.through_reference(inner),
             _ => false,
+        }
+    }
+
+    fn ensure_constant_evaluated(&mut self, id: SymbolId) -> Option<ConstValue> {
+        if let Some(val) = self.constants.get(&id) {
+            return Some(val.clone());
+        }
+        if self.evaluating_constants.contains(&id) {
+            let sym_name = &self.resolution.symbols[id.0].name;
+            let sym_span = self.resolution.symbols[id.0].span.unwrap_or(Span::new(0, 0));
+            self.error(
+                DiagnosticCode::UnsupportedFeature,
+                sym_span,
+                format!("circular constant definition involving `{sym_name}`"),
+            );
+            return None;
+        }
+        let Some((decl_file, decl)) = self.constant_decls.get(&id).cloned() else {
+            return None;
+        };
+        let prev_file = self.file;
+        let prev_module = self.module;
+        self.file = decl_file;
+        self.module = self.resolution.symbols[id.0].module.unwrap_or(self.module);
+        let res = self.check_constant_decl(&decl, id);
+        self.file = prev_file;
+        self.module = prev_module;
+        res
+    }
+
+    fn check_constant_decl(&mut self, decl: &ConstantDecl, id: SymbolId) -> Option<ConstValue> {
+        self.evaluating_constants.push(id);
+        let annotated_ty = decl.type_ref.as_ref().map(|tr| self.type_ref(tr, false));
+        let val = self.eval_constant_expr(&decl.value, annotated_ty);
+        self.evaluating_constants.pop();
+
+        let val = match val {
+            Some(v) => v,
+            None => {
+                self.symbol_types[id.0] = Type::Error;
+                return None;
+            }
+        };
+
+        let val_ty = val.ty();
+        let final_val = if let Some(expected) = annotated_ty {
+            if expected != val_ty && expected != Type::Error && val_ty != Type::Error {
+                if let (Type::Int(exp_it), ConstValue::Int(v, _)) = (expected, &val) {
+                    if int_type_fits(*v, exp_it) {
+                        ConstValue::Int(*v, exp_it)
+                    } else {
+                        self.error(
+                            DiagnosticCode::IntegerRange,
+                            decl.value.span,
+                            format!("constant value `{v}` does not fit type `{expected}`"),
+                        );
+                        self.symbol_types[id.0] = Type::Error;
+                        return None;
+                    }
+                } else {
+                    self.error(
+                        DiagnosticCode::TypeMismatch,
+                        decl.value.span,
+                        format!("constant expects `{expected}`, found `{val_ty}`"),
+                    );
+                    self.symbol_types[id.0] = Type::Error;
+                    return None;
+                }
+            } else {
+                val
+            }
+        } else {
+            val
+        };
+
+        let final_ty = final_val.ty();
+        match final_ty {
+            Type::Int(_) | Type::Float | Type::Bool | Type::String => {}
+            Type::Error => {}
+            other => {
+                self.error(
+                    DiagnosticCode::InvalidValueType,
+                    decl.span,
+                    format!("type `{other}` is not allowed for a constant; constants must be scalars or strings"),
+                );
+                self.symbol_types[id.0] = Type::Error;
+                return None;
+            }
+        }
+
+        self.constants.insert(id, final_val.clone());
+        self.symbol_types[id.0] = final_ty;
+        self.record(&decl.value, final_ty);
+        Some(final_val)
+    }
+
+    fn eval_constant_expr(&mut self, expr: &Expr, expected: Option<Type>) -> Option<ConstValue> {
+        match &expr.kind {
+            ExprKind::Literal(literal) => match literal {
+                Literal::Integer(value) => {
+                    let it = expected.and_then(Type::int_type).unwrap_or(IntType::I64);
+                    let val = *value as i128;
+                    if !int_type_fits(val, it) {
+                        self.error(
+                            DiagnosticCode::IntegerRange,
+                            expr.span,
+                            format!("integer literal `{val}` out of range for `{it}`"),
+                        );
+                        return None;
+                    }
+                    self.record(expr, Type::Int(it));
+                    Some(ConstValue::Int(val, it))
+                }
+                Literal::Float(value) => {
+                    self.record(expr, Type::Float);
+                    Some(ConstValue::Float(*value))
+                }
+                Literal::Boolean(value) => {
+                    self.record(expr, Type::Bool);
+                    Some(ConstValue::Bool(*value))
+                }
+                Literal::String(value) => {
+                    self.record(expr, Type::String);
+                    Some(ConstValue::String(value.clone()))
+                }
+                Literal::Char(_) => {
+                    self.error(
+                        DiagnosticCode::UnsupportedFeature,
+                        expr.span,
+                        "char values are not supported",
+                    );
+                    None
+                }
+            },
+            ExprKind::Group(inner) => {
+                let val = self.eval_constant_expr(inner, expected)?;
+                self.record(expr, val.ty());
+                Some(val)
+            }
+            ExprKind::Unary {
+                op,
+                operand,
+                op_span,
+            } => {
+                let width = expected.and_then(Type::int_type).unwrap_or(IntType::I64);
+                if *op == UnaryOp::Negative && width.signed() {
+                    let stripped = strip_groups_ref(operand);
+                    if let ExprKind::Literal(Literal::Integer(mag)) = &stripped.kind {
+                        let neg = -(*mag as i128);
+                        if int_type_fits(neg, width) {
+                            self.record(operand, Type::Int(width));
+                            self.record(expr, Type::Int(width));
+                            return Some(ConstValue::Int(neg, width));
+                        }
+                    }
+                }
+                let op_val = self.eval_constant_expr(operand, expected)?;
+                match op {
+                    UnaryOp::Negative => match op_val {
+                        ConstValue::Int(v, it) => {
+                            if !it.signed() {
+                                self.error(
+                                    DiagnosticCode::InvalidOperator,
+                                    *op_span,
+                                    "cannot negate unsigned integer type",
+                                );
+                                return None;
+                            }
+                            if v == int_type_min(it) {
+                                self.error(
+                                    DiagnosticCode::IntegerRange,
+                                    expr.span,
+                                    "constant negation overflow",
+                                );
+                                return None;
+                            }
+                            let res = ConstValue::Int(-v, it);
+                            self.record(expr, res.ty());
+                            Some(res)
+                        }
+                        ConstValue::Float(f) => {
+                            let res = ConstValue::Float(-f);
+                            self.record(expr, res.ty());
+                            Some(res)
+                        }
+                        _ => {
+                            self.error(
+                                DiagnosticCode::InvalidOperator,
+                                *op_span,
+                                format!("unary `-` does not accept `{}`", op_val.ty()),
+                            );
+                            None
+                        }
+                    },
+                    UnaryOp::Not => match op_val {
+                        ConstValue::Bool(b) => {
+                            let res = ConstValue::Bool(!b);
+                            self.record(expr, res.ty());
+                            Some(res)
+                        }
+                        _ => {
+                            self.error(
+                                DiagnosticCode::InvalidOperator,
+                                *op_span,
+                                format!("unary `!` does not accept `{}`", op_val.ty()),
+                            );
+                            None
+                        }
+                    },
+                    UnaryOp::BitNot => match op_val {
+                        ConstValue::Int(v, it) => {
+                            let mask = if it.bits() == 64 {
+                                u64::MAX as u128
+                            } else {
+                                (1_u128 << it.bits()) - 1
+                            };
+                            let raw = (!(v as u128)) & mask;
+                            let res_val = if it.signed() {
+                                sign_extend(raw, it)
+                            } else {
+                                raw as i128
+                            };
+                            let res = ConstValue::Int(res_val, it);
+                            self.record(expr, res.ty());
+                            Some(res)
+                        }
+                        _ => {
+                            self.error(
+                                DiagnosticCode::InvalidOperator,
+                                *op_span,
+                                format!("unary `~` does not accept `{}`", op_val.ty()),
+                            );
+                            None
+                        }
+                    },
+                    UnaryOp::Positive => match op_val {
+                        ConstValue::Int(..) | ConstValue::Float(..) => {
+                            self.record(expr, op_val.ty());
+                            Some(op_val)
+                        }
+                        _ => {
+                            self.error(
+                                DiagnosticCode::InvalidOperator,
+                                *op_span,
+                                format!("unary `+` does not accept `{}`", op_val.ty()),
+                            );
+                            None
+                        }
+                    },
+                }
+            }
+            ExprKind::Binary {
+                left,
+                op,
+                right,
+                op_span,
+            } => {
+                let left_val = self.eval_constant_expr(left, expected)?;
+                let right_expected = match op {
+                    BinaryOp::ShiftLeft | BinaryOp::ShiftRight => None,
+                    _ => Some(left_val.ty()),
+                };
+                let right_val = self.eval_constant_expr(right, right_expected)?;
+                match op {
+                    BinaryOp::Add => match (&left_val, &right_val) {
+                        (ConstValue::Int(a, it_a), ConstValue::Int(b, it_b)) => {
+                            if it_a != it_b {
+                                self.error(
+                                    DiagnosticCode::TypeMismatch,
+                                    *op_span,
+                                    format!("mismatched integer widths `{it_a}` and `{it_b}`"),
+                                );
+                                return None;
+                            }
+                            let res = a.checked_add(*b);
+                            if res.is_none() || !int_type_fits(res.unwrap(), *it_a) {
+                                self.error(
+                                    DiagnosticCode::IntegerRange,
+                                    *op_span,
+                                    "constant arithmetic overflow",
+                                );
+                                return None;
+                            }
+                            let v = ConstValue::Int(res.unwrap(), *it_a);
+                            self.record(expr, v.ty());
+                            Some(v)
+                        }
+                        (ConstValue::Float(a), ConstValue::Float(b)) => {
+                            let v = ConstValue::Float(a + b);
+                            self.record(expr, v.ty());
+                            Some(v)
+                        }
+                        (ConstValue::String(a), ConstValue::String(b)) => {
+                            let v = ConstValue::String(format!("{a}{b}"));
+                            self.record(expr, v.ty());
+                            Some(v)
+                        }
+                        _ => {
+                            self.error(
+                                DiagnosticCode::TypeMismatch,
+                                *op_span,
+                                format!(
+                                    "operator `+` does not accept `{}` and `{}`",
+                                    left_val.ty(),
+                                    right_val.ty()
+                                ),
+                            );
+                            None
+                        }
+                    },
+                    BinaryOp::Subtract => match (&left_val, &right_val) {
+                        (ConstValue::Int(a, it_a), ConstValue::Int(b, it_b)) => {
+                            if it_a != it_b {
+                                self.error(
+                                    DiagnosticCode::TypeMismatch,
+                                    *op_span,
+                                    format!("mismatched integer widths `{it_a}` and `{it_b}`"),
+                                );
+                                return None;
+                            }
+                            let res = a.checked_sub(*b);
+                            if res.is_none() || !int_type_fits(res.unwrap(), *it_a) {
+                                self.error(
+                                    DiagnosticCode::IntegerRange,
+                                    *op_span,
+                                    "constant arithmetic overflow",
+                                );
+                                return None;
+                            }
+                            let v = ConstValue::Int(res.unwrap(), *it_a);
+                            self.record(expr, v.ty());
+                            Some(v)
+                        }
+                        (ConstValue::Float(a), ConstValue::Float(b)) => {
+                            let v = ConstValue::Float(a - b);
+                            self.record(expr, v.ty());
+                            Some(v)
+                        }
+                        _ => {
+                            self.error(
+                                DiagnosticCode::TypeMismatch,
+                                *op_span,
+                                format!(
+                                    "operator `-` does not accept `{}` and `{}`",
+                                    left_val.ty(),
+                                    right_val.ty()
+                                ),
+                            );
+                            None
+                        }
+                    },
+                    BinaryOp::Multiply => match (&left_val, &right_val) {
+                        (ConstValue::Int(a, it_a), ConstValue::Int(b, it_b)) => {
+                            if it_a != it_b {
+                                self.error(
+                                    DiagnosticCode::TypeMismatch,
+                                    *op_span,
+                                    format!("mismatched integer widths `{it_a}` and `{it_b}`"),
+                                );
+                                return None;
+                            }
+                            let res = a.checked_mul(*b);
+                            if res.is_none() || !int_type_fits(res.unwrap(), *it_a) {
+                                self.error(
+                                    DiagnosticCode::IntegerRange,
+                                    *op_span,
+                                    "constant arithmetic overflow",
+                                );
+                                return None;
+                            }
+                            let v = ConstValue::Int(res.unwrap(), *it_a);
+                            self.record(expr, v.ty());
+                            Some(v)
+                        }
+                        (ConstValue::Float(a), ConstValue::Float(b)) => {
+                            let v = ConstValue::Float(a * b);
+                            self.record(expr, v.ty());
+                            Some(v)
+                        }
+                        _ => {
+                            self.error(
+                                DiagnosticCode::TypeMismatch,
+                                *op_span,
+                                format!(
+                                    "operator `*` does not accept `{}` and `{}`",
+                                    left_val.ty(),
+                                    right_val.ty()
+                                ),
+                            );
+                            None
+                        }
+                    },
+                    BinaryOp::Divide => match (&left_val, &right_val) {
+                        (ConstValue::Int(a, it_a), ConstValue::Int(b, it_b)) => {
+                            if it_a != it_b {
+                                self.error(
+                                    DiagnosticCode::TypeMismatch,
+                                    *op_span,
+                                    format!("mismatched integer widths `{it_a}` and `{it_b}`"),
+                                );
+                                return None;
+                            }
+                            if *b == 0 {
+                                self.error(
+                                    DiagnosticCode::InvalidOperator,
+                                    *op_span,
+                                    "division by zero in constant expression",
+                                );
+                                return None;
+                            }
+                            if it_a.signed() && *a == int_type_min(*it_a) && *b == -1 {
+                                self.error(
+                                    DiagnosticCode::IntegerRange,
+                                    *op_span,
+                                    "constant division overflow",
+                                );
+                                return None;
+                            }
+                            let v = ConstValue::Int(a / b, *it_a);
+                            self.record(expr, v.ty());
+                            Some(v)
+                        }
+                        (ConstValue::Float(a), ConstValue::Float(b)) => {
+                            let v = ConstValue::Float(a / b);
+                            self.record(expr, v.ty());
+                            Some(v)
+                        }
+                        _ => {
+                            self.error(
+                                DiagnosticCode::TypeMismatch,
+                                *op_span,
+                                format!(
+                                    "operator `/` does not accept `{}` and `{}`",
+                                    left_val.ty(),
+                                    right_val.ty()
+                                ),
+                            );
+                            None
+                        }
+                    },
+                    BinaryOp::Modulo => match (&left_val, &right_val) {
+                        (ConstValue::Int(a, it_a), ConstValue::Int(b, it_b)) => {
+                            if it_a != it_b {
+                                self.error(
+                                    DiagnosticCode::TypeMismatch,
+                                    *op_span,
+                                    format!("mismatched integer widths `{it_a}` and `{it_b}`"),
+                                );
+                                return None;
+                            }
+                            if *b == 0 {
+                                self.error(
+                                    DiagnosticCode::InvalidOperator,
+                                    *op_span,
+                                    "modulo by zero in constant expression",
+                                );
+                                return None;
+                            }
+                            let v = ConstValue::Int(a % b, *it_a);
+                            self.record(expr, v.ty());
+                            Some(v)
+                        }
+                        _ => {
+                            self.error(
+                                DiagnosticCode::TypeMismatch,
+                                *op_span,
+                                format!(
+                                    "operator `%` does not accept `{}` and `{}`",
+                                    left_val.ty(),
+                                    right_val.ty()
+                                ),
+                            );
+                            None
+                        }
+                    },
+                    BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => match (&left_val, &right_val) {
+                        (ConstValue::Int(a, it_a), ConstValue::Int(b, it_b)) => {
+                            if it_a != it_b {
+                                self.error(
+                                    DiagnosticCode::TypeMismatch,
+                                    *op_span,
+                                    format!("mismatched integer widths `{it_a}` and `{it_b}`"),
+                                );
+                                return None;
+                            }
+                            let res = match op {
+                                BinaryOp::BitAnd => a & b,
+                                BinaryOp::BitOr => a | b,
+                                BinaryOp::BitXor => a ^ b,
+                                _ => unreachable!(),
+                            };
+                            let v = ConstValue::Int(res, *it_a);
+                            self.record(expr, v.ty());
+                            Some(v)
+                        }
+                        _ => {
+                            self.error(
+                                DiagnosticCode::TypeMismatch,
+                                *op_span,
+                                "bitwise operators require integer operands",
+                            );
+                            None
+                        }
+                    },
+                    BinaryOp::ShiftLeft => match (&left_val, &right_val) {
+                        (ConstValue::Int(a, it_a), ConstValue::Int(b, _)) => {
+                            if *b < 0 || *b >= it_a.bits() as i128 {
+                                self.error(
+                                    DiagnosticCode::IntegerRange,
+                                    *op_span,
+                                    format!("shift count `{b}` out of range for `{it_a}`"),
+                                );
+                                return None;
+                            }
+                            let mask = if it_a.bits() == 64 {
+                                u64::MAX as u128
+                            } else {
+                                (1_u128 << it_a.bits()) - 1
+                            };
+                            let shifted = ((*a as u128) << (*b as u32)) & mask;
+                            let res = if it_a.signed() {
+                                sign_extend(shifted, *it_a)
+                            } else {
+                                shifted as i128
+                            };
+                            let v = ConstValue::Int(res, *it_a);
+                            self.record(expr, v.ty());
+                            Some(v)
+                        }
+                        _ => {
+                            self.error(
+                                DiagnosticCode::TypeMismatch,
+                                *op_span,
+                                "shift operators require integer operands",
+                            );
+                            None
+                        }
+                    },
+                    BinaryOp::ShiftRight => match (&left_val, &right_val) {
+                        (ConstValue::Int(a, it_a), ConstValue::Int(b, _)) => {
+                            if *b < 0 || *b >= it_a.bits() as i128 {
+                                self.error(
+                                    DiagnosticCode::IntegerRange,
+                                    *op_span,
+                                    format!("shift count `{b}` out of range for `{it_a}`"),
+                                );
+                                return None;
+                            }
+                            let res = if it_a.signed() {
+                                a >> (*b as u32)
+                            } else {
+                                ((*a as u128) >> (*b as u32)) as i128
+                            };
+                            let v = ConstValue::Int(res, *it_a);
+                            self.record(expr, v.ty());
+                            Some(v)
+                        }
+                        _ => {
+                            self.error(
+                                DiagnosticCode::TypeMismatch,
+                                *op_span,
+                                "shift operators require integer operands",
+                            );
+                            None
+                        }
+                    },
+                    BinaryOp::Equal | BinaryOp::NotEqual | BinaryOp::Less
+                    | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => {
+                        let is_cmp = match (&left_val, &right_val) {
+                            (ConstValue::Int(a, it_a), ConstValue::Int(b, it_b)) if it_a == it_b => {
+                                match op {
+                                    BinaryOp::Equal => a == b,
+                                    BinaryOp::NotEqual => a != b,
+                                    BinaryOp::Less => a < b,
+                                    BinaryOp::LessEqual => a <= b,
+                                    BinaryOp::Greater => a > b,
+                                    BinaryOp::GreaterEqual => a >= b,
+                                    _ => unreachable!(),
+                                }
+                            }
+                            (ConstValue::Float(a), ConstValue::Float(b)) => match op {
+                                BinaryOp::Equal => a == b,
+                                BinaryOp::NotEqual => a != b,
+                                BinaryOp::Less => a < b,
+                                BinaryOp::LessEqual => a <= b,
+                                BinaryOp::Greater => a > b,
+                                BinaryOp::GreaterEqual => a >= b,
+                                _ => unreachable!(),
+                            },
+                            (ConstValue::Bool(a), ConstValue::Bool(b)) => match op {
+                                BinaryOp::Equal => a == b,
+                                BinaryOp::NotEqual => a != b,
+                                _ => {
+                                    self.error(
+                                        DiagnosticCode::InvalidOperator,
+                                        *op_span,
+                                        "ordered comparisons are not supported on booleans",
+                                    );
+                                    return None;
+                                }
+                            },
+                            (ConstValue::String(a), ConstValue::String(b)) => match op {
+                                BinaryOp::Equal => a == b,
+                                BinaryOp::NotEqual => a != b,
+                                _ => {
+                                    self.error(
+                                        DiagnosticCode::InvalidOperator,
+                                        *op_span,
+                                        "ordered comparisons are not supported on strings",
+                                    );
+                                    return None;
+                                }
+                            },
+                            _ => {
+                                self.error(
+                                    DiagnosticCode::TypeMismatch,
+                                    *op_span,
+                                    format!(
+                                        "cannot compare `{}` with `{}`",
+                                        left_val.ty(),
+                                        right_val.ty()
+                                    ),
+                                );
+                                return None;
+                            }
+                        };
+                        let v = ConstValue::Bool(is_cmp);
+                        self.record(expr, Type::Bool);
+                        Some(v)
+                    }
+                    BinaryOp::And | BinaryOp::Or => match (&left_val, &right_val) {
+                        (ConstValue::Bool(a), ConstValue::Bool(b)) => {
+                            let res = match op {
+                                BinaryOp::And => *a && *b,
+                                BinaryOp::Or => *a || *b,
+                                _ => unreachable!(),
+                            };
+                            let v = ConstValue::Bool(res);
+                            self.record(expr, Type::Bool);
+                            Some(v)
+                        }
+                        _ => {
+                            self.error(
+                                DiagnosticCode::TypeMismatch,
+                                *op_span,
+                                "logical operators require boolean operands",
+                            );
+                            None
+                        }
+                    },
+                }
+            }
+            ExprKind::Identifier(name) => {
+                let id = self.reference(name);
+                if matches!(self.resolution.symbols[id.0].kind, SymbolKind::Constant) {
+                    let val = self.ensure_constant_evaluated(id)?;
+                    self.record(expr, val.ty());
+                    Some(val)
+                } else {
+                    self.error(
+                        DiagnosticCode::InvalidValueType,
+                        expr.span,
+                        format!("`{}` is not a constant", name.text),
+                    );
+                    None
+                }
+            }
+            ExprKind::Member { object, member } => {
+                if matches!(&object.kind, ExprKind::Identifier(qualifier) if self.resolution.module_in_file(self.file, &qualifier.text).is_some())
+                    && let Some(&sym_id) = self.resolution.references.get(&(self.file, member.span.start))
+                    && matches!(self.resolution.symbols[sym_id.0].kind, SymbolKind::Constant)
+                {
+                    let val = self.ensure_constant_evaluated(sym_id)?;
+                    self.record(expr, val.ty());
+                    Some(val)
+                } else {
+                    self.error(
+                        DiagnosticCode::InvalidValueType,
+                        expr.span,
+                        "member access is not valid in a constant expression",
+                    );
+                    None
+                }
+            }
+            ExprKind::Call { callee, arguments } => {
+                let id = match &callee.kind {
+                    ExprKind::Identifier(name) => Some(self.reference(name)),
+                    ExprKind::Member { member, .. } => Some(self.reference(member)),
+                    _ => None,
+                };
+                if let Some(sym_id) = id
+                    && let SymbolKind::Builtin(Builtin::IntConvert(target_it)) =
+                        self.resolution.symbols[sym_id.0].kind
+                {
+                    if arguments.len() != 1 {
+                        self.error(
+                            DiagnosticCode::ArgumentCount,
+                            expr.span,
+                            format!("conversion `{}` expects 1 argument", target_it.name()),
+                        );
+                        return None;
+                    }
+                    let arg_val = self.eval_constant_expr(&arguments[0], None)?;
+                    if let ConstValue::Int(val, _) = arg_val {
+                        if !int_type_fits(val, target_it) {
+                            self.error(
+                                DiagnosticCode::IntegerRange,
+                                expr.span,
+                                format!(
+                                    "constant value `{val}` does not fit target type `{}`",
+                                    target_it.name()
+                                ),
+                            );
+                            return None;
+                        }
+                        let v = ConstValue::Int(val, target_it);
+                        self.record(expr, Type::Int(target_it));
+                        Some(v)
+                    } else {
+                        self.error(
+                            DiagnosticCode::TypeMismatch,
+                            arguments[0].span,
+                            format!(
+                                "conversion `{}` expects integer argument, found `{}`",
+                                target_it.name(),
+                                arg_val.ty()
+                            ),
+                        );
+                        None
+                    }
+                } else {
+                    self.error(
+                        DiagnosticCode::UnsupportedFeature,
+                        expr.span,
+                        "function calls are not supported in constant expressions",
+                    );
+                    None
+                }
+            }
+            _ => {
+                self.error(
+                    DiagnosticCode::UnsupportedFeature,
+                    expr.span,
+                    "expression is not valid in a constant definition",
+                );
+                None
+            }
         }
     }
 }

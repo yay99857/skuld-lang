@@ -106,6 +106,7 @@ pub fn tokens(source: &str, typed: &TypedProgram) -> Vec<Token> {
                 SymbolKind::Variable(skuld_compiler::ast::Mutability::Mutable) => (VARIABLE, 0),
                 SymbolKind::Module(_) => (NAMESPACE, 0),
                 SymbolKind::Enum => (ENUM, 0),
+                SymbolKind::Constant => (VARIABLE, READONLY),
                 SymbolKind::Builtin(_) => (FUNCTION, DEFAULT_LIBRARY),
             };
             if declaring {

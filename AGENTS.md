@@ -232,11 +232,18 @@ accurate; documenting a future feature is not a request to implement it.
   `>>` on signed types is arithmetic and on unsigned types is logical; `>>`
   coexists with generic type closures via a parser splitting rule, answering open
   question 9; expression lambdas `(a, b) => expr` and array `to_sorted` were
-  also completed and tested.
-  The systems sequence `ROADMAP.md` proposes continues with M20–M26:
-  named constants and value patterns, `usize` and integer/float conversion,
-  fixed-size arrays, pointers that can be read inside `unsafe`, layout and ABI
-  control, `defer`, and a freestanding mode with no runtime and no libc.
+  also completed and tested. M20 (named constants and value patterns) is complete:
+  `const NAME: Type = expr` and `pub const` at module and local function scope,
+  compile-time evaluation for literals, arithmetic, bitwise, string concatenation,
+  and conversions, lowered inline with zero runtime registers and stack slots;
+  `match` extended to scalar and string targets with literal/constant patterns,
+  range patterns (`a..b`, `a..=b`), and mandatory wildcard `_` for exhaustiveness;
+  `std/net`, `std/dns`, `std/fs` and `std/os` name every protocol number, flag and
+  `errno` value.
+  The systems sequence `ROADMAP.md` proposes continues with M21–M26:
+  `usize` and integer/float conversion, fixed-size arrays, pointers that can be read
+  inside `unsafe`, layout and ABI control, `defer`, and a freestanding mode with no
+  runtime and no libc.
   Every one of them is Planned and none is authorized; each still needs an
   explicit decision recorded here. Two decisions
   are taken there and should not be reopened by accident: M20's `const` does

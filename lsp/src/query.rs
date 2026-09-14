@@ -418,6 +418,11 @@ fn describe_symbol(typed: &TypedProgram, symbol: SymbolId, word: &Word) -> Strin
             Some(info) => format!("import \"{}\"", info.path),
             None => format!("module {}", word.text),
         },
+        SymbolKind::Constant => format!(
+            "const {}: {}",
+            word.text,
+            type_name(typed, typed.symbol_type(symbol))
+        ),
         SymbolKind::Builtin(builtin) => describe_builtin(builtin, &word.text),
     }
 }

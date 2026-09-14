@@ -74,6 +74,44 @@ pub func parameters() -> Result<[]string, OsError> {
 // Why the last foreign call failed, as the operating system's number. It is
 // only meaningful immediately after a call that reported failure: anything in
 // between may have set it.
+pub const EPERM: int = 1
+
+pub const ENOENT: int = 2
+
+pub const ESRCH: int = 3
+
+pub const EINTR: int = 4
+
+pub const EIO: int = 5
+
+pub const EBADF: int = 9
+
+pub const EAGAIN: int = 11
+
+pub const ENOMEM: int = 12
+
+pub const EACCES: int = 13
+
+pub const EFAULT: int = 14
+
+pub const EEXIST: int = 17
+
+pub const ENOTDIR: int = 20
+
+pub const EISDIR: int = 21
+
+pub const EINVAL: int = 22
+
+pub const EMFILE: int = 24
+
+pub const ENOSPC: int = 28
+
+pub const EPIPE: int = 32
+
+pub const ETIMEDOUT: int = 110
+
+pub const ECONNREFUSED: int = 111
+
 pub func last_error() -> int {
     return int(sk_errno())
 }

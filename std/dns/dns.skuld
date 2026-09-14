@@ -19,6 +19,22 @@ import "std/net"
 import "std/os"
 import "std/strings"
 
+pub const AF_INET: i32 = 2
+
+pub const SOCK_DGRAM: i32 = 2
+
+pub const IPPROTO_UDP: i32 = 0
+
+pub const SOL_SOCKET: i32 = 1
+
+pub const SO_RCVTIMEO: i32 = 20
+
+pub const SOCKADDR_IN_SIZE: u32 = 16
+
+pub const DNS_PORT: int = 53
+
+pub const TIMEOUT_SECONDS: u8 = 3
+
 unsafe extern "C" {
     func socket(domain: i32, kind: i32, protocol: i32) -> i32
     func connect(handle: i32, address: *u8, length: u32) -> i32
@@ -101,7 +117,7 @@ pub func resolve(name: string) -> Result<string, DnsError> {
     }
     var last = DnsError.NoServer("no server was tried")
     for server in configured {
-        match resolve_with(server, 53, name) {
+        match resolve_with(server, DNS_PORT, name) {
             Ok(address): return Ok(address)
             Err(problem): {
                 // A name that does not exist is that server's final answer;
@@ -189,22 +205,21 @@ func query(name: string) -> Result<[]u8, DnsError> {
 // is a failure rather than a hang.
 func exchange(server: string, port: int, question: []u8) -> Result<[]u8, DnsError> {
     let octets = address_bytes(server)?
-    // AF_INET, SOCK_DGRAM.
-    let handle = socket(2, 2, 0)
+    let handle = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
     if handle < 0 {
         return Err(DnsError.Transport(os.failure("a datagram socket")))
     }
     // SO_RCVTIMEO on SOL_SOCKET: a `struct timeval` of two 64-bit fields.
     var timeout: []u8 = []
-    timeout.push(3)
+    timeout.push(TIMEOUT_SECONDS)
     var pad = 0
     while pad < 15 {
         timeout.push(0)
         pad += 1
     }
-    let ignored_option = setsockopt(i32(handle), 1, 20, ptr(timeout), u32(16))
+    let ignored_option = setsockopt(i32(handle), SOL_SOCKET, SO_RCVTIMEO, ptr(timeout), SOCKADDR_IN_SIZE)
     var sockaddr: []u8 = []
-    sockaddr.push(2)
+    sockaddr.push(u8(AF_INET))
     sockaddr.push(0)
     sockaddr.push(u8(port / 256))
     sockaddr.push(u8(port % 256))
@@ -216,7 +231,7 @@ func exchange(server: string, port: int, question: []u8) -> Result<[]u8, DnsErro
         sockaddr.push(0)
         zeros += 1
     }
-    if connect(i32(handle), ptr(sockaddr), u32(16)) < 0 {
+    if connect(i32(handle), ptr(sockaddr), SOCKADDR_IN_SIZE) < 0 {
         let problem = os.failure("${server}:${port}")
         let ignored = close(i32(handle))
         return Err(DnsError.Transport(problem))

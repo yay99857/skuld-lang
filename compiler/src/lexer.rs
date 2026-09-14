@@ -169,6 +169,16 @@ impl Lexer<'_> {
                 self.emit(start, Tilde);
                 continue;
             }
+            if c == '.' && self.peek() == Some('.') {
+                self.advance();
+                if self.peek() == Some('=') {
+                    self.advance();
+                    self.emit(start, DotDotEqual);
+                } else {
+                    self.emit(start, DotDot);
+                }
+                continue;
+            }
             let pair = match (c, self.peek()) {
                 ('-', Some('>')) => Some(Arrow),
                 ('=', Some('>')) => Some(FatArrow),
@@ -178,7 +188,6 @@ impl Lexer<'_> {
                 ('-', Some('=')) => Some(MinusEqual),
                 ('*', Some('=')) => Some(StarEqual),
                 ('/', Some('=')) => Some(SlashEqual),
-                ('.', Some('.')) => Some(DotDot),
                 _ => None,
             };
             if let Some(kind) = pair {
@@ -264,6 +273,7 @@ impl Lexer<'_> {
             "enum" => Enum,
             "match" => Match,
             "import" => Import,
+            "const" => Const,
             "pub" => Pub,
             "for" => For,
             "in" => In,

@@ -159,6 +159,22 @@ Function parameters are immutable; copy a parameter into a local `var` to
 modify it. `void` is valid only as a return type, not for locals or parameters.
 Local variables always require an initializer and cannot store void results.
 
+`const` declares a compile-time constant at module or function scope; `pub const`
+exports it from a module. Constant expressions are evaluated at compile time
+over scalar/string literals, arithmetic, bitwise operators, string concatenation,
+and explicit type conversion calls. Constants allocate no runtime stack slots
+or registers and are inlined directly at lowering:
+
+```skuld
+const MAX_BUFFER: int = 1024
+pub const PROTOCOL_VERSION: int = 1
+
+func compute() -> int {
+    const LOCAL_FACTOR: int = 2
+    return MAX_BUFFER * LOCAL_FACTOR
+}
+```
+
 ## Functions, expressions and control flow — Implemented core
 
 ```skuld
@@ -885,12 +901,12 @@ match status {
 }
 ```
 
-- Target expression must be an enum or a `Result` (`E0102` if not); a `Result` matches as a two-variant enum with `Ok` and `Err`.
-- Arm patterns support variant patterns (`Status.Pending`, `Status.Active(code)`) and the wildcard pattern (`_`).
+- Target expression can be an enum, a `Result` (which matches as a two-variant enum with `Ok` and `Err`), or any scalar or string type (integers, float, bool, string). Non-matchable types like structs or classes are rejected (`E0102`).
+- Arm patterns support variant patterns (`Status.Pending`, `Status.Active(code)`), literal and constant value patterns, half-open ranges `a..b`, inclusive ranges `a..=b`, and the wildcard pattern (`_`).
 - Arm separator accepts `:` or `->`.
 - Arms can have a single statement or a block `{ ... }`.
 - Variant payload bindings introduce an immutable local variable scoped to that arm's body.
-- Exhaustiveness is strictly checked: every variant must be covered, or a wildcard `_` must be present (`E0113`).
+- Exhaustiveness is strictly checked: every enum variant must be covered or a wildcard `_` provided; for scalar and string matches, a wildcard `_` arm is mandatory (`E0113`).
 - If every arm returns (or diverges), the `match` statement satisfies the function's return contract.
 - Inside loops, `break` and `continue` inside match arms naturally bind to the enclosing loop.
 

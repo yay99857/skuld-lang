@@ -381,9 +381,11 @@ and M10 (class interfaces) are also implemented, as is `let ... else`.
 M11 (the official formatter, `skuld fmt`), M12 (LSP refactoring), M13 (local
 CLI applications and `skuld test`), M14 (field defaults), M15 (a string-keyed
 map), M16 (host names and system error reasons), M17 (verified HTTPS), M18
-(measured performance on two native targets), and M19 (bitwise operators,
+(measured performance on two native targets), M19 (bitwise operators,
 prefixed integer literals in hex, octal and binary, and digit separators, along
-with expression lambdas and array `to_sorted`) are implemented too. The LSP provides
+with expression lambdas and array `to_sorted`), and M20 (named constants at
+module and local scope, and scalar/string value and range patterns in `match`)
+are implemented too. The LSP provides
 diagnostics, completion, hover, definition, find-references, rename, document
 highlights, the document outline, formatting through `skuld fmt`'s own
 formatter, signature help, inlay hints for inferred binding types and semantic
@@ -391,8 +393,8 @@ tokens, and
 `examples/jsontool.skuld` is a multi-module native tool with its own test suite.
 
 No implementation milestone is active. The systems sequence [ROADMAP.md](ROADMAP.md)
-proposes continues with M20–M26, towards the systems language the project aims
-at: named constants and value patterns, `usize`, fixed-size arrays, pointers
+proposes continues with M21–M26, towards the systems language the project aims
+at: `usize` and integer/float conversion, fixed-size arrays, pointers
 that can be read inside `unsafe`, layout control, `defer`, and a freestanding
 mode with no runtime and no libc. Every one of them is proposed and none is
 authorized; starting one needs an explicit decision first, as do the older

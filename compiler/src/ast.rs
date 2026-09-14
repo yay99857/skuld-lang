@@ -8,6 +8,7 @@ pub struct Program {
     pub interfaces: Vec<InterfaceDecl>,
     pub structs: Vec<StructDecl>,
     pub enums: Vec<EnumDecl>,
+    pub constants: Vec<ConstantDecl>,
     pub functions: Vec<FunctionDecl>,
     /// Foreign declarations, which have signatures but no bodies.
     pub externs: Vec<ExternBlock>,
@@ -208,6 +209,15 @@ impl TypeRef {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ConstantDecl {
+    pub visibility: Visibility,
+    pub name: Name,
+    pub type_ref: Option<TypeRef>,
+    pub value: Expr,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct FunctionDecl {
     pub visibility: Visibility,
     pub name: Name,
@@ -259,6 +269,7 @@ pub struct Statement {
 #[derive(Debug, Clone, PartialEq)]
 pub enum StatementKind {
     Variable(VariableDecl),
+    Constant(ConstantDecl),
     Expression(Expr),
     Return(Option<Expr>),
     Block(Block),
@@ -326,6 +337,13 @@ pub enum MatchPattern {
         span: Span,
     },
     Wildcard(Span),
+    Constant(Expr),
+    Range {
+        start: Expr,
+        end: Expr,
+        inclusive: bool,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
