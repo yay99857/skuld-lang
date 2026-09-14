@@ -2010,3 +2010,159 @@ fn the_server_asks_to_be_told_about_files_changing_on_disk() {
         .count();
     assert_eq!(reports, 2, "one for the open, one for the change");
 }
+
+/// A code action request over one whole line.
+fn code_actions_on(id: i64, path: &str, line: i64) -> Json {
+    Json::object([
+        ("jsonrpc", Json::string("2.0")),
+        ("id", Json::number(id as f64)),
+        ("method", Json::string("textDocument/codeAction")),
+        (
+            "params",
+            Json::object([
+                (
+                    "textDocument",
+                    Json::object([("uri", Json::string(path_to_uri(path)))]),
+                ),
+                (
+                    "range",
+                    Json::object([
+                        (
+                            "start",
+                            Json::object([
+                                ("line", Json::number(line as f64)),
+                                ("character", Json::number(0.0)),
+                            ]),
+                        ),
+                        (
+                            "end",
+                            Json::object([
+                                ("line", Json::number(line as f64)),
+                                ("character", Json::number(80.0)),
+                            ]),
+                        ),
+                    ]),
+                ),
+                (
+                    "context",
+                    Json::object([("diagnostics", Json::Array(Vec::new()))]),
+                ),
+            ]),
+        ),
+    ])
+}
+
+/// The single edit an action carries, as (line, start character, end
+/// character, replacement).
+fn only_edit(action: &Json) -> (i64, i64, i64, String) {
+    let Some(Json::Object(changes)) = action.path(&["edit", "changes"]) else {
+        panic!("an action with a workspace edit: {action:?}");
+    };
+    let edits = changes.values().next().expect("one file");
+    let Json::Array(edits) = edits else {
+        panic!("a list of edits")
+    };
+    assert_eq!(edits.len(), 1, "one edit per action");
+    let edit = &edits[0];
+    (
+        edit.path(&["range", "start", "line"])
+            .and_then(Json::as_i64)
+            .expect("a line"),
+        edit.path(&["range", "start", "character"])
+            .and_then(Json::as_i64)
+            .expect("a start"),
+        edit.path(&["range", "end", "character"])
+            .and_then(Json::as_i64)
+            .expect("an end"),
+        edit.get("newText")
+            .and_then(Json::as_str)
+            .expect("replacement text")
+            .to_string(),
+    )
+}
+
+#[test]
+fn a_diagnostic_that_knows_its_edit_is_offered_as_a_quick_fix() {
+    let path = "/tmp/skuld-lsp-test/quickfix.skuld";
+    let source = "func main() {\n    let total = 1\n    print(totla)\n}\n";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        code_actions_on(2, path, 2),
+        request(3, "shutdown"),
+    ]);
+    let Json::Array(actions) = result_of(&out, 2) else {
+        panic!("a list of actions")
+    };
+    let fix = actions
+        .iter()
+        .find(|action| action.get("kind").and_then(Json::as_str) == Some("quickfix"))
+        .expect("the misspelt name is offered a fix");
+    assert_eq!(
+        fix.get("title").and_then(Json::as_str),
+        Some("change to `total`")
+    );
+    // The edit covers exactly the name that was written, on its own line.
+    assert_eq!(only_edit(fix), (2, 10, 15, "total".to_string()));
+}
+
+#[test]
+fn a_fix_is_not_offered_for_a_line_the_request_does_not_reach() {
+    let path = "/tmp/skuld-lsp-test/elsewhere.skuld";
+    let source = "func main() {\n    let total = 1\n    print(totla)\n}\n";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(path, source),
+        // Line 1 holds the declaration; the diagnostic is on line 2.
+        code_actions_on(2, path, 1),
+        request(3, "shutdown"),
+    ]);
+    let Json::Array(actions) = result_of(&out, 2) else {
+        panic!("a list of actions")
+    };
+    assert!(
+        actions
+            .iter()
+            .all(|action| action.get("kind").and_then(Json::as_str) != Some("quickfix")),
+        "{actions:?}"
+    );
+}
+
+#[test]
+fn fixing_the_source_withdraws_the_offer() {
+    let path = "/tmp/skuld-lsp-test/withdrawn.skuld";
+    let (out, _) = converse(&[
+        request(1, "initialize"),
+        did_open(
+            path,
+            "func main() {\n    let total = 1\n    print(totla)\n}\n",
+        ),
+        did_change(
+            path,
+            "func main() {\n    let total = 1\n    print(total)\n}\n",
+        ),
+        code_actions_on(2, path, 2),
+        request(3, "shutdown"),
+    ]);
+    let Json::Array(actions) = result_of(&out, 2) else {
+        panic!("a list of actions")
+    };
+    assert!(
+        actions
+            .iter()
+            .all(|action| action.get("kind").and_then(Json::as_str) != Some("quickfix")),
+        "a check with no diagnostics leaves no fixes behind: {actions:?}"
+    );
+}
+
+#[test]
+fn the_server_advertises_quick_fixes() {
+    let (out, _) = converse(&[request(1, "initialize"), request(2, "shutdown")]);
+    let kinds = result_of(&out, 1)
+        .path(&["capabilities", "codeActionProvider", "codeActionKinds"])
+        .expect("the advertised kinds");
+    let Json::Array(kinds) = kinds else {
+        panic!("a list of kinds")
+    };
+    assert!(kinds.iter().any(|kind| kind.as_str() == Some("quickfix")));
+}

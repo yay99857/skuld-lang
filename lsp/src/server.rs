@@ -69,6 +69,23 @@ pub struct Server {
     /// default is that it does not, and a client that cannot parse the nested
     /// form shows nothing at all, so the flat one is what silence buys.
     hierarchical_symbols: bool,
+    /// The edits the last check offered, by the file they belong to. They are
+    /// kept because a code action arrives as a separate request, long after
+    /// the diagnostic that carried the fix was sent.
+    fixes: BTreeMap<String, Vec<Offered>>,
+}
+
+/// A fix the compiler attached to a diagnostic, waiting for the code action
+/// request that asks for it. Both spans are byte offsets into the file's text
+/// as it was checked.
+#[derive(Debug, Clone)]
+struct Offered {
+    title: String,
+    /// Where the diagnostic was reported, so a request over a range can pick
+    /// the fixes that belong to it.
+    reported: std::ops::Range<usize>,
+    edit: std::ops::Range<usize>,
+    replacement: String,
 }
 
 impl Default for Server {
@@ -82,6 +99,7 @@ impl Server {
         Self {
             open: BTreeMap::new(),
             checked: BTreeMap::new(),
+            fixes: BTreeMap::new(),
             shutting_down: false,
             next_request: 0,
             hierarchical_symbols: false,
@@ -474,6 +492,10 @@ impl Server {
         // says "nothing wrong here".
         let mut by_file: BTreeMap<String, Vec<Json>> = BTreeMap::new();
         by_file.insert(path.to_string(), Vec::new());
+        // Collected here and installed at the end: the previous check's fixes
+        // describe text that has been edited since, and every file this check
+        // reports on gets its list replaced rather than added to.
+        let mut fresh: BTreeMap<String, Vec<Offered>> = BTreeMap::new();
 
         if let Err(errors) = result {
             for entry in &errors.diagnostics {
@@ -488,6 +510,14 @@ impl Server {
                     root.join(&file.name).to_string_lossy().into_owned()
                 };
                 let positions = Positions::new(file.text.clone());
+                if let Some(fix) = &entry.diagnostic.fix {
+                    fresh.entry(full.clone()).or_default().push(Offered {
+                        title: fix.title.clone(),
+                        reported: entry.diagnostic.span.start..entry.diagnostic.span.end,
+                        edit: fix.span.start..fix.span.end,
+                        replacement: fix.replacement.clone(),
+                    });
+                }
                 by_file
                     .entry(full)
                     .or_default()
@@ -504,6 +534,10 @@ impl Server {
         }
 
         for (file, diagnostics) in by_file {
+            match fresh.remove(&file) {
+                Some(offered) => self.fixes.insert(file.clone(), offered),
+                None => self.fixes.remove(&file),
+            };
             publish(output, &file, Json::Array(diagnostics));
         }
     }
@@ -1112,23 +1146,72 @@ impl Server {
     /// fix because nothing is wrong with the code — a reader sometimes wants
     /// the type on the page.
     ///
-    /// There are no quick fixes yet, and that is not an oversight to work
-    /// around here: a fix has to come from the diagnostic that knows what went
-    /// wrong. The compiler's diagnostics carry a message and a help line,
-    /// both prose, and turning prose into an edit would be guessing. Giving a
-    /// diagnostic a machine-applicable fix is a compiler change, and it is the
-    /// right one.
+    /// The quick fixes come from the compiler: a diagnostic that knows the
+    /// whole edit carries it, and this hands the edit to the editor without
+    /// reinterpreting the prose next to it. A diagnostic that only describes
+    /// its problem still offers nothing, which is the honest answer.
     fn code_actions(&self, message: &Json) -> Json {
         let empty = Json::Array(Vec::new());
         let Some(path) = document_path(message) else {
             return empty;
         };
-        let (Some(source), Some(typed)) = (self.open.get(&path), self.checked.get(&path)) else {
+        let Some(source) = self.open.get(&path) else {
             return empty;
         };
         let positions = Positions::new(source.clone());
         let window = requested_range(message, &positions, source.len());
-        Json::Array(
+        // A fix goes first: a red underline is a more urgent offer than a
+        // rewrite of code that is already correct.
+        let mut actions: Vec<Json> = self
+            .fixes
+            .get(&path)
+            .into_iter()
+            .flatten()
+            // The client asks about a range — often the cursor — and wants
+            // the fixes for the diagnostics it touches.
+            .filter(|offered| {
+                offered.reported.start < window.end && window.start <= offered.reported.end
+            })
+            // A fix describes the text that was checked. If the buffer has
+            // been edited since, its offsets name something else, and an edit
+            // built from them would corrupt the file.
+            .filter(|offered| offered.edit.end <= source.len())
+            .map(|offered| {
+                let start = positions.position(offered.edit.start);
+                let end = positions.position(offered.edit.end);
+                Json::object([
+                    ("title", Json::string(&offered.title)),
+                    ("kind", Json::string("quickfix")),
+                    (
+                        "edit",
+                        Json::object([(
+                            "changes",
+                            Json::Object(
+                                [(
+                                    path_to_uri(&path),
+                                    Json::Array(vec![Json::object([
+                                        (
+                                            "range",
+                                            Json::object([
+                                                ("start", position_json(start)),
+                                                ("end", position_json(end)),
+                                            ]),
+                                        ),
+                                        ("newText", Json::string(&offered.replacement)),
+                                    ])]),
+                                )]
+                                .into_iter()
+                                .collect(),
+                            ),
+                        )]),
+                    ),
+                ])
+            })
+            .collect();
+        let Some(typed) = self.checked.get(&path) else {
+            return Json::Array(actions);
+        };
+        actions.extend(
             hints::type_hints(source, typed)
                 .into_iter()
                 .filter(|hint| window.contains(&hint.offset))
@@ -1172,9 +1255,9 @@ impl Server {
                             )]),
                         ),
                     ]))
-                })
-                .collect(),
-        )
+                }),
+        );
+        Json::Array(actions)
     }
 
     /// Answer `textDocument/inlayHint` with the type of every binding that
@@ -1820,7 +1903,10 @@ fn initialize_result() -> Json {
                 "codeActionProvider",
                 Json::object([(
                     "codeActionKinds",
-                    Json::Array(vec![Json::string("refactor.rewrite")]),
+                    Json::Array(vec![
+                        Json::string("quickfix"),
+                        Json::string("refactor.rewrite"),
+                    ]),
                 )]),
             ),
             (
