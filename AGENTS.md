@@ -226,7 +226,16 @@ accurate; documenting a future feature is not a request to implement it.
   and error detail), M17 (verified HTTPS) and M18 (measured performance and a
   second native target) are complete, each with its decision recorded below and
   in `ROADMAP.md`. The sequence `ROADMAP.md` proposed is finished; what comes
-  next is a selection nobody has made.
+  next is a selection nobody has made. `ROADMAP.md` now proposes a second
+  sequence, M19–M26, towards the systems language the project says it wants:
+  bit operators and hexadecimal literals, named constants and value patterns,
+  `usize` and integer/float conversion, fixed-size arrays, pointers that can be
+  read inside `unsafe`, layout and ABI control, `defer`, and a freestanding
+  mode with no runtime and no libc. Every one of them is Planned and none is
+  authorized; each still needs an explicit decision recorded here, and three of
+  them — the lexer's `>>`, whether a readable pointer undoes the FFI's safety
+  argument, and whether the freestanding subset is the same language — are open
+  design questions in that document rather than settled shape.
   No milestone is active. Do not infer authorization for further features without
   explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes

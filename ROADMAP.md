@@ -1,11 +1,12 @@
 # Skuld roadmap
 
 This document records completed milestones and a **proposed** next sequence.
-M1–M18 are implemented, and the proposed sequence is finished: there is no
-Planned milestone left in it. No implementation milestone is active, and what
-comes next is a selection nobody has made — the candidates below the sequence
-are the starting point, and each still needs an explicit decision recorded in
-`AGENTS.md`. See `LANGUAGE.md` for semantics and `README.md` for usage.
+M1–M18 are implemented and finished the sequence that built an applications
+language. M19–M26 propose the next one, towards the language a system could be
+written in; every one of them is **Planned**, which means proposed and not
+authorized. No implementation milestone is active, and starting one still
+needs an explicit decision recorded in `AGENTS.md`. See `LANGUAGE.md` for
+semantics and `README.md` for usage.
 
 Both targets this document set are reached: an HTTP document fetched and
 decoded, and a native command-line application that reads local input,
@@ -31,8 +32,12 @@ expectation.
   and the map is string-keyed with integer values rather than a general
   collection; a file API that is whole-file and by path only. Name resolution
   is IPv4 A records over UDP, without a cache. TLS is OpenSSL through the FFI
-  and is opt-in at link time. Linux x86_64 is the currently tested native
-  target; Go/Rust-level performance remains unmeasured.
+  and is opt-in at link time. x86-64 and i686 Linux are the tested native
+  targets, and performance is measured in `BENCHMARKS.md` rather than claimed.
+  The limits that define the next sequence are lower down: no bit operators,
+  no hexadecimal or binary literals, no named constant, no `usize`, no
+  fixed-size array, no reading through a pointer, no layout control, and no
+  program without the reference-counting runtime.
 - **Syntax reference:** `test.skuld` remains an untouched design sketch.
   Its global statements and incomplete `new User()` are unsupported, and its
   `=>` sorting callback was superseded by M8's `(a, b): int { ... }` form.
@@ -917,12 +922,298 @@ let ada = new Account(owner: "Ada", balance: 120)
   backend, changing copy semantics without evidence, threading, and a new
   memory-management model.
 
+## The systems sequence — M19–M26 — Proposed
+
+The first eighteen milestones built an applications language: it fetches a
+document, parses it, writes a file and runs its own tests, and it does that
+within a few multiples of Rust and Go. The stated ambition is lower than that —
+a language a system could be written in, down to an operating system — and the
+gap is not a matter of libraries. What follows is the assessment that produced
+this sequence, and then the milestones.
+
+**What a systems language needs that Skuld has:** value structs with a
+predictable layout, sized integers at fixed widths, arithmetic that traps
+rather than wrapping silently, no GC, a foreign boundary, modules, and
+compilation to native code through a backend that already produces competitive
+output.
+
+**What it needs that Skuld does not have, in the order the gaps bite:**
+
+1. **No bit operations at all.** `&`, `|`, `^`, `~`, `<<` and `>>` are not
+   operators; `&` is *an invalid character*. No mask, no flag set, no packed
+   field, no checksum, no hash written by hand. This is the single largest gap
+   and nothing below matters as much.
+2. **No literal for the values that bits are written in.** `0xFF`, `0b1010`,
+   `0o755` and `1_000_000` are all lexical errors, so permissions, masks,
+   opcodes and addresses are written in decimal or not at all.
+3. **No named constant anywhere.** There is no `const`, and a declaration at
+   module level can only be a function or a type. Every protocol number in
+   `std/net` is a bare literal in the call that uses it, which is exactly the
+   style a systems language must not force.
+4. **No word-sized integer.** `usize`/`isize` do not exist, which M18 already
+   found from the other side: `size_t` has no correct spelling in an
+   `extern "C"` declaration, so the FFI fixture is the one thing that does not
+   port to i686.
+5. **No memory that is not a heap allocation.** Arrays are heap-allocated and
+   dynamic; there is no `[N]T`, so there is no buffer on the stack and no
+   struct that embeds a fixed number of bytes.
+6. **No reading through a pointer.** `*T` exists only to hand a borrowed buffer
+   to C. Nothing loads or stores through one, and there is no pointer
+   arithmetic. That rule is what makes today's FFI safe, and it also makes an
+   allocator, a device register, a page table or a linked list impossible.
+7. **No layout control.** No packing, no alignment, no unions, no explicit
+   discriminant on an enum, and no struct crossing the ABI by value. A
+   hardware or kernel structure cannot be described.
+8. **No program without the runtime.** Every program carries reference
+   counting and links libc; there is no freestanding mode, no `static`
+   mutable state, no way to supply an allocator, and no entry point other
+   than the generated `main`.
+9. **No `defer`.** Reference counting releases what it owns, which is most
+   things today and none of the things an `unsafe` block would own.
+10. **No integer/float conversion, and no `char`.** `float(3)` is rejected and
+    `'a'` is not a value, so a byte comparison is written against a decimal
+    number.
+
+**Two syntax debts to settle while doing the above**, both of which are two
+ways to say one thing: a return type is written `-> Type` or `: Type` and both
+are accepted, with the formatter normalising to the first; and a lambda's
+parameter list plus a method's declaration mean `(a: int): int { ... }` is a
+lambda while `hello(): int { ... }` is a method, told apart only by where they
+appear. The first should be settled by removing `:` from return position once
+the formatter has rewritten the fixtures; the second is a consequence of
+methods carrying no `func`, which is the user's decision and stays.
+
+**What deliberately does not change.** No GC, no borrow checker, no ownership
+system, no inheritance, no exceptions, no `null`, no implicit coercion between
+widths, and no wrapping arithmetic by default. Reference counting stays the
+memory model for the language that exists; the freestanding subset below is
+how a program opts out of it, not a second memory model bolted onto the first.
+
+## M19 — Bits and integer literals — Planned
+
+The floor everything else stands on. Without it Skuld cannot express the
+values a system is made of.
+
+```skuld
+let flags = 0b0000_1101
+let mask: u32 = 0xFFFF_0000
+let permissions = 0o644
+let high = (value & mask) >> 16
+let set = flags | FLAG_READ
+let cleared = flags & ~FLAG_WRITE
+```
+
+- **In:** `&`, `|`, `^`, `~`, `<<`, `>>` and their compound forms; `0x`, `0b`
+  and `0o` literals; `_` as a digit separator in every base.
+- **Semantics to settle in the milestone:** shifts are defined at every width,
+  and a shift by more than the width is a trap rather than C's undefined
+  behaviour. `>>` on a signed type is arithmetic and on an unsigned type is
+  logical, which follows from the type and needs no second operator. Bit
+  operations never mix widths, exactly like arithmetic.
+- **Open decision — the lexer's `>>`.** Today `>>` is deliberately two closing
+  tokens so `Option<Result<int, string>>` needs no special rule. A shift
+  operator meets that head on. The cheapest answer is that the type grammar
+  closes generics one `>` at a time and the expression grammar reads `>>` as
+  one token, which is a parser rule rather than a lexer mode; that has to be
+  decided and written down.
+- **Closing marker:** `std/utf8` and `std/json` drop their arithmetic
+  workarounds for bit work, and a fixture computes a CRC32 and an FNV-1a hash
+  in pure Skuld with checked results.
+- **Out:** rotate operators, saturating or wrapping operators, and bitfield
+  syntax on struct fields.
+
+## M20 — Constants and value patterns — Planned
+
+A named constant is what makes the numbers in M19 readable, and once values
+have names they belong in patterns too.
+
+```skuld
+pub const AF_INET: i32 = 2
+pub const SOCK_STREAM: i32 = 1
+
+match signal {
+    SIGINT: stop()
+    SIGTERM: stop()
+    1..8: fatal(signal)
+    _: ignore(signal)
+}
+```
+
+- **In:** `const NAME: Type = expression` at module level and inside a
+  function, `pub const` as an export, and `match` over integer and string
+  values with constant patterns, ranges and a required `_`.
+- **Semantics to settle:** a `const` is evaluated at compile time, which means
+  the compiler gains a small constant evaluator — literals, the arithmetic and
+  bit operators, and other constants. It is not general compile-time
+  execution, and the milestone says so explicitly.
+- **Open decision — does a `const` of a managed type exist?** A `const string`
+  is a literal and costs nothing; a `const []int` would be an allocation that
+  has to happen somewhere. The narrow answer is to allow scalars and strings
+  only and revisit when something needs more.
+- **Closing marker:** `std/net`, `std/dns` and `std/fs` name every protocol
+  number and `errno` value they use, and no bare literal is left in a call
+  where a constant would say what it means.
+- **Out:** generic constants, `const fn`, and constant expressions in type
+  position — which is what a fixed-size array wants and M22 has to settle.
+
+## M21 — Word-sized integers and conversions — Planned
+
+The gap M18 found, plus the conversions that today force a program through
+strings.
+
+- **In:** `usize` and `isize` as their own types, `size_t`-shaped and
+  target-dependent; `float(i)` and `int(f)` as explicit, trapping conversions;
+  a `char` value whose literal is `'a'`, with explicit conversion to and from
+  `u8` and `u32`.
+- **Semantics to settle:** `usize` is a distinct type and not a spelling of
+  `u64`, so a program that assumes the two are interchangeable stops compiling
+  on the target where they are not. `int(f)` truncates towards zero and traps
+  on a value the target type cannot hold, including NaN.
+- **Closing marker:** `tests/pass/extern_c_ffi.skuld` uses `usize` where C uses
+  `size_t`, and `cli/tests/portability.rs` runs **every** fixture on i686 with
+  no exception left.
+- **Out:** `f32`, 128-bit integers, and implicit widening anywhere.
+
+## M22 — Fixed-size arrays and stack buffers — Planned
+
+The first milestone about memory rather than about values: a place to put
+bytes that is not the heap.
+
+```skuld
+var line: [256]u8 = [0; 256]
+let header: [4]u8 = [0x7F, 'E', 'L', 'F']
+```
+
+- **In:** the type `[N]T` with value semantics and copy on assignment, the
+  repeated-element literal, indexing with the same bounds checking `[]T` has,
+  `len()` as a compile-time constant, and a fixed array as a struct field so a
+  record can embed its own buffer.
+- **Semantics to settle:** `N` is a constant expression, which is why M20 comes
+  first; a `[N]T` coerces to a `[]T` slice for reading without allocating,
+  which is the whole point of having one.
+- **Open decision — does a fixed array live in a class field?** A class field
+  is reference-counted and a fixed array is not; the narrow answer is yes,
+  inline in the object's allocation, with the same rules its other fields
+  have.
+- **Closing marker:** `std/fs` and `std/net` read into a stack buffer instead
+  of pushing into a heap array byte by byte, and the benchmark that builds a
+  string shows the difference.
+- **Out:** multidimensional array syntax, array-of-array literals with
+  inference across dimensions, and a growable buffer type in `std`.
+
+## M23 — Pointers that can be read — Planned
+
+The milestone that makes Skuld a systems language, and the one that has to be
+argued rather than assumed: today's FFI is safe precisely because nothing
+dereferences a pointer, and this removes that.
+
+```skuld
+unsafe {
+    let value = load<u32>(register)
+    store<u32>(register, value | ENABLE)
+    let next = offset(base, index)
+}
+```
+
+- **In:** typed load and store through `*T` inside an `unsafe` block,
+  pointer arithmetic in element units, pointer/integer conversion, a
+  `volatile` load and store that the backend may not reorder or elide, and
+  taking the address of a local or a fixed array.
+- **The rule that must survive:** an `unsafe` block is where the compiler's
+  guarantees are suspended *and says so*. Everything outside one keeps every
+  rule it has today — no unchecked index, no aliasing of a managed value, no
+  pointer at all. The FFI does not become unrestricted: a signature still
+  refuses managed types, and `ptr()` still borrows rather than escapes.
+- **Open decision — does a pointer read produce a managed value?** Loading a
+  `string` or a class reference through a pointer would hand the reference
+  counter a value it never saw allocated. The narrow answer is that only
+  scalars, fixed arrays of scalars and pointer types can be loaded or stored,
+  and a managed type through a pointer is a diagnostic.
+- **Open decision — what spells the operation.** `load<T>`/`store<T>` are
+  functions and need no syntax; a `*pointer` dereference reads better and
+  costs a prefix operator that collides with nothing today. This is the only
+  new operator the sequence proposes and it should be decided deliberately.
+- **Closing marker:** a bump allocator and an intrusive linked list written in
+  Skuld, running clean under the address sanitizer, with the unsafe surface
+  confined to a handful of functions.
+- **Out:** references with lifetimes, aliasing rules, a borrow checker, and
+  unchecked indexing outside `unsafe`.
+
+## M24 — Layout and the ABI — Planned
+
+Describing memory somebody else defined: a hardware register block, a kernel
+structure, a file header, a C library's struct.
+
+- **In:** an explicit layout attribute on a struct (packed, and alignment),
+  `offset_of`, an enum with explicit discriminant values and an explicit
+  underlying integer type, conversion between such an enum and its integer,
+  unions, and structs passed to and returned from `extern "C"` by value.
+- **Semantics to settle:** the default layout stays the compiler's own and
+  unspecified; a struct that crosses the boundary says so. A union is only
+  readable inside `unsafe`, because which member is live is the program's
+  claim and not the compiler's knowledge.
+- **Closing marker:** `std/net` builds `sockaddr_in` and `std/dns` builds
+  `struct timeval` as declared types rather than as hand-packed `[]u8`, and
+  both are identical on x86-64 and i686.
+- **Out:** bitfields with C's allocation rules, `#[repr(Rust)]`-style
+  guarantees, and layout that varies by target in the same source.
+
+## M25 — `defer` and deterministic cleanup — Planned
+
+Reference counting releases what it owns, and M23 introduces things it does
+not own.
+
+- **In:** `defer statement` running at scope exit in reverse order, including
+  on every early return and on a trap-free `break` or `continue`; an
+  interaction with `?` and `let ... else` that is specified rather than
+  discovered.
+- **Open decision — is there an `errdefer`?** Go has one path, Zig has two.
+  The narrow answer is one, since `Result` already makes the failure path
+  explicit at the call site.
+- **Closing marker:** `std/tls` and `std/net` release their handles through
+  `defer` instead of repeating the cleanup on every failure path, and the
+  sanitizers stay clean.
+- **Out:** destructors a user can write, `Drop`-style traits, and cleanup
+  attached to a type rather than to a scope.
+
+## M26 — Freestanding Skuld — Planned
+
+The milestone the long-range ambition actually needs: a program with no
+runtime and no libc, which is the shape a kernel, a bootloader or a static
+utility has.
+
+- **In:** a build mode that emits no reference-counting runtime and links
+  nothing, a language subset the checker enforces in that mode (no `string`,
+  no `[]T`, no class, no `Option` payload that allocates — what is left is
+  scalars, fixed arrays, structs, enums and pointers), `static` mutable state
+  with an initialisation rule, a user-supplied entry point, and a build that
+  produces an object file rather than an executable.
+- **The point:** the memory model does not change. A freestanding program has
+  no managed values at all, so reference counting has nothing to do; a hosted
+  program keeps exactly what it has today. Two modes, one language, and the
+  checker says which one a file is being compiled in.
+- **Open decision — how does a program get memory?** An allocator written in
+  Skuld against a region the program is given, declared through an interface
+  the language knows about, is the shape that keeps the compiler out of it.
+  Whether the hosted mode can then use a different allocator is a separate
+  question, and a bigger one.
+- **Closing marker:** a static Linux x86-64 program with no libc that makes
+  `write` and `exit` syscalls directly, and a bootable image that prints to
+  the VGA text buffer, both built by `skuld build` and run in CI under QEMU.
+- **Out:** interrupts, a scheduler, drivers, a memory manager, and anything
+  that is an operating system rather than the language it would be written in.
+
 ## Beyond this sequence — Candidates, not selected
 
 General generics remain conditional on a concrete consumer and their own design;
 recursive enum boxing, escaping closures, interface inheritance/downcasts,
 `skuld new`, `skuld doc`, an HTTP server, async, alternative backends and
-self-hosting have no implementation authorization. Revisit them after the CLI
+self-hosting have no implementation authorization. The systems sequence adds
+its own candidates that it deliberately does not include: inline assembly,
+atomics and a memory model, threads with an atomic reference count, interrupt
+and naked calling conventions, linker sections, and a target that is not
+Linux. Each is a milestone of its own, after M26 has shown what a program
+without a runtime actually needs. Revisit them after the CLI
 application and measurements expose a need, rather than adding them to every
 milestone. No package registry, GC or borrow checker is proposed.
 
@@ -965,7 +1256,30 @@ above.
    their own?~~ Answered: their own, M10. Their receiver syntax is settled with
    them: a method on a class already takes an implicit `this`, and an interface
    declares the same signature without a body, so nothing new is spelled.
-9. ~~Where NUL-terminated C strings are built — a language helper, or a
+9. How does `>>` coexist with `Option<Result<int, string>>`? The lexer emits
+   two closing tokens today precisely so nested builtin generics need no rule.
+   M19 has to decide, and the cheapest answer is a parser rule — types close
+   one `>` at a time, expressions read `>>` as one operator — rather than a
+   lexer mode.
+10. Does an `unsafe` block that can read memory undo the argument that makes
+    the FFI safe? Today no pointer can be dereferenced anywhere, which is why
+    a foreign signature refusing managed types is enough. M23 replaces that
+    with a narrower claim: the guarantee holds outside `unsafe`, and only
+    scalars, fixed arrays of scalars and pointers may cross a load or a store.
+    Whether that is enough has to be argued in the milestone and not assumed.
+11. Is the freestanding subset the same language? M26 says yes — one language,
+    two build modes, with the checker refusing managed values where there is no
+    runtime to manage them. The alternative, a second dialect, is what the
+    project should not become, and saying so now is cheaper than discovering it
+    later.
+12. Does the hosted language ever get a replaceable allocator? A freestanding
+    program must supply one. Letting a hosted program do the same touches
+    every managed allocation, and needs its own evidence.
+13. Does the return type keep two spellings? `-> Type` and `: Type` are both
+    accepted and the formatter already writes the first. Removing the second
+    is a one-line parser change and a fixture sweep; keeping both is a
+    permanent second way to say one thing.
+14. ~~Where NUL-terminated C strings are built — a language helper, or a
    standard library function over `[]u8`?~~ Answered by M7: `std/cstring.to_c`,
    in the library. The language keeps knowing nothing about C's terminator, and
    a string that already contains a NUL is refused rather than truncated.
