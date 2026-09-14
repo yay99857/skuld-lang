@@ -235,7 +235,12 @@ accurate; documenting a future feature is not a request to implement it.
   authorized; each still needs an explicit decision recorded here, and three of
   them — the lexer's `>>`, whether a readable pointer undoes the FFI's safety
   argument, and whether the freestanding subset is the same language — are open
-  design questions in that document rather than settled shape.
+  design questions in that document rather than settled shape. Two decisions
+  are taken there and should not be reopened by accident: M20's `const` does
+  not replace `let`, since an immutable binding is what the backend reads to
+  borrow a managed local instead of counting it, and M23 spells a load through
+  a pointer with the expected type rather than with `<>` or a new prefix
+  operator.
   No milestone is active. Do not infer authorization for further features without
   explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes

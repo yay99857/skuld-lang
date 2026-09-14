@@ -1046,6 +1046,33 @@ match signal {
   the compiler gains a small constant evaluator — literals, the arithmetic and
   bit operators, and other constants. It is not general compile-time
   execution, and the milestone says so explicitly.
+- **Decision taken — `const` does not replace `let`, and `let` stays the
+  default.** Three words, three places, no overlap: `const` is module level and
+  compile-time, `let` is a runtime binding inside a function that cannot be
+  reassigned, and `var` is the one that can. The obvious economy — drop `let`
+  and let `var` be the only local — was considered and refused, because in
+  Skuld an immutable binding is not a style rule but information the backend
+  reads: `lowering.rs` marks every non-`var` local `settled`, and the C
+  generator then reads it borrowed, with no retain, no release and no
+  temporary. That is the difference M18 measured between 582 ms and 211 ms on
+  the JSON benchmark. It also carries M8's capture rule, which allows only
+  immutable bindings because a copy of a `var` can go stale. The other economy
+  — Zig's, where `const` *is* the immutable binding and `let` disappears —
+  keeps immutability but gives one word two natures depending on where it is
+  written, and Skuld has no `comptime` to make that difference visible.
+- **What the evidence does not support, and is worth writing down:** the usual
+  argument for immutable-by-default is frequency, and here it is weak. Counted
+  over the sources in this repository, `let` is 59% of bindings in `std`, 57%
+  in `std/json` and exactly **50%** in `std/net`; it only reaches 70% in
+  `tests/pass`, which is more declarative code. So the default rests on what
+  the compiler gets from it, not on how often it is typed. Two consequences
+  follow. In M26's freestanding subset there are no managed values at all, so
+  `let` earns nothing mechanical there and is legibility only. And if systems
+  code written after M22-M26 settles around 70-80% `var`, the question to ask
+  is not whether to swap the keywords but whether a local flow analysis can
+  prove a `var` is never reassigned past a point and treat it as `settled`
+  anyway — which would buy the performance without charging for the word, and
+  is a local analysis rather than a borrow checker.
 - **Open decision — does a `const` of a managed type exist?** A `const string`
   is a literal and costs nothing; a `const []int` would be an allocation that
   has to happen somewhere. The narrow answer is to allow scalars and strings
@@ -1280,11 +1307,17 @@ above.
 12. Does the hosted language ever get a replaceable allocator? A freestanding
     program must supply one. Letting a hosted program do the same touches
     every managed allocation, and needs its own evidence.
-13. Does the return type keep two spellings? `-> Type` and `: Type` are both
+13. Can a `var` the compiler proves is never reassigned be read borrowed, the
+    way a `let` is? It would remove the performance argument for the default
+    and leave `let` as legibility, which is a better reason to keep a keyword
+    than a benchmark is. It needs a local flow analysis and nothing resembling
+    a borrow checker, and it has no consumer until systems code shows the
+    proportion of `var` actually rising.
+14. Does the return type keep two spellings? `-> Type` and `: Type` are both
     accepted and the formatter already writes the first. Removing the second
     is a one-line parser change and a fixture sweep; keeping both is a
     permanent second way to say one thing.
-14. ~~Where NUL-terminated C strings are built — a language helper, or a
+15. ~~Where NUL-terminated C strings are built — a language helper, or a
    standard library function over `[]u8`?~~ Answered by M7: `std/cstring.to_c`,
    in the library. The language keeps knowing nothing about C's terminator, and
    a string that already contains a NUL is refused rather than truncated.
