@@ -1090,3 +1090,66 @@ fn an_entrypoint_is_required_of_a_program_and_optional_for_a_tool() {
     )
     .expect_err("a wrong return type is still wrong");
 }
+
+/// Apply one offered fix at a time, re-checking in between, the way an editor
+/// does: two fixes reported together are alternatives at the same point, and
+/// each one is written as if it were applied to the text that was checked.
+fn apply_fixes(source: &str) -> String {
+    let mut text = source.to_string();
+    for _ in 0..10 {
+        let Err(errors) = check(&text) else { break };
+        let Some(fix) = errors.iter().find_map(|error| error.fix.as_deref()) else {
+            break;
+        };
+        text.replace_range(fix.span.start..fix.span.end, &fix.replacement);
+    }
+    text
+}
+
+#[test]
+fn a_non_exhaustive_match_offers_the_arms_it_is_missing() {
+    let source = "enum Status {\n    Pending,\n    Active,\n    Cancelled(string)\n}\nfunc report(s: Status) {\n    match s {\n        Status.Pending: print(\"pending\")\n    }\n}\nfunc main() { report(Status.Active) }";
+    let errors = check(source).expect_err("must fail");
+    assert_eq!(errors.len(), 2, "one per uncovered variant: {errors:?}");
+    let titles: Vec<&str> = errors
+        .iter()
+        .filter_map(|error| error.fix.as_deref())
+        .map(|fix| fix.title.as_str())
+        .collect();
+    assert_eq!(
+        titles,
+        vec![
+            "add an arm for `Status.Active`",
+            // A variant with a payload binds it, since a pattern must say
+            // where the payload goes.
+            "add an arm for `Status.Cancelled(value)`"
+        ]
+    );
+    // Each arm lands inside the block, at the indentation its arms use.
+    let fixed = apply_fixes(source);
+    assert!(
+        fixed.contains(
+            "        Status.Pending: print(\"pending\")\n        Status.Active: {}\n        Status.Cancelled(value): {}\n    }"
+        ),
+        "{fixed}"
+    );
+    assert!(check(&fixed).is_ok(), "{:?}", check(&fixed));
+}
+
+#[test]
+fn a_match_on_a_result_is_offered_the_patterns_a_result_uses() {
+    let source = "func read() -> Result<int, string> { return Ok(1) }\nfunc main() {\n    match read() {\n        Ok(value): print(value)\n    }\n}";
+    let errors = check(source).expect_err("must fail");
+    let fix = errors[0].fix.as_deref().expect("an edit");
+    // `Err(e)`, not `Result.Err(e)`: a `Result` pattern names no type.
+    assert_eq!(fix.title, "add an arm for `Err(value)`");
+    let fixed = apply_fixes(source);
+    assert!(check(&fixed).is_ok(), "{fixed}\n{:?}", check(&fixed));
+}
+
+#[test]
+fn a_match_written_on_one_line_still_places_its_arm() {
+    let source = "enum Flag { On, Off }\nfunc main() {\n    match Flag.On { Flag.On: print(1) }\n}";
+    let fixed = apply_fixes(source);
+    assert!(check(&fixed).is_ok(), "{fixed}\n{:?}", check(&fixed));
+}

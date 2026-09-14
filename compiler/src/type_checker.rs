@@ -1,7 +1,7 @@
 //! Semantic checking; produces tables for a separate AST-to-HIR lowering pass.
 use crate::{
     ast::*,
-    diagnostic::{Diagnostic, DiagnosticCode},
+    diagnostic::{Diagnostic, DiagnosticCode, Fix},
     module::{Errors, FileDiagnostic, FileId, LoadedProgram, ModuleId, ROOT},
     resolver::{Builtin, Resolution, SymbolId, SymbolKind},
     span::Span,
@@ -141,6 +141,7 @@ pub(crate) fn type_check(
     let mut checker = Checker {
         symbol_types: vec![Type::Error; resolution.symbols.len()],
         resolution: &resolution,
+        files: &program.files,
         file: ROOT_FILE,
         module: ROOT,
         expressions: BTreeMap::new(),
@@ -703,6 +704,10 @@ pub(crate) fn type_check(
 
 struct Checker<'a> {
     resolution: &'a Resolution,
+    /// The program's files, for the rare diagnostic whose fix is written in
+    /// terms of the source text rather than of the syntax tree: an arm added
+    /// to a `match` has to land at the indentation the rest of the block uses.
+    files: &'a [crate::module::LoadedFile],
     /// The file being checked, and the module it belongs to. Both are part of
     /// every table key, since byte offsets repeat across files and type names
     /// repeat across modules.
@@ -826,6 +831,66 @@ impl Checker<'_> {
                 fix: None,
             },
         });
+    }
+    /// The arm that would cover a variant nothing matches, written where the
+    /// closing brace of the `match` is and indented one step past it.
+    ///
+    /// It is offered only where the pattern can be spelled from inside this
+    /// file: an enum from another module is named through the qualifier that
+    /// file imported it under, which is a fact about the file rather than
+    /// about the type, so nothing is offered there rather than a name that
+    /// does not resolve.
+    fn missing_arm(
+        &self,
+        statement: Span,
+        target: Type,
+        enum_info: &EnumInfo,
+        variant: &VariantInfo,
+    ) -> Option<Fix> {
+        // A `Result` is matched as `Ok(x)` and `Err(e)`, with no type name in
+        // front; every other enum names itself.
+        let pattern = match (target, &variant.payload) {
+            (Type::Result(_), Some(_)) => format!("{}(value)", variant.name),
+            (Type::Result(_), None) => variant.name.clone(),
+            _ if enum_info.module != self.module => return None,
+            (_, Some(_)) => format!("{}.{}(value)", enum_info.name, variant.name),
+            (_, None) => format!("{}.{}", enum_info.name, variant.name),
+        };
+        let text = &self.files[self.file.0].source;
+        // The statement ends just past its closing brace, which is what the
+        // new arm goes in front of.
+        let brace = statement.end.checked_sub(1)?;
+        if text.as_bytes().get(brace) != Some(&b'}') {
+            return None;
+        }
+        let line_start = text[..brace].rfind('\n').map_or(0, |index| index + 1);
+        // Where the closing brace opens its own line, its indentation is the
+        // block's and the arm goes one step further in. A `match` written on
+        // one line has no such line to copy, so the arm takes the statement's
+        // own indentation and opens a line of its own.
+        if text[line_start..brace].trim().is_empty() {
+            // The brace opens its own line: the arm becomes a whole line of
+            // its own in front of it, indented one step past the block.
+            let indent = &text[line_start..brace];
+            return Some(Fix::new(
+                format!("add an arm for `{pattern}`"),
+                Span::new(line_start, line_start),
+                format!("{indent}    {pattern}: {{}}\n"),
+            ));
+        }
+        // A `match` written on one line has no such line to copy, so the arm
+        // opens one, indented past the statement, and the brace follows on a
+        // line of its own.
+        let statement_line = text[..statement.start].rfind('\n').map_or(0, |i| i + 1);
+        let indent: String = text[statement_line..statement.start]
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .collect();
+        Some(Fix::new(
+            format!("add an arm for `{pattern}`"),
+            Span::new(brace, brace),
+            format!("\n{indent}    {pattern}: {{}}\n{indent}"),
+        ))
     }
     /// Record a type in the current module's namespace. Types live apart from
     /// value names, so a struct and a function may still share a spelling.
@@ -1560,14 +1625,26 @@ impl Checker<'_> {
                 if !has_wildcard {
                     for (i, is_covered) in covered.iter().enumerate() {
                         if !is_covered {
-                            self.error(
-                                DiagnosticCode::NonExhaustiveMatch,
-                                statement.span,
-                                format!(
+                            let variant = &enum_info.variants[i];
+                            let mut diagnostic = Diagnostic {
+                                code: DiagnosticCode::NonExhaustiveMatch,
+                                span: statement.span,
+                                message: format!(
                                     "non-exhaustive match: variant `{}` is not covered",
-                                    enum_info.variants[i].name
+                                    variant.name
                                 ),
-                            );
+                                help: None,
+                                fix: None,
+                            };
+                            if let Some(fix) =
+                                self.missing_arm(statement.span, target_ty, &enum_info, variant)
+                            {
+                                diagnostic = diagnostic.with_fix(fix);
+                            }
+                            self.diagnostics.push(FileDiagnostic {
+                                file: self.file,
+                                diagnostic,
+                            });
                         }
                     }
                 }
