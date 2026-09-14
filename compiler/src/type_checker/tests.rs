@@ -1242,3 +1242,19 @@ fn a_member_nothing_resembles_is_not_guessed_at() {
         .expect_err("must fail");
     assert!(errors.iter().all(|error| error.fix.is_none()), "{errors:?}");
 }
+
+#[test]
+fn a_missing_field_is_named_with_the_type_it_wants() {
+    let errors = check(
+        "class User {\n    name: string\n    age: int\n    active: bool = true\n}\nfunc main() {\n    let u = new User(name: \"a\")\n    print(u.name)\n}",
+    )
+    .expect_err("must fail");
+    let diagnostic = &errors[0];
+    assert_eq!(diagnostic.code, DiagnosticCode::MissingField);
+    // `active` has a default and is not missing; `age` has none.
+    assert_eq!(diagnostic.message, "`User` is missing `age`");
+    assert_eq!(diagnostic.help.as_deref(), Some("give it `age: int`"));
+    // No fix: which value goes there is the one thing the compiler does not
+    // know, and Skuld has no zero value to stand in for it.
+    assert!(diagnostic.fix.is_none());
+}

@@ -2035,18 +2035,38 @@ impl Checker<'_> {
             .iter()
             .zip(&initialized)
             .filter(|(field, done)| !**done && field.default.is_none())
-            .map(|(field, _)| format!("`{}`", field.name))
+            .map(|(field, _)| (field.name.clone(), field.ty))
             .collect();
         if !missing.is_empty() {
-            self.error(
-                DiagnosticCode::MissingField,
-                name.span,
-                format!(
+            let names: Vec<String> = missing
+                .iter()
+                .map(|(field, _)| format!("`{field}`"))
+                .collect();
+            // The types come with the names, because the next thing the
+            // reader does is write a value of each. There is no fix here and
+            // there should not be: what the values are is the one thing the
+            // compiler does not know, and Skuld has no zero value to put in
+            // their place.
+            let shape: Vec<String> = missing
+                .iter()
+                .map(|(field, ty)| format!("`{field}: {}`", self.type_name(*ty)))
+                .collect();
+            let mut diagnostic = Diagnostic {
+                code: DiagnosticCode::MissingField,
+                span: name.span,
+                message: format!(
                     "`{}` is missing {}",
                     self.structs[id.0].name,
-                    missing.join(", ")
+                    names.join(", ")
                 ),
-            );
+                help: None,
+                fix: None,
+            };
+            diagnostic.help = Some(format!("give it {}", shape.join(", ")));
+            self.diagnostics.push(FileDiagnostic {
+                file: self.file,
+                diagnostic,
+            });
         }
         Type::Struct(id)
     }
