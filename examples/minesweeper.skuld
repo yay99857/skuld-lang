@@ -1,0 +1,380 @@
+// `minesweeper` — Campo Minado jogável no terminal, escrito em Skuld.
+//
+// O programa mostra o que a linguagem já dá conta sozinha: classes com
+// semântica de referência para o tabuleiro, arrays dinâmicos como grade
+// achatada, `Option` para uma leitura que pode acabar, `enum` e `match` para
+// o comando digitado, e `std/strings` para separar a linha.
+//
+// Duas coisas que a linguagem não tem ainda chegam pelo `extern "C"` do
+// próprio programa, que é onde uma decisão dessas pertence: `read` traz a
+// linha digitada — `print` escreve, nada lê — e `time` dá a semente, já que
+// Skuld não tem fonte de aleatoriedade. Nenhum valor gerenciado atravessa a
+// fronteira: `read` preenche bytes que o programa já possui.
+//
+//     skuld run examples/minesweeper.skuld
+//     skuld build examples/minesweeper.skuld && ./minesweeper
+
+import "std/os"
+import "std/strings"
+
+unsafe extern "C" {
+    func read(handle: i32, buffer: *u8, count: u64) -> i64
+    func time(out: *u8) -> i64
+}
+
+// O que o jogador pediu. Uma linha vazia não é erro: é só um enter.
+enum Command {
+    Reveal(int),
+    Flag(int),
+    Nothing,
+    Quit,
+    Unknown(string),
+}
+
+// Um gerador linear congruente. Os fatores são pequenos de propósito: a
+// aritmética de `int` trava em estouro, então o estado fica abaixo de 2^31 e
+// o produto cabe com folga em i64.
+class Random {
+    state: int
+
+    next() -> int {
+        this.state = (this.state * 1103515245 + 12345) % 2147483648
+        return this.state
+    }
+
+    below(limit: int) -> int {
+        return this.next() % limit
+    }
+}
+
+func seeded() -> Random {
+    var bytes: []u8 = []
+    var index = 0
+    while index < 8 {
+        bytes.push(0)
+        index += 1
+    }
+    let now = time(ptr(bytes))
+    return new Random(state: int(now % 2147483648))
+}
+
+class Board {
+    width: int
+    height: int
+    mines: int
+    // Grade achatada: `y * width + x`. Um array de arrays guardaria a mesma
+    // coisa e cobraria uma indireção por linha.
+    mine: []bool = []
+    shown: []bool = []
+    flag: []bool = []
+    around: []int = []
+    placed: bool = false
+    lost: bool = false
+    revealed: int = 0
+
+    prepare() {
+        var index = 0
+        while index < this.width * this.height {
+            this.mine.push(false)
+            this.shown.push(false)
+            this.flag.push(false)
+            this.around.push(0)
+            index += 1
+        }
+    }
+
+    inside(x: int, y: int) -> bool {
+        return x >= 0 && x < this.width && y >= 0 && y < this.height
+    }
+
+    // As minas só são sorteadas depois da primeira jogada, e nunca ao redor
+    // dela: a primeira casa aberta é sempre segura.
+    place(safe: int, random: Random) {
+        let safe_x = safe % this.width
+        let safe_y = safe / this.width
+        var left = this.mines
+        while left > 0 {
+            let x = random.below(this.width)
+            let y = random.below(this.height)
+            let index = y * this.width + x
+            let near = x >= safe_x - 1 && x <= safe_x + 1 && y >= safe_y - 1 && y <= safe_y + 1
+            if !this.mine[index] && !near {
+                this.mine[index] = true
+                left -= 1
+            }
+        }
+        var y = 0
+        while y < this.height {
+            var x = 0
+            while x < this.width {
+                this.around[y * this.width + x] = this.count_near(x, y)
+                x += 1
+            }
+            y += 1
+        }
+        this.placed = true
+    }
+
+    count_near(x: int, y: int) -> int {
+        var total = 0
+        var dy = -1
+        while dy <= 1 {
+            var dx = -1
+            while dx <= 1 {
+                if this.inside(x + dx, y + dy) && this.mine[(y + dy) * this.width + x + dx] {
+                    total += 1
+                }
+                dx += 1
+            }
+            dy += 1
+        }
+        return total
+    }
+
+    // Abrir uma casa vazia abre a vizinhança inteira, e o mesmo vale para
+    // cada vizinha vazia. A fila evita recursão: um tabuleiro grande abriria
+    // milhares de quadros aninhados.
+    reveal(start: int, random: Random) {
+        if !this.placed {
+            this.place(start, random)
+        }
+        if this.flag[start] || this.shown[start] {
+            return
+        }
+        if this.mine[start] {
+            this.lost = true
+            return
+        }
+        var pending: []int = [start]
+        while pending.len() > 0 {
+            let index = pending.pop() else {
+                break
+            }
+            if !this.shown[index] && !this.flag[index] {
+                this.shown[index] = true
+                this.revealed += 1
+                if this.around[index] == 0 {
+                    let x = index % this.width
+                    let y = index / this.width
+                    var dy = -1
+                    while dy <= 1 {
+                        var dx = -1
+                        while dx <= 1 {
+                            if this.inside(x + dx, y + dy) {
+                                let next = (y + dy) * this.width + x + dx
+                                if !this.shown[next] && !this.mine[next] {
+                                    pending.push(next)
+                                }
+                            }
+                            dx += 1
+                        }
+                        dy += 1
+                    }
+                }
+            }
+        }
+    }
+
+    toggle(index: int) {
+        if this.shown[index] {
+            return
+        }
+        this.flag[index] = !this.flag[index]
+    }
+
+    won() -> bool {
+        return this.revealed == this.width * this.height - this.mines
+    }
+
+    flags() -> int {
+        var total = 0
+        var index = 0
+        while index < this.flag.len() {
+            if this.flag[index] {
+                total += 1
+            }
+            index += 1
+        }
+        return total
+    }
+
+    face(index: int) -> string {
+        if this.lost && this.mine[index] {
+            return "*"
+        }
+        if this.flag[index] {
+            return "F"
+        }
+        if !this.shown[index] {
+            return "."
+        }
+        if this.around[index] == 0 {
+            return " "
+        }
+        return "${this.around[index]}"
+    }
+
+    draw() {
+        var header = "    "
+        var x = 0
+        while x < this.width {
+            header = header + "${x} "
+            x += 1
+        }
+        print(header)
+        var y = 0
+        while y < this.height {
+            var line = "${y}"
+            if y < 10 {
+                line = " " + line
+            }
+            line = line + "  "
+            var column = 0
+            while column < this.width {
+                line = line + this.face(y * this.width + column) + " "
+                column += 1
+            }
+            print(line)
+            y += 1
+        }
+        print("")
+        print("minas: ${this.mines}   bandeiras: ${this.flags()}")
+    }
+}
+
+// Uma linha digitada, sem o `\n`. Ausente quando a entrada terminou: o
+// jogador apertou Ctrl-D ou o programa está lendo de um arquivo que acabou.
+func read_line() -> Option<string> {
+    var bytes: []u8 = []
+    var one: []u8 = [0]
+    loop {
+        let got = read(0, ptr(one), u64(1))
+        if got <= 0 {
+            if bytes.len() == 0 {
+                return null
+            }
+            break
+        }
+        if one[0] == 10 {
+            break
+        }
+        if one[0] != 13 {
+            bytes.push(one[0])
+        }
+    }
+    let text = bytes_to_string(bytes) else problem {
+        return ""
+    }
+    return text
+}
+
+func parse_int(text: string) -> Option<int> {
+    if text.len() == 0 {
+        return null
+    }
+    var total = 0
+    var index = 0
+    while index < text.len() {
+        let digit = text[index]
+        if digit < 48 || digit > 57 {
+            return null
+        }
+        total = total * 10 + int(digit - 48)
+        index += 1
+    }
+    return total
+}
+
+// Separar por espaço deixa vazios onde o jogador digitou dois; a grade só
+// quer as palavras.
+func words(line: string) -> []string {
+    var found: []string = []
+    let parts = strings.split(strings.trim(line), " ")
+    for part in parts {
+        if part.len() > 0 {
+            found.push(part)
+        }
+    }
+    return found
+}
+
+func understand(line: string, board: Board) -> Command {
+    let parts = words(line)
+    if parts.len() == 0 {
+        return Command.Nothing
+    }
+    let verb = parts[0]
+    if verb == "q" || verb == "sair" {
+        return Command.Quit
+    }
+    if parts.len() != 3 {
+        return Command.Unknown(line)
+    }
+    let x = parse_int(parts[1]) else {
+        return Command.Unknown(line)
+    }
+    let y = parse_int(parts[2]) else {
+        return Command.Unknown(line)
+    }
+    if !board.inside(x, y) {
+        return Command.Unknown("${x} ${y} está fora do tabuleiro")
+    }
+    let index = y * board.width + x
+    if verb == "r" || verb == "a" {
+        return Command.Reveal(index)
+    }
+    if verb == "f" || verb == "b" {
+        return Command.Flag(index)
+    }
+    return Command.Unknown(line)
+}
+
+func rules() {
+    print("Campo Minado em Skuld")
+    print("")
+    print("  r x y   abre a casa da coluna x, linha y")
+    print("  f x y   marca ou desmarca uma bandeira")
+    print("  q       sai")
+    print("")
+}
+
+func main() {
+    let board = new Board(width: 9, height: 9, mines: 10)
+    board.prepare()
+    let random = seeded()
+    rules()
+    board.draw()
+    loop {
+        print("")
+        os.flush()
+        let line = read_line() else {
+            print("Até a próxima.")
+            return
+        }
+        match understand(line, board) {
+            Command.Quit: {
+                print("Até a próxima.")
+                return
+            }
+            Command.Nothing: continue
+            Command.Unknown(what): {
+                print("Não entendi: ${what}")
+                continue
+            }
+            Command.Reveal(index): board.reveal(index, random)
+            Command.Flag(index): board.toggle(index)
+        }
+        print("")
+        board.draw()
+        if board.lost {
+            print("")
+            print("Você pisou numa mina. Fim de jogo.")
+            return
+        }
+        if board.won() {
+            print("")
+            print("Todas as casas seguras abertas. Você venceu!")
+            return
+        }
+    }
+}
