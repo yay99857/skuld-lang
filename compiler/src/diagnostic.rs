@@ -161,6 +161,37 @@ impl Diagnostic {
     }
 }
 
+/// Edit distance counting a swap of two neighbours as one mistake, because
+/// `buidl` for `build` is one slip of the fingers and not two.
+///
+/// It lives here rather than in the CLI because both callers are suggesting a
+/// name a person meant to write: the CLI over its subcommands, and the
+/// resolver over the names in scope.
+pub fn edit_distance(left: &str, right: &str) -> usize {
+    let left: Vec<char> = left.chars().collect();
+    let right: Vec<char> = right.chars().collect();
+    let mut rows = vec![vec![0_usize; right.len() + 1]; left.len() + 1];
+    for (i, row) in rows.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in rows[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=left.len() {
+        for j in 1..=right.len() {
+            let cost = usize::from(left[i - 1] != right[j - 1]);
+            let mut best = (rows[i - 1][j - 1] + cost)
+                .min(rows[i - 1][j] + 1)
+                .min(rows[i][j - 1] + 1);
+            if i > 1 && j > 1 && left[i - 1] == right[j - 2] && left[i - 2] == right[j - 1] {
+                best = best.min(rows[i - 2][j - 2] + 1);
+            }
+            rows[i][j] = best;
+        }
+    }
+    rows[left.len()][right.len()]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

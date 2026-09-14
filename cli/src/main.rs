@@ -251,37 +251,10 @@ fn nearest_command(given: &str) -> Option<&'static str> {
     Action::NAMES
         .iter()
         .map(|(name, _)| *name)
-        .map(|name| (edit_distance(given, name), name))
+        .map(|name| (skuld_compiler::diagnostic::edit_distance(given, name), name))
         .filter(|(distance, _)| *distance <= allowed)
         .min_by_key(|(distance, _)| *distance)
         .map(|(_, name)| name)
-}
-
-/// Edit distance counting a swap of two neighbours as one mistake, because
-/// `buidl` for `build` is one slip of the fingers and not two.
-fn edit_distance(left: &str, right: &str) -> usize {
-    let left: Vec<char> = left.chars().collect();
-    let right: Vec<char> = right.chars().collect();
-    let mut rows = vec![vec![0_usize; right.len() + 1]; left.len() + 1];
-    for (i, row) in rows.iter_mut().enumerate() {
-        row[0] = i;
-    }
-    for (j, cell) in rows[0].iter_mut().enumerate() {
-        *cell = j;
-    }
-    for i in 1..=left.len() {
-        for j in 1..=right.len() {
-            let cost = usize::from(left[i - 1] != right[j - 1]);
-            let mut best = (rows[i - 1][j - 1] + cost)
-                .min(rows[i - 1][j] + 1)
-                .min(rows[i][j - 1] + 1);
-            if i > 1 && j > 1 && left[i - 1] == right[j - 2] && left[i - 2] == right[j - 1] {
-                best = best.min(rows[i - 2][j - 2] + 1);
-            }
-            rows[i][j] = best;
-        }
-    }
-    rows[left.len()][right.len()]
 }
 
 fn main() -> ExitCode {
@@ -757,12 +730,27 @@ mod tests {
 
     #[test]
     fn a_swap_of_two_letters_is_one_mistake() {
-        assert_eq!(edit_distance("build", "build"), 0);
-        assert_eq!(edit_distance("buidl", "build"), 1);
-        assert_eq!(edit_distance("biuld", "build"), 1);
-        assert_eq!(edit_distance("bild", "build"), 1);
-        assert_eq!(edit_distance("", "run"), 3);
-        assert_eq!(edit_distance("emit-c", "emit-c"), 0);
+        assert_eq!(
+            skuld_compiler::diagnostic::edit_distance("build", "build"),
+            0
+        );
+        assert_eq!(
+            skuld_compiler::diagnostic::edit_distance("buidl", "build"),
+            1
+        );
+        assert_eq!(
+            skuld_compiler::diagnostic::edit_distance("biuld", "build"),
+            1
+        );
+        assert_eq!(
+            skuld_compiler::diagnostic::edit_distance("bild", "build"),
+            1
+        );
+        assert_eq!(skuld_compiler::diagnostic::edit_distance("", "run"), 3);
+        assert_eq!(
+            skuld_compiler::diagnostic::edit_distance("emit-c", "emit-c"),
+            0
+        );
     }
 
     #[test]
