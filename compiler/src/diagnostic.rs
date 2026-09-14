@@ -75,18 +75,57 @@ impl DiagnosticCode {
     }
 }
 
+/// An edit that makes a diagnostic go away, written by the code that reported
+/// it.
+///
+/// The `help` line next to it is prose for a person; this is for a tool. A fix
+/// only exists where the compiler knows the whole edit — the exact bytes to
+/// replace and what to put there — so applying it is never a guess. Anything
+/// the compiler can only describe stays prose.
+///
+/// The span is half-open and lives in the same file as the diagnostic's own,
+/// so an empty span is an insertion at that point and an empty replacement is
+/// a deletion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fix {
+    /// What applying it does, as an editor would offer it: "add `unsafe`".
+    pub title: String,
+    pub span: Span,
+    pub replacement: String,
+}
+
+impl Fix {
+    pub fn new(title: impl Into<String>, span: Span, replacement: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            span,
+            replacement: replacement.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub code: DiagnosticCode,
     pub message: String,
     pub span: Span,
     pub help: Option<String>,
+    /// An edit a tool may apply without asking anything else, when there is
+    /// one. Most diagnostics have none, and it is boxed because a `Diagnostic`
+    /// travels in a `Result` through the whole parser: the rare case does not
+    /// get to widen every return.
+    pub fix: Option<Box<Fix>>,
 }
 
 impl Diagnostic {
     /// Attach guidance to a diagnostic built by a helper that has none.
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
         self.help = Some(help.into());
+        self
+    }
+    /// Attach the edit that resolves it.
+    pub fn with_fix(mut self, fix: Fix) -> Self {
+        self.fix = Some(Box::new(fix));
         self
     }
     pub fn render(&self, source: &SourceFile) -> String {
@@ -133,6 +172,7 @@ mod tests {
             message: "invalid character `@`".into(),
             span: Span::new(18, 19),
             help: Some("remove it".into()),
+            fix: None,
         };
         assert_eq!(
             diagnostic.render(&source),

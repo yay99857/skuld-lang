@@ -58,6 +58,7 @@ impl Lexer<'_> {
             message: message.into(),
             span: Span::new(start, self.offset),
             help: None,
+            fix: None,
         });
     }
     /// Brace depth inside each open `${ ... }`. A `}` at depth zero ends the

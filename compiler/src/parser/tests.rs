@@ -1017,3 +1017,25 @@ fn a_field_may_carry_a_default() {
     assert!(fields[1].default.is_none());
     assert_eq!(fields[1].name.text, "age");
 }
+
+#[test]
+fn a_missing_unsafe_carries_the_edit_that_adds_it() {
+    let source = "extern \"C\" { func abs(value: i32) -> i32 }\nfunc main() {}";
+    let output = parse(source);
+    let diagnostic = output
+        .diagnostics
+        .iter()
+        .find(|d| d.code == DiagnosticCode::UnsupportedSyntax)
+        .expect("the missing marker is reported");
+    let fix = diagnostic.fix.as_ref().expect("with an edit");
+    assert_eq!(fix.title, "add `unsafe`");
+    // The edit is judged by what it produces, not by its coordinates: applying
+    // it has to leave source the parser accepts.
+    let mut fixed = source.to_string();
+    fixed.replace_range(fix.span.start..fix.span.end, &fix.replacement);
+    assert_eq!(
+        fixed,
+        "unsafe extern \"C\" { func abs(value: i32) -> i32 }\nfunc main() {}"
+    );
+    assert!(parse(&fixed).diagnostics.is_empty());
+}

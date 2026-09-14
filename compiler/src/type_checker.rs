@@ -823,6 +823,7 @@ impl Checker<'_> {
                 message: message.into(),
                 span,
                 help: None,
+                fix: None,
             },
         });
     }
@@ -2188,6 +2189,7 @@ impl Checker<'_> {
                                     name.text
                                 ),
                                 help: None,
+                                fix: None,
                             };
                             diagnostic.help = Some(if symbol.kind == SymbolKind::Parameter {
                                 "parameters are immutable; copy the value into a local `var`".into()
@@ -2277,6 +2279,7 @@ impl Checker<'_> {
                                         )
                                     },
                                     help: None,
+                                    fix: None,
                                 };
                                 if is_method {
                                     diagnostic.help =

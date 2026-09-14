@@ -354,6 +354,7 @@ impl Resolver {
                 message,
                 span,
                 help: Some(help),
+                fix: None,
             },
         });
     }

@@ -2,7 +2,7 @@
 //! Newline information is read from gaps between token spans, not lexer tokens.
 use crate::{
     ast::*,
-    diagnostic::{Diagnostic, DiagnosticCode},
+    diagnostic::{Diagnostic, DiagnosticCode, Fix},
     lexer::lex,
     span::Span,
     token::{Token, TokenKind},
@@ -93,6 +93,7 @@ impl Parser<'_> {
             message: message.into(),
             span: self.current().span,
             help: None,
+            fix: None,
         }
     }
     fn expected(&self, description: &str) -> Diagnostic {
@@ -305,6 +306,7 @@ impl Parser<'_> {
                     message: "`import` must appear before any declaration".into(),
                     span,
                     help: Some("move every `import` to the top of the file".into()),
+                    fix: None,
                 });
                 self.recover_declaration(start);
                 continue;
@@ -423,6 +425,7 @@ impl Parser<'_> {
                     "a path is one or more `/`-separated segments, each a name, as in `net/socket`"
                         .into(),
                 ),
+                fix: None,
             });
         };
         Ok(ImportDecl {
@@ -452,7 +455,15 @@ impl Parser<'_> {
                     )
                     .with_help(
                         "the compiler cannot check a foreign signature against the linked library, so the declaration is marked unsafe",
-                    );
+                    )
+                    // The word goes in front of `extern`, and nothing else
+                    // about the block changes: an insertion is an edit over
+                    // an empty span.
+                    .with_fix(Fix::new(
+                        "add `unsafe`",
+                        Span::new(self.current().span.start, self.current().span.start),
+                        "unsafe ",
+                    ));
                 self.diagnostics.push(diagnostic);
                 self.current().span.start
             }
@@ -469,6 +480,7 @@ impl Parser<'_> {
                 message: format!("unsupported ABI `{abi}`; only `\"C\"` is supported"),
                 span: abi_token.span,
                 help: None,
+                fix: None,
             });
         }
         self.expect(&TokenKind::LeftBrace, "`{` to begin the extern block")?;
@@ -1174,6 +1186,7 @@ impl Parser<'_> {
                         span: name.span,
                         message: "cannot bind to `null` or `None` in an if-let pattern".into(),
                         help: None,
+                        fix: None,
                     });
                 }
                 (IfLetPattern::Some, name)
@@ -1493,6 +1506,7 @@ impl Parser<'_> {
                     message: "assignment target must be a variable or member".into(),
                     span: left.span,
                     help: None,
+                    fix: None,
                 });
             }
             let right = self.expression_bp(right_bp)?;

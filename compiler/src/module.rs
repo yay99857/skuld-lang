@@ -228,6 +228,7 @@ impl Loader {
                                 "`{first}` ends in the same segment, and a module is \
                                  spelled by its last one; import only one of them here"
                             )),
+                            fix: None,
                         },
                     });
                     continue;
@@ -277,6 +278,7 @@ impl Loader {
                         message: format!("module `{path}` contains no `.skuld` files"),
                         span,
                         help: Some("a module is a directory of source files".into()),
+                        fix: None,
                     },
                 });
                 return None;
@@ -298,6 +300,7 @@ impl Loader {
                         message: format!("cannot import `{path}`: {reason}"),
                         span,
                         help: Some(help),
+                        fix: None,
                     },
                 });
                 return None;
@@ -363,6 +366,7 @@ impl Loader {
                                     "move the shared declarations into a module both can import"
                                         .into(),
                                 ),
+                                fix: None,
                             },
                         });
                     }
