@@ -394,6 +394,6 @@ candidates listed there — general generics and self-hosting among them — eac
 need an explicit decision first.
 Status is reported as completed milestones, not as a completion percentage, and
 implies no production readiness. Performance is measured in
-[BENCHMARKS.md](BENCHMARKS.md): between 1.2x and 3.8x the faster of Rust and Go
+[BENCHMARKS.md](BENCHMARKS.md): between 1.3x and 2.2x the faster of Rust and Go
 across five workloads on one machine, which is evidence for the range the
 project aimed at and not a promised ratio.

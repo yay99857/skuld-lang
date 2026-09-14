@@ -456,7 +456,7 @@ accurate; documenting a future feature is not a request to implement it.
   coordinates. Order is the usual one: written arguments first, left to right,
   then the defaults of the fields nobody wrote, in declaration order.
 - Performance is measured, not asserted. `tests/bench/` holds the programs and
-  `run.sh`, `BENCHMARKS.md` the report: between 1.2x and 3.8x the faster of
+  `run.sh`, `BENCHMARKS.md` the report: between 1.3x and 2.2x the faster of
   Rust and Go across five workloads, faster than Go on two — the spread moved
   once already, when measuring found that every read of a managed local was
   taking a counted copy of it. A benchmark is a
