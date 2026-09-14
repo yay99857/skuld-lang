@@ -6,7 +6,7 @@
 //! different things without seeing each other's imports.
 use crate::{
     ast::*,
-    diagnostic::{Diagnostic, DiagnosticCode},
+    diagnostic::{Diagnostic, DiagnosticCode, Fix, edit_distance},
     module::{FileDiagnostic, FileId, LoadedProgram, ModuleId},
     span::Span,
     types::IntType,
@@ -438,6 +438,27 @@ impl Resolver {
             self.capture(id, name.span);
             return;
         }
+        // A name one slip away from one that is in scope is a typo, and the
+        // whole edit is known: replace what was written with what was meant.
+        if let Some(meant) = self.nearest_in_scope(&name.text) {
+            let diagnostic = Diagnostic {
+                code: DiagnosticCode::UnknownName,
+                span: name.span,
+                message: format!("unknown identifier `{}`", name.text),
+                help: Some(format!("did you mean `{meant}`?")),
+                fix: None,
+            }
+            .with_fix(Fix::new(
+                format!("change to `{meant}`"),
+                name.span,
+                meant.clone(),
+            ));
+            self.diagnostics.push(FileDiagnostic {
+                file: self.file,
+                diagnostic,
+            });
+            return;
+        }
         // A field default is written inside a type but runs where the object
         // is being made, so the two names a reader reaches for first — `this`
         // and a sibling field — are exactly the ones that are not there.
@@ -453,12 +474,53 @@ impl Resolver {
             help.into(),
         );
     }
+    /// The name a misspelling most likely meant, over every scope from here
+    /// outwards — which is the same set `lookup` searches, so a suggestion is
+    /// never a name the use could not have reached.
+    fn nearest_in_scope(&self, written: &str) -> Option<String> {
+        let mut visible = Vec::new();
+        let mut scope = Some(self.current);
+        while let Some(id) = scope {
+            let current = &self.result.scopes[id.0];
+            visible.extend(current.symbols.keys().map(String::as_str));
+            scope = current.parent;
+        }
+        nearest(written, visible.into_iter())
+    }
     /// The right half of `module.name`. A module's scope is not an enclosing
     /// scope of the importing file, so this looks in exactly one place rather
     /// than walking parents, and the name has to be exported to be found.
     fn module_member(&mut self, module: ModuleId, qualifier: &Name, name: &Name) {
         let scope = self.result.module_scopes[module.0];
         let Some(symbol) = self.result.scopes[scope.0].symbols.get(&name.text).copied() else {
+            // A module's scope is one place rather than a chain, so the
+            // candidates are exactly its public names.
+            let exported = self.result.scopes[scope.0]
+                .symbols
+                .iter()
+                .filter(|(_, symbol)| {
+                    self.result.symbols[symbol.0].visibility == Visibility::Public
+                })
+                .map(|(name, _)| name.as_str());
+            if let Some(meant) = nearest(&name.text, exported) {
+                let diagnostic = Diagnostic {
+                    code: DiagnosticCode::UnknownName,
+                    span: name.span,
+                    message: format!("module `{}` declares no `{}`", qualifier.text, name.text),
+                    help: Some(format!("did you mean `{}.{meant}`?", qualifier.text)),
+                    fix: None,
+                }
+                .with_fix(Fix::new(
+                    format!("change to `{meant}`"),
+                    name.span,
+                    meant.clone(),
+                ));
+                self.diagnostics.push(FileDiagnostic {
+                    file: self.file,
+                    diagnostic,
+                });
+                return;
+            }
             self.error(
                 DiagnosticCode::UnknownName,
                 name.span,
@@ -695,6 +757,18 @@ impl Resolver {
             }
         }
     }
+}
+
+/// The candidate a misspelling most likely meant, if one is close enough to be
+/// a slip rather than a different word. A short name gets a stricter budget: at
+/// two mistakes, `x` reaches every other short name there is.
+fn nearest<'a>(written: &str, candidates: impl Iterator<Item = &'a str>) -> Option<String> {
+    let allowed = if written.chars().count() <= 3 { 1 } else { 2 };
+    candidates
+        .map(|candidate| (edit_distance(written, candidate), candidate))
+        .filter(|(distance, _)| *distance <= allowed)
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, candidate)| candidate.to_string())
 }
 
 #[cfg(test)]

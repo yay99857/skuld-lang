@@ -462,3 +462,69 @@ fn a_module_qualifier_is_shadowed_by_a_local_binding() {
     );
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
 }
+
+#[test]
+fn a_misspelt_name_suggests_the_one_in_scope_and_carries_the_edit() {
+    let source = "func main() {\n    let total = 1\n    print(totla)\n}";
+    let result = output(source);
+    let diagnostic = &result.diagnostics[0].diagnostic;
+    assert_eq!(diagnostic.code, DiagnosticCode::UnknownName);
+    assert_eq!(diagnostic.help.as_deref(), Some("did you mean `total`?"));
+    let fix = diagnostic.fix.as_ref().expect("the whole edit is known");
+    let mut fixed = source.to_string();
+    fixed.replace_range(fix.span.start..fix.span.end, &fix.replacement);
+    assert_eq!(
+        fixed,
+        "func main() {\n    let total = 1\n    print(total)\n}"
+    );
+    assert!(output(&fixed).diagnostics.is_empty());
+}
+
+#[test]
+fn a_name_nothing_in_scope_resembles_is_not_guessed_at() {
+    // Two mistakes is the budget, and `elephant` is further than that from
+    // every name here, prelude included.
+    let result = output("func main() {\n    let total = 1\n    print(elephant)\n}");
+    let diagnostic = &result.diagnostics[0].diagnostic;
+    assert_eq!(diagnostic.code, DiagnosticCode::UnknownName);
+    assert!(diagnostic.fix.is_none());
+    assert!(
+        diagnostic
+            .help
+            .as_deref()
+            .is_some_and(|help| help.contains("check the spelling"))
+    );
+}
+
+#[test]
+fn a_misspelt_export_suggests_a_name_the_module_actually_exports() {
+    let result = program(
+        "import \"lib\"\nfunc main() { print(lib.exportd()) }",
+        &[(
+            "lib",
+            "lib/l.skuld",
+            "pub func exported() -> int { return 1 }\nfunc hidden() -> int { return 2 }",
+        )],
+    );
+    let diagnostic = &result.diagnostics[0].diagnostic;
+    assert_eq!(diagnostic.code, DiagnosticCode::UnknownName);
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("did you mean `lib.exported`?")
+    );
+    let fix = diagnostic.fix.as_ref().expect("the whole edit is known");
+    assert_eq!(fix.replacement, "exported");
+}
+
+#[test]
+fn a_private_name_is_not_offered_as_a_suggestion() {
+    // `hiddn` is one mistake from `hidden`, which the module does not export:
+    // suggesting it would send the reader to a name they cannot write.
+    let result = program(
+        "import \"lib\"\nfunc main() { print(lib.hiddn()) }",
+        &[("lib", "lib/l.skuld", "func hidden() -> int { return 1 }")],
+    );
+    let diagnostic = &result.diagnostics[0].diagnostic;
+    assert_eq!(diagnostic.code, DiagnosticCode::UnknownName);
+    assert!(diagnostic.fix.is_none());
+}
