@@ -53,6 +53,18 @@ fn precedence_and_associativity() {
         ("a <= b", "(a LessEqual b)"),
         ("a > b", "(a Greater b)"),
         ("a -= b /= 2", "(a Subtract (b Divide 2))"),
+        ("low | high << 8", "(low BitOr (high ShiftLeft 8))"),
+        ("flags & mask >> 16", "(flags BitAnd (mask ShiftRight 16))"),
+        (
+            "a | b ^ c & d << e + f * -g",
+            "(a BitOr (b BitXor (c BitAnd (d ShiftLeft (e Add (f Multiply (Negative g)))))))",
+        ),
+        ("a & b == 0", "((a BitAnd b) Equal 0)"),
+        ("~a & b", "((BitNot a) BitAnd b)"),
+        (
+            "a &= b |= c ^= d <<= e >>= 1",
+            "(a BitAnd (b BitOr (c BitXor (d ShiftLeft (e ShiftRight 1)))))",
+        ),
     ] {
         assert_eq!(shape(&expr(source)), expected, "{source}");
     }
@@ -1038,4 +1050,12 @@ fn a_missing_unsafe_carries_the_edit_that_adds_it() {
         "unsafe extern \"C\" { func abs(value: i32) -> i32 }\nfunc main() {}"
     );
     assert!(parse(&fixed).diagnostics.is_empty());
+}
+
+#[test]
+fn nested_generics_close_with_greater_greater() {
+    let parsed = program(
+        "func main() {\n    var x: Option<Result<int, string>> = None\n    var y: Option<Option<Option<int>>> = None\n    var z: Option<Option<int>>=None\n}",
+    );
+    assert_eq!(parsed.functions[0].body.statements.len(), 3);
 }

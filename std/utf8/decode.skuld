@@ -7,11 +7,11 @@
 
 pub enum Utf8Error {
     // Each payload is the byte offset where the faulty sequence starts.
-    Truncated(int)
-    Overlong(int)
-    Surrogate(int)
-    TooLarge(int)
-    Invalid(int)
+    Truncated(int),
+    Overlong(int),
+    Surrogate(int),
+    TooLarge(int),
+    Invalid(int),
 }
 
 pub func describe(error: Utf8Error) -> string {
@@ -44,19 +44,19 @@ pub func validate(bytes: []u8) -> Result<int, Utf8Error> {
         let first = int(bytes[index])
         var width = 0
         var value = 0
-        if first < 128 {
+        if first < 0x80 {
             width = 1
             value = first
-        } else if first >= 194 && first < 224 {
-            // 192 and 193 can only begin an overlong two-byte sequence.
+        } else if first >= 0xC2 && first < 0xE0 {
+            // 0xC0 and 0xC1 can only begin an overlong two-byte sequence.
             width = 2
-            value = first - 192
-        } else if first >= 224 && first < 240 {
+            value = first & 0x1F
+        } else if first >= 0xE0 && first < 0xF0 {
             width = 3
-            value = first - 224
-        } else if first >= 240 && first < 245 {
+            value = first & 0x0F
+        } else if first >= 0xF0 && first < 0xF5 {
             width = 4
-            value = first - 240
+            value = first & 0x07
         } else {
             return Err(Utf8Error.Invalid(index))
         }
@@ -66,22 +66,22 @@ pub func validate(bytes: []u8) -> Result<int, Utf8Error> {
         var k = 1
         while k < width {
             let continuation = int(bytes[index + k])
-            if continuation < 128 || continuation >= 192 {
+            if continuation & 0xC0 != 0x80 {
                 return Err(Utf8Error.Truncated(index))
             }
-            value = value * 64 + (continuation - 128)
+            value = (value << 6) | (continuation & 0x3F)
             k += 1
         }
-        if width == 3 && value < 2048 {
+        if width == 3 && value < 0x800 {
             return Err(Utf8Error.Overlong(index))
         }
-        if width == 4 && value < 65536 {
+        if width == 4 && value < 0x10000 {
             return Err(Utf8Error.Overlong(index))
         }
-        if value >= 55296 && value < 57344 {
+        if value >= 0xD800 && value < 0xE000 {
             return Err(Utf8Error.Surrogate(index))
         }
-        if value > 1114111 {
+        if value > 0x10FFFF {
             return Err(Utf8Error.TooLarge(index))
         }
         index += width

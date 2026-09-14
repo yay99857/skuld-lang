@@ -1,0 +1,81 @@
+func crc32(data: []u8) -> u32 {
+    var crc: u32 = 0xFFFF_FFFF
+    var i = 0
+    while i < data.len() {
+        crc = crc ^ u32(data[i])
+        var bit = 0
+        while bit < 8 {
+            if (crc & 1) != 0 {
+                crc = (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc = crc >> 1
+            }
+            bit += 1
+        }
+        i += 1
+    }
+    return crc ^ 0xFFFF_FFFF
+}
+
+func fnv1a_32(data: []u8) -> u32 {
+    var hash: u64 = 0x811C_9DC5
+    var i = 0
+    while i < data.len() {
+        hash = hash ^ u64(data[i])
+        hash = (hash * 0x0100_0193) & 0xFFFF_FFFF
+        i += 1
+    }
+    return u32(hash)
+}
+
+func main() {
+    // 1. CRC32
+    print(crc32("".bytes()))
+    print(crc32("123456789".bytes()))
+    print(crc32("The quick brown fox jumps over the lazy dog".bytes()))
+
+    // 2. FNV-1a 32-bit
+    print(fnv1a_32("".bytes()))
+    print(fnv1a_32("a".bytes()))
+    print(fnv1a_32("foobar".bytes()))
+
+    // 3. Literals in various bases and separators
+    let bin = 0b1010_1011
+    let oct = 0o755
+    let hex: u32 = 0xCAFE_BABE
+    let dec = 1_000_000
+    print(bin)
+    print(oct)
+    print(hex)
+    print(dec)
+
+    // 4. Bitwise NOT
+    let all_ones: u32 = ~0
+    let not_byte: u8 = ~0x0F
+    let not_int: int = ~0
+    print(all_ones)
+    print(not_byte)
+    print(not_int)
+
+    // 5. Logical shift (unsigned) vs Arithmetic shift (signed)
+    let unsigned_val: u32 = 0x8000_0000
+    print(unsigned_val >> 1)
+
+    let signed_val: i32 = -8
+    print(signed_val >> 1)
+    print(signed_val >> 2)
+
+    // 6. Compound assignments
+    var flags: u32 = 0b0001
+    flags |= 0b0010
+    flags |= 0b0100
+    print(flags)
+    flags &= ~0b0010
+    print(flags)
+    flags ^= 0b1001
+    print(flags)
+    flags <<= 3
+    print(flags)
+    flags >>= 2
+    print(flags)
+}

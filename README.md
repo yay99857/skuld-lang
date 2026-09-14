@@ -380,23 +380,23 @@ M8 (function values and stable sorting), M9 (blocking TCP, HTTP and JSON)
 and M10 (class interfaces) are also implemented, as is `let ... else`.
 M11 (the official formatter, `skuld fmt`), M12 (LSP refactoring), M13 (local
 CLI applications and `skuld test`), M14 (field defaults), M15 (a string-keyed
-map), M16 (host names and system error reasons), M17 (verified HTTPS) and M18
-(measured performance on two native targets) are implemented too. The LSP provides
+map), M16 (host names and system error reasons), M17 (verified HTTPS), M18
+(measured performance on two native targets), and M19 (bitwise operators,
+prefixed integer literals in hex, octal and binary, and digit separators, along
+with expression lambdas and array `to_sorted`) are implemented too. The LSP provides
 diagnostics, completion, hover, definition, find-references, rename, document
 highlights, the document outline, formatting through `skuld fmt`'s own
 formatter, signature help, inlay hints for inferred binding types and semantic
 tokens, and
 `examples/jsontool.skuld` is a multi-module native tool with its own test suite.
 
-No implementation milestone is active. The sequence [ROADMAP.md](ROADMAP.md)
-proposed first is finished, and it built an applications language; that
-document now proposes a second one, M19-M26, towards the systems language the
-project aims at: bit operators and hexadecimal literals, named constants,
-`usize`, fixed-size arrays, pointers that can be read inside `unsafe`, layout
-control, `defer`, and a freestanding mode with no runtime and no libc. Every
-one of them is proposed and none is authorized; starting one needs an explicit
-decision first, as do the older candidates listed there, general generics and
-self-hosting among them.
+No implementation milestone is active. The systems sequence [ROADMAP.md](ROADMAP.md)
+proposes continues with M20–M26, towards the systems language the project aims
+at: named constants and value patterns, `usize`, fixed-size arrays, pointers
+that can be read inside `unsafe`, layout control, `defer`, and a freestanding
+mode with no runtime and no libc. Every one of them is proposed and none is
+authorized; starting one needs an explicit decision first, as do the older
+candidates listed there, general generics and self-hosting among them.
 Status is reported as completed milestones, not as a completion percentage, and
 implies no production readiness. Performance is measured in
 [BENCHMARKS.md](BENCHMARKS.md): between 1.3x and 2.2x the faster of Rust and Go

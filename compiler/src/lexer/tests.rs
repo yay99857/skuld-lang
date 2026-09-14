@@ -91,18 +91,16 @@ fn operators_and_delimiters() {
             EqualEqual, Equal, BangEqual, Equal, Plus, Plus, PlusEqual, Eof
         ]
     );
-    // `?` never pairs with a neighbour, and `>>` is two closers, not a shift,
-    // so a nested generic type closes without any special lexer rule.
+    // `?` never pairs with a neighbour. `>>` is a shift token, which the type
+    // parser splits when closing nested generic arguments.
     assert_eq!(
         kinds("a?? >> >>="),
         vec![
             Identifier("a".into()),
             Question,
             Question,
-            Greater,
-            Greater,
-            Greater,
-            GreaterEqual,
+            GreaterGreater,
+            GreaterGreaterEqual,
             Eof
         ]
     );
@@ -183,7 +181,7 @@ fn spans_are_utf8_byte_ranges() {
 
 #[test]
 fn invalid_characters_recover() {
-    let output = lex("@ é & | ; let");
+    let output = lex("@ é ` $ ; let");
     assert_eq!(output.diagnostics.len(), 5);
     assert!(
         output
@@ -366,4 +364,64 @@ fn dot_dot_range_tokens() {
             Eof
         ]
     );
+}
+
+#[test]
+fn bitwise_and_shift_tokens() {
+    use TokenKind::*;
+    assert_eq!(
+        kinds("& | ^ ~ << >> &= |= ^= <<= >>="),
+        vec![
+            Ampersand,
+            Pipe,
+            Caret,
+            Tilde,
+            LessLess,
+            GreaterGreater,
+            AmpersandEqual,
+            PipeEqual,
+            CaretEqual,
+            LessLessEqual,
+            GreaterGreaterEqual,
+            Eof,
+        ]
+    );
+}
+
+#[test]
+fn base_integer_literals_and_separators() {
+    use TokenKind::*;
+    assert_eq!(
+        kinds("0x1A_2F 0b1010_0101 0o755 1_000_000 1_2.5_0 0XFF 0B11 0O77"),
+        vec![
+            Integer(0x1A2F),
+            Integer(0b10100101),
+            Integer(0o755),
+            Integer(1000000),
+            Float(12.5),
+            Integer(255),
+            Integer(3),
+            Integer(63),
+            Eof,
+        ]
+    );
+
+    for (source, expected_msg) in [
+        ("0x", "hexadecimal literal has no digits"),
+        ("0x_", "hexadecimal literal has no digits"),
+        ("0b", "binary literal has no digits"),
+        ("0o", "octal literal has no digits"),
+        ("0x12G", "invalid digit `G` in hexadecimal literal"),
+        ("0b102", "invalid digit `2` in binary literal"),
+        ("0o78", "invalid digit `8` in octal literal"),
+    ] {
+        let output = lex(source);
+        assert_eq!(output.diagnostics.len(), 1, "{source}");
+        assert_eq!(
+            output.diagnostics[0].code,
+            DiagnosticCode::InvalidNumber,
+            "{source}"
+        );
+        assert_eq!(output.diagnostics[0].message, expected_msg, "{source}");
+    }
 }

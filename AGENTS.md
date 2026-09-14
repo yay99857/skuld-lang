@@ -225,17 +225,20 @@ accurate; documenting a future feature is not a request to implement it.
   it, for the reason recorded below. M15 (a string-keyed map), M16 (host names
   and error detail), M17 (verified HTTPS) and M18 (measured performance and a
   second native target) are complete, each with its decision recorded below and
-  in `ROADMAP.md`. The sequence `ROADMAP.md` proposed is finished; what comes
-  next is a selection nobody has made. `ROADMAP.md` now proposes a second
-  sequence, M19–M26, towards the systems language the project says it wants:
-  bit operators and hexadecimal literals, named constants and value patterns,
-  `usize` and integer/float conversion, fixed-size arrays, pointers that can be
-  read inside `unsafe`, layout and ABI control, `defer`, and a freestanding
-  mode with no runtime and no libc. Every one of them is Planned and none is
-  authorized; each still needs an explicit decision recorded here, and three of
-  them — the lexer's `>>`, whether a readable pointer undoes the FFI's safety
-  argument, and whether the freestanding subset is the same language — are open
-  design questions in that document rather than settled shape. Two decisions
+  in `ROADMAP.md`. M19 (bits and integer literals) is complete: `&`, `|`, `^`,
+  `~`, `<<`, `>>` and compound forms `&=`, `|=`, `^=`, `<<=`, `>>=`; `0x`, `0b`,
+  `0o` literals; `_` as a digit separator in all bases; bitwise operators bind
+  tighter than comparisons; shifts trap if amount is negative or `>= width`;
+  `>>` on signed types is arithmetic and on unsigned types is logical; `>>`
+  coexists with generic type closures via a parser splitting rule, answering open
+  question 9; expression lambdas `(a, b) => expr` and array `to_sorted` were
+  also completed and tested.
+  The systems sequence `ROADMAP.md` proposes continues with M20–M26:
+  named constants and value patterns, `usize` and integer/float conversion,
+  fixed-size arrays, pointers that can be read inside `unsafe`, layout and ABI
+  control, `defer`, and a freestanding mode with no runtime and no libc.
+  Every one of them is Planned and none is authorized; each still needs an
+  explicit decision recorded here. Two decisions
   are taken there and should not be reopened by accident: M20's `const` does
   not replace `let`, since an immutable binding is what the backend reads to
   borrow a managed local instead of counting it, and M23 spells a load through

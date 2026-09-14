@@ -232,6 +232,7 @@ pub struct Lambda {
     pub parameters: Vec<LambdaParameter>,
     pub return_type: Option<TypeRef>,
     pub body: Block,
+    pub is_expression: bool,
     pub span: Span,
 }
 
@@ -456,18 +457,24 @@ pub enum UnaryOp {
     Positive,
     Negative,
     Not,
+    BitNot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
     Or,
     And,
+    BitOr,
+    BitXor,
+    BitAnd,
     Equal,
     NotEqual,
     Less,
     Greater,
     LessEqual,
     GreaterEqual,
+    ShiftLeft,
+    ShiftRight,
     Add,
     Subtract,
     Multiply,
@@ -482,4 +489,9 @@ pub enum AssignmentOp {
     Subtract,
     Multiply,
     Divide,
+    BitAnd,
+    BitOr,
+    BitXor,
+    ShiftLeft,
+    ShiftRight,
 }

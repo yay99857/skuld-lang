@@ -989,7 +989,7 @@ widths, and no wrapping arithmetic by default. Reference counting stays the
 memory model for the language that exists; the freestanding subset below is
 how a program opts out of it, not a second memory model bolted onto the first.
 
-## M19 — Bits and integer literals — Planned
+## M19 — Bits and integer literals — Implemented
 
 The floor everything else stands on. Without it Skuld cannot express the
 values a system is made of.
@@ -999,26 +999,29 @@ let flags = 0b0000_1101
 let mask: u32 = 0xFFFF_0000
 let permissions = 0o644
 let high = (value & mask) >> 16
-let set = flags | FLAG_READ
-let cleared = flags & ~FLAG_WRITE
+let set = flags | 0b0010
+let cleared = flags & ~0b0001
 ```
 
-- **In:** `&`, `|`, `^`, `~`, `<<`, `>>` and their compound forms; `0x`, `0b`
-  and `0o` literals; `_` as a digit separator in every base.
-- **Semantics to settle in the milestone:** shifts are defined at every width,
-  and a shift by more than the width is a trap rather than C's undefined
-  behaviour. `>>` on a signed type is arithmetic and on an unsigned type is
-  logical, which follows from the type and needs no second operator. Bit
-  operations never mix widths, exactly like arithmetic.
-- **Open decision — the lexer's `>>`.** Today `>>` is deliberately two closing
-  tokens so `Option<Result<int, string>>` needs no special rule. A shift
-  operator meets that head on. The cheapest answer is that the type grammar
-  closes generics one `>` at a time and the expression grammar reads `>>` as
-  one token, which is a parser rule rather than a lexer mode; that has to be
-  decided and written down.
-- **Closing marker:** `std/utf8` and `std/json` drop their arithmetic
-  workarounds for bit work, and a fixture computes a CRC32 and an FNV-1a hash
-  in pure Skuld with checked results.
+- **Implemented:** `&`, `|`, `^`, `~`, `<<`, `>>` and compound assignments `&=`,
+  `|=`, `^=`, `<<=`, `>>=`; `0x`/`0X`, `0b`/`0B` and `0o`/`0O` literals; `_` as a
+  digit separator in every base.
+- **Precedence:** Bitwise operators bind tighter than comparisons (`==`, `!=`, `<`,
+  `>`, `<=`, `>=`) to avoid C's classic precedence bug in a language where boolean
+  and integer types never mix implicitly.
+- **Semantics:** Bitwise operations work across all integer widths (`i8..i64`,
+  `u8..u64`) and never mix widths implicitly. Shifts trap at runtime with
+  "shift amount out of range" if the shift count is negative or greater than or
+  equal to the bit width of the operand. `>>` on signed integers is arithmetic;
+  `>>` on unsigned integers is logical. Signed left shift avoids C signed overflow UB.
+- **Decision taken — the lexer's `>>`:** The lexer emits `>>` (`GreaterGreater`)
+  and `>>=` (`GreaterGreaterEqual`); when closing generic type parameters, the
+  parser splits `GreaterGreater` into `Greater` (returned) and leaves `Greater`
+  in place, closing nested generics like `Option<Result<int, string>>` cleanly,
+  while expressions read `>>` as a single shift operator.
+- **Closing marker:** `std/utf8` and `std/json` dropped their arithmetic
+  workarounds in favor of bitwise masks and shifts; `tests/pass/bitwise_crc32_fnv.skuld`
+  computes CRC32 and FNV-1a hashes in pure Skuld matching standard test vectors.
 - **Out:** rotate operators, saturating or wrapping operators, and bitfield
   syntax on struct fields.
 
@@ -1288,11 +1291,11 @@ above.
    their own?~~ Answered: their own, M10. Their receiver syntax is settled with
    them: a method on a class already takes an implicit `this`, and an interface
    declares the same signature without a body, so nothing new is spelled.
-9. How does `>>` coexist with `Option<Result<int, string>>`? The lexer emits
-   two closing tokens today precisely so nested builtin generics need no rule.
-   M19 has to decide, and the cheapest answer is a parser rule — types close
-   one `>` at a time, expressions read `>>` as one operator — rather than a
-   lexer mode.
+9. ~~How does `>>` coexist with `Option<Result<int, string>>`?~~ Answered by M19:
+   The lexer emits `>>` (`GreaterGreater`) as a single token, and when parsing
+   generic type closures, the parser splits `GreaterGreater` into `Greater`
+   (returned) and leaves `Greater` in place so nested generics close cleanly,
+   while expressions read `>>` as a single shift operator.
 10. Does an `unsafe` block that can read memory undo the argument that makes
     the FFI safe? Today no pointer can be dereferenced anywhere, which is why
     a foreign signature refusing managed types is enough. M23 replaces that

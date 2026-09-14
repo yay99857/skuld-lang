@@ -1,0 +1,28 @@
+class Person {
+    name: string
+    age: int
+}
+
+func main() {
+    let numbers = [5, 3, 9, 1, 3, 7]
+    let sorted_nums = numbers.to_sorted((a, b) => a - b)
+    // Original array remains intact:
+    print(numbers[0])
+    for n in sorted_nums {
+        print(n)
+    }
+
+    // In-place sort with expression lambda:
+    var mut_nums = [4, 2, 8]
+    mut_nums.sort((a, b) => a - b)
+    for n in mut_nums {
+        print(n)
+    }
+
+    // to_sorted with managed objects (refcount and leak checking):
+    let people = [new Person(name: "charlie", age: 30), new Person(name: "alice", age: 25), new Person(name: "bob", age: 28)]
+    let sorted_people = people.to_sorted((a, b) => a.age - b.age)
+    for p in sorted_people {
+        print("${p.name} ${p.age}")
+    }
+}

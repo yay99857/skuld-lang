@@ -307,6 +307,8 @@ pub(crate) enum ArrayMethod {
     /// In place and stable, like the growth operations beside it: an array is
     /// a shared reference, so a sort that returned a new one would mislead.
     Sort,
+    /// Returns a new array that is a sorted copy of the receiver.
+    ToSorted,
     Push,
     Insert,
     Pop,
@@ -341,17 +343,23 @@ pub(crate) enum UnaryOp {
     Positive,
     Negative,
     Not,
+    BitNot,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BinaryOp {
     Or,
     And,
+    BitOr,
+    BitXor,
+    BitAnd,
     Equal,
     NotEqual,
     Less,
     Greater,
     LessEqual,
     GreaterEqual,
+    ShiftLeft,
+    ShiftRight,
     Add,
     Subtract,
     Multiply,
@@ -365,4 +373,9 @@ pub(crate) enum AssignmentOp {
     Subtract,
     Multiply,
     Divide,
+    BitAnd,
+    BitOr,
+    BitXor,
+    ShiftLeft,
+    ShiftRight,
 }

@@ -891,6 +891,26 @@ impl Emitter {
                 ));
                 String::new()
             }
+            ArrayMethod::ToSorted => {
+                let Some(Type::Function(comparator)) = first_type else {
+                    unreachable!("checked comparator")
+                };
+                let result = self.allocate(expr.ty, &format!("{array}->len"), byte);
+                self.line(&format!("for (size_t i = 0; i < {result}->len; ++i) {{"));
+                self.indent += 1;
+                let source = format!("{array}->data[i]");
+                self.line(&format!(
+                    "{result}->data[i] = {};",
+                    self.retained(element, &source)
+                ));
+                self.indent -= 1;
+                self.line("}");
+                self.line(&format!(
+                    "skuld_sort_a{}_{}({result}, {}, {byte});",
+                    id.0, comparator.0, arguments[0]
+                ));
+                result
+            }
             // Appending is its own emission rather than an insertion at the
             // end. Sharing one made the hot operation carry a move whose
             // condition is always false, and left the reader to work out that
@@ -2031,6 +2051,10 @@ impl Emitter {
                     }
                     UnaryOp::Negative => format!("(-{value})"),
                     UnaryOp::Not => format!("(!{value})"),
+                    UnaryOp::BitNot if let Type::Int(kind) = expr.ty => {
+                        format!("(({})(~{value}))", kind.c_type())
+                    }
+                    UnaryOp::BitNot => format!("(~{value})"),
                 };
                 self.temporary(expr.ty, &result)
             }
@@ -2087,6 +2111,11 @@ impl Emitter {
                         AssignmentOp::Subtract => BinaryOp::Subtract,
                         AssignmentOp::Multiply => BinaryOp::Multiply,
                         AssignmentOp::Divide => BinaryOp::Divide,
+                        AssignmentOp::BitAnd => BinaryOp::BitAnd,
+                        AssignmentOp::BitOr => BinaryOp::BitOr,
+                        AssignmentOp::BitXor => BinaryOp::BitXor,
+                        AssignmentOp::ShiftLeft => BinaryOp::ShiftLeft,
+                        AssignmentOp::ShiftRight => BinaryOp::ShiftRight,
                         AssignmentOp::Assign => unreachable!(),
                     };
                     (binary_value(op, expr.ty, &old, &value, op_span.start), true)
@@ -2161,6 +2190,8 @@ fn binary_value(op: BinaryOp, ty: Type, left: &str, right: &str, byte: usize) ->
         (Some(kind), Multiply) => Some(("mul", kind)),
         (Some(kind), Divide) => Some(("div", kind)),
         (Some(kind), Modulo) => Some(("rem", kind)),
+        (Some(kind), ShiftLeft) => Some(("shl", kind)),
+        (Some(kind), ShiftRight) => Some(("shr", kind)),
         _ => None,
     };
     if let Some((helper, kind)) = helper {
@@ -2179,6 +2210,9 @@ fn binary_value(op: BinaryOp, ty: Type, left: &str, right: &str, byte: usize) ->
         Multiply => "*",
         Divide => "/",
         Modulo => "%",
+        BitAnd => "&",
+        BitOr => "|",
+        BitXor => "^",
         Equal => "==",
         NotEqual => "!=",
         Less => "<",
@@ -2187,7 +2221,13 @@ fn binary_value(op: BinaryOp, ty: Type, left: &str, right: &str, byte: usize) ->
         GreaterEqual => ">=",
         And => "&&",
         Or => "||",
+        ShiftLeft | ShiftRight => unreachable!(),
     };
+    if let Some(kind) = ty.int_type()
+        && matches!(op, BitAnd | BitOr | BitXor)
+    {
+        return format!("(({})({left} {operator} {right}))", kind.c_type());
+    }
     format!("({left} {operator} {right})")
 }
 
@@ -2239,7 +2279,7 @@ const PRELUDE_TAIL: &str = r#"
         return r;                                                                  \
     }
 
-#define SKULD_INT_OPS_SIGNED(S, T, MIN)                                            \
+#define SKULD_INT_OPS_SIGNED(S, T, MIN, UT, BITS)                                  \
     SKULD_INT_OPS(S, T)                                                            \
     static inline T skuld_div_##S(T a, T b, size_t byte) {                         \
         if (b == 0) skuld_fail("integer division by zero", byte);                  \
@@ -2254,9 +2294,17 @@ const PRELUDE_TAIL: &str = r#"
     static inline T skuld_neg_##S(T a, size_t byte) {                              \
         if (a == MIN) skuld_fail("integer overflow", byte);                        \
         return (T)(-a);                                                            \
+    }                                                                              \
+    static inline T skuld_shl_##S(T a, T b, size_t byte) {                         \
+        if (b < 0 || b >= BITS) skuld_fail("shift amount out of range", byte);    \
+        return (T)((UT)a << b);                                                    \
+    }                                                                              \
+    static inline T skuld_shr_##S(T a, T b, size_t byte) {                         \
+        if (b < 0 || b >= BITS) skuld_fail("shift amount out of range", byte);    \
+        return (T)(a >> b);                                                        \
     }
 
-#define SKULD_INT_OPS_UNSIGNED(S, T)                                               \
+#define SKULD_INT_OPS_UNSIGNED(S, T, BITS)                                         \
     SKULD_INT_OPS(S, T)                                                            \
     static inline T skuld_div_##S(T a, T b, size_t byte) {                         \
         if (b == 0) skuld_fail("integer division by zero", byte);                  \
@@ -2265,16 +2313,24 @@ const PRELUDE_TAIL: &str = r#"
     static inline T skuld_rem_##S(T a, T b, size_t byte) {                         \
         if (b == 0) skuld_fail("integer remainder by zero", byte);                 \
         return (T)(a % b);                                                         \
+    }                                                                              \
+    static inline T skuld_shl_##S(T a, T b, size_t byte) {                         \
+        if (b >= BITS) skuld_fail("shift amount out of range", byte);              \
+        return (T)(a << b);                                                        \
+    }                                                                              \
+    static inline T skuld_shr_##S(T a, T b, size_t byte) {                         \
+        if (b >= BITS) skuld_fail("shift amount out of range", byte);              \
+        return (T)(a >> b);                                                        \
     }
 
-SKULD_INT_OPS_SIGNED(i8, int8_t, INT8_MIN)
-SKULD_INT_OPS_SIGNED(i16, int16_t, INT16_MIN)
-SKULD_INT_OPS_SIGNED(i32, int32_t, INT32_MIN)
-SKULD_INT_OPS_SIGNED(i64, int64_t, INT64_MIN)
-SKULD_INT_OPS_UNSIGNED(u8, uint8_t)
-SKULD_INT_OPS_UNSIGNED(u16, uint16_t)
-SKULD_INT_OPS_UNSIGNED(u32, uint32_t)
-SKULD_INT_OPS_UNSIGNED(u64, uint64_t)
+SKULD_INT_OPS_SIGNED(i8, int8_t, INT8_MIN, uint8_t, 8)
+SKULD_INT_OPS_SIGNED(i16, int16_t, INT16_MIN, uint16_t, 16)
+SKULD_INT_OPS_SIGNED(i32, int32_t, INT32_MIN, uint32_t, 32)
+SKULD_INT_OPS_SIGNED(i64, int64_t, INT64_MIN, uint64_t, 64)
+SKULD_INT_OPS_UNSIGNED(u8, uint8_t, 8)
+SKULD_INT_OPS_UNSIGNED(u16, uint16_t, 16)
+SKULD_INT_OPS_UNSIGNED(u32, uint32_t, 32)
+SKULD_INT_OPS_UNSIGNED(u64, uint64_t, 64)
 
 /* Conversions between widths are explicit in Skuld and trap when the value
  * does not fit. A signed source widens to int64_t and an unsigned one to

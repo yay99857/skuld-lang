@@ -184,7 +184,21 @@ impl Parser<'_> {
     /// `Option<T>=value` the lexer produced one `>=`, whose first byte closes
     /// the type; the assignment token is left behind for its normal parser.
     fn close_generic(&mut self, message: &str) -> Parsed<usize> {
-        if self.at(&TokenKind::GreaterEqual) {
+        if self.at(&TokenKind::GreaterGreater) {
+            let span = self.current().span;
+            self.tokens[self.position] = Token {
+                kind: TokenKind::Greater,
+                span: Span::new(span.start + 1, span.end),
+            };
+            Ok(span.start + 1)
+        } else if self.at(&TokenKind::GreaterGreaterEqual) {
+            let span = self.current().span;
+            self.tokens[self.position] = Token {
+                kind: TokenKind::GreaterEqual,
+                span: Span::new(span.start + 1, span.end),
+            };
+            Ok(span.start + 1)
+        } else if self.at(&TokenKind::GreaterEqual) {
             let span = self.current().span;
             self.tokens[self.position] = Token {
                 kind: TokenKind::Equal,
@@ -733,7 +747,10 @@ impl Parser<'_> {
                         return !self.newline_after(offset)
                             && matches!(
                                 self.peek_kind(offset + 1),
-                                TokenKind::LeftBrace | TokenKind::Colon | TokenKind::Arrow
+                                TokenKind::LeftBrace
+                                    | TokenKind::Colon
+                                    | TokenKind::Arrow
+                                    | TokenKind::FatArrow
                             );
                     }
                 }
@@ -1315,19 +1332,34 @@ impl Parser<'_> {
                 // without a name.
                 let start = self.current().span.start;
                 let parameters = self.lambda_parameters()?;
-                let return_type = if self.take(&TokenKind::Colon).is_some()
-                    || self.take(&TokenKind::Arrow).is_some()
+                let return_type = if self.take(&TokenKind::Arrow).is_some()
+                    || self.take(&TokenKind::Colon).is_some()
                 {
                     Some(self.type_ref()?)
                 } else {
                     None
                 };
-                let body = self.block()?;
+                let (body, is_expression) = if self.take(&TokenKind::FatArrow).is_some() {
+                    let expr = self.expression()?;
+                    let span = expr.span;
+                    let body = Block {
+                        statements: vec![Statement {
+                            kind: StatementKind::Return(Some(expr)),
+                            span,
+                        }],
+                        span,
+                    };
+                    (body, true)
+                } else {
+                    let body = self.block()?;
+                    (body, false)
+                };
                 let span = Span::new(start, body.span.end);
                 ExprKind::Lambda(Box::new(Lambda {
                     parameters,
                     return_type,
                     body,
+                    is_expression,
                     span,
                 }))
             }
@@ -1381,14 +1413,15 @@ impl Parser<'_> {
                 self.expect(&TokenKind::RightParen, "`)` after the grouped expression")?;
                 ExprKind::Group(Box::new(value))
             }
-            TokenKind::Plus | TokenKind::Minus | TokenKind::Bang => {
+            TokenKind::Plus | TokenKind::Minus | TokenKind::Bang | TokenKind::Tilde => {
                 self.bump();
                 let op = match token.kind {
                     TokenKind::Plus => UnaryOp::Positive,
                     TokenKind::Minus => UnaryOp::Negative,
-                    _ => UnaryOp::Not,
+                    TokenKind::Bang => UnaryOp::Not,
+                    _ => UnaryOp::BitNot,
                 };
-                let operand = self.expression_bp(14)?;
+                let operand = self.expression_bp(22)?;
                 ExprKind::Unary {
                     op,
                     op_span: token.span,
@@ -1539,6 +1572,11 @@ fn infix(token: &TokenKind) -> Option<(u8, u8, Infix)> {
         MinusEqual => (1, Infix::Assignment(AssignmentOp::Subtract)),
         StarEqual => (1, Infix::Assignment(AssignmentOp::Multiply)),
         SlashEqual => (1, Infix::Assignment(AssignmentOp::Divide)),
+        AmpersandEqual => (1, Infix::Assignment(AssignmentOp::BitAnd)),
+        PipeEqual => (1, Infix::Assignment(AssignmentOp::BitOr)),
+        CaretEqual => (1, Infix::Assignment(AssignmentOp::BitXor)),
+        LessLessEqual => (1, Infix::Assignment(AssignmentOp::ShiftLeft)),
+        GreaterGreaterEqual => (1, Infix::Assignment(AssignmentOp::ShiftRight)),
         OrOr => (2, Infix::Binary(BinaryOp::Or)),
         AndAnd => (4, Infix::Binary(BinaryOp::And)),
         EqualEqual => (6, Infix::Binary(BinaryOp::Equal)),
@@ -1547,11 +1585,16 @@ fn infix(token: &TokenKind) -> Option<(u8, u8, Infix)> {
         Greater => (8, Infix::Binary(BinaryOp::Greater)),
         LessEqual => (8, Infix::Binary(BinaryOp::LessEqual)),
         GreaterEqual => (8, Infix::Binary(BinaryOp::GreaterEqual)),
-        Plus => (10, Infix::Binary(BinaryOp::Add)),
-        Minus => (10, Infix::Binary(BinaryOp::Subtract)),
-        Star => (12, Infix::Binary(BinaryOp::Multiply)),
-        Slash => (12, Infix::Binary(BinaryOp::Divide)),
-        Percent => (12, Infix::Binary(BinaryOp::Modulo)),
+        Pipe => (10, Infix::Binary(BinaryOp::BitOr)),
+        Caret => (12, Infix::Binary(BinaryOp::BitXor)),
+        Ampersand => (14, Infix::Binary(BinaryOp::BitAnd)),
+        LessLess => (16, Infix::Binary(BinaryOp::ShiftLeft)),
+        GreaterGreater => (16, Infix::Binary(BinaryOp::ShiftRight)),
+        Plus => (18, Infix::Binary(BinaryOp::Add)),
+        Minus => (18, Infix::Binary(BinaryOp::Subtract)),
+        Star => (20, Infix::Binary(BinaryOp::Multiply)),
+        Slash => (20, Infix::Binary(BinaryOp::Divide)),
+        Percent => (20, Infix::Binary(BinaryOp::Modulo)),
         _ => return None,
     };
     Some((

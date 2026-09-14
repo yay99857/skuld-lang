@@ -90,14 +90,90 @@ impl Lexer<'_> {
                 continue;
             }
             self.advance();
+            if c == '<' {
+                if self.peek() == Some('<') {
+                    self.advance();
+                    if self.peek() == Some('=') {
+                        self.advance();
+                        self.emit(start, LessLessEqual);
+                    } else {
+                        self.emit(start, LessLess);
+                    }
+                    continue;
+                }
+                if self.peek() == Some('=') {
+                    self.advance();
+                    self.emit(start, LessEqual);
+                    continue;
+                }
+                self.emit(start, Less);
+                continue;
+            }
+            if c == '>' {
+                if self.peek() == Some('>') {
+                    self.advance();
+                    if self.peek() == Some('=') {
+                        self.advance();
+                        self.emit(start, GreaterGreaterEqual);
+                    } else {
+                        self.emit(start, GreaterGreater);
+                    }
+                    continue;
+                }
+                if self.peek() == Some('=') {
+                    self.advance();
+                    self.emit(start, GreaterEqual);
+                    continue;
+                }
+                self.emit(start, Greater);
+                continue;
+            }
+            if c == '&' {
+                if self.peek() == Some('&') {
+                    self.advance();
+                    self.emit(start, AndAnd);
+                    continue;
+                }
+                if self.peek() == Some('=') {
+                    self.advance();
+                    self.emit(start, AmpersandEqual);
+                    continue;
+                }
+                self.emit(start, Ampersand);
+                continue;
+            }
+            if c == '|' {
+                if self.peek() == Some('|') {
+                    self.advance();
+                    self.emit(start, OrOr);
+                    continue;
+                }
+                if self.peek() == Some('=') {
+                    self.advance();
+                    self.emit(start, PipeEqual);
+                    continue;
+                }
+                self.emit(start, Pipe);
+                continue;
+            }
+            if c == '^' {
+                if self.peek() == Some('=') {
+                    self.advance();
+                    self.emit(start, CaretEqual);
+                    continue;
+                }
+                self.emit(start, Caret);
+                continue;
+            }
+            if c == '~' {
+                self.emit(start, Tilde);
+                continue;
+            }
             let pair = match (c, self.peek()) {
                 ('-', Some('>')) => Some(Arrow),
+                ('=', Some('>')) => Some(FatArrow),
                 ('=', Some('=')) => Some(EqualEqual),
                 ('!', Some('=')) => Some(BangEqual),
-                ('<', Some('=')) => Some(LessEqual),
-                ('>', Some('=')) => Some(GreaterEqual),
-                ('&', Some('&')) => Some(AndAnd),
-                ('|', Some('|')) => Some(OrOr),
                 ('+', Some('=')) => Some(PlusEqual),
                 ('-', Some('=')) => Some(MinusEqual),
                 ('*', Some('=')) => Some(StarEqual),
@@ -140,8 +216,6 @@ impl Lexer<'_> {
                 '/' => Slash,
                 '%' => Percent,
                 '=' => Equal,
-                '<' => Less,
-                '>' => Greater,
                 '!' => Bang,
                 '?' => Question,
                 _ => {
@@ -203,20 +277,142 @@ impl Lexer<'_> {
         self.emit(start, kind);
     }
     fn number(&mut self, start: usize) {
-        while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+        if self.source[start..].starts_with('0') {
+            let next = self.source[start + 1..].chars().next();
+            match next {
+                Some('x' | 'X') => {
+                    self.advance();
+                    self.advance();
+                    let digits_start = self.offset;
+                    while self
+                        .peek()
+                        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                    {
+                        self.advance();
+                    }
+                    let raw = &self.source[digits_start..self.offset];
+                    let clean: String = raw.chars().filter(|&c| c != '_').collect();
+                    if clean.is_empty() {
+                        self.error(
+                            start,
+                            DiagnosticCode::InvalidNumber,
+                            "hexadecimal literal has no digits",
+                        );
+                        return;
+                    }
+                    if let Some(bad) = raw.chars().find(|&c| !c.is_ascii_hexdigit() && c != '_') {
+                        self.error(
+                            start,
+                            DiagnosticCode::InvalidNumber,
+                            format!("invalid digit `{bad}` in hexadecimal literal"),
+                        );
+                        return;
+                    }
+                    match u64::from_str_radix(&clean, 16) {
+                        Ok(value) => self.emit(start, TokenKind::Integer(value)),
+                        Err(_) => self.error(
+                            start,
+                            DiagnosticCode::InvalidNumber,
+                            "integer literal exceeds the maximum magnitude 18446744073709551615",
+                        ),
+                    }
+                    return;
+                }
+                Some('b' | 'B') => {
+                    self.advance();
+                    self.advance();
+                    let digits_start = self.offset;
+                    while self
+                        .peek()
+                        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                    {
+                        self.advance();
+                    }
+                    let raw = &self.source[digits_start..self.offset];
+                    let clean: String = raw.chars().filter(|&c| c != '_').collect();
+                    if clean.is_empty() {
+                        self.error(
+                            start,
+                            DiagnosticCode::InvalidNumber,
+                            "binary literal has no digits",
+                        );
+                        return;
+                    }
+                    if let Some(bad) = raw.chars().find(|&c| c != '0' && c != '1' && c != '_') {
+                        self.error(
+                            start,
+                            DiagnosticCode::InvalidNumber,
+                            format!("invalid digit `{bad}` in binary literal"),
+                        );
+                        return;
+                    }
+                    match u64::from_str_radix(&clean, 2) {
+                        Ok(value) => self.emit(start, TokenKind::Integer(value)),
+                        Err(_) => self.error(
+                            start,
+                            DiagnosticCode::InvalidNumber,
+                            "integer literal exceeds the maximum magnitude 18446744073709551615",
+                        ),
+                    }
+                    return;
+                }
+                Some('o' | 'O') => {
+                    self.advance();
+                    self.advance();
+                    let digits_start = self.offset;
+                    while self
+                        .peek()
+                        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                    {
+                        self.advance();
+                    }
+                    let raw = &self.source[digits_start..self.offset];
+                    let clean: String = raw.chars().filter(|&c| c != '_').collect();
+                    if clean.is_empty() {
+                        self.error(
+                            start,
+                            DiagnosticCode::InvalidNumber,
+                            "octal literal has no digits",
+                        );
+                        return;
+                    }
+                    if let Some(bad) = raw.chars().find(|&c| !('0'..='7').contains(&c) && c != '_')
+                    {
+                        self.error(
+                            start,
+                            DiagnosticCode::InvalidNumber,
+                            format!("invalid digit `{bad}` in octal literal"),
+                        );
+                        return;
+                    }
+                    match u64::from_str_radix(&clean, 8) {
+                        Ok(value) => self.emit(start, TokenKind::Integer(value)),
+                        Err(_) => self.error(
+                            start,
+                            DiagnosticCode::InvalidNumber,
+                            "integer literal exceeds the maximum magnitude 18446744073709551615",
+                        ),
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
+        while self.peek().is_some_and(|c| c.is_ascii_digit() || c == '_') {
             self.advance();
         }
         let float = self.peek() == Some('.')
             && self.source[self.offset + 1..].starts_with(|c: char| c.is_ascii_digit());
         if float {
             self.advance();
-            while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+            while self.peek().is_some_and(|c| c.is_ascii_digit() || c == '_') {
                 self.advance();
             }
         }
         let text = &self.source[start..self.offset];
+        let clean: String = text.chars().filter(|&c| c != '_').collect();
         if float {
-            match text.parse::<f64>() {
+            match clean.parse::<f64>() {
                 Ok(value) if value.is_finite() => self.emit(start, TokenKind::Float(value)),
                 _ => self.error(
                     start,
@@ -225,7 +421,7 @@ impl Lexer<'_> {
                 ),
             }
         } else {
-            match text.parse::<u64>() {
+            match clean.parse::<u64>() {
                 Ok(value) => self.emit(start, TokenKind::Integer(value)),
                 Err(_) => self.error(
                     start,

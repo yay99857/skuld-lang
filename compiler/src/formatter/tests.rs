@@ -113,12 +113,19 @@ fn lambda_syntax() {
         "func main() {\n    let f = (a: int, b: int): int {\n        return a + b\n    }\n}\n";
     let output = fmt(input);
     assert!(
-        output.contains("(a: int, b: int): int {"),
+        output.contains("(a: int, b: int) -> int {"),
         "lambda form: {output}"
     );
     assert!(
         !output.contains("func("),
         "no func prefix on lambda: {output}"
+    );
+
+    let expr_lambda = "func main() {\n    let f = (a, b) => a - b\n}\n";
+    let output2 = fmt(expr_lambda);
+    assert!(
+        output2.contains("(a, b) => a - b"),
+        "expression lambda form: {output2}"
     );
 }
 

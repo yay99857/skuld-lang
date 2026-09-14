@@ -1258,3 +1258,68 @@ fn a_missing_field_is_named_with_the_type_it_wants() {
     // know, and Skuld has no zero value to stand in for it.
     assert!(diagnostic.fix.is_none());
 }
+
+#[test]
+fn bitwise_and_shift_type_checking() {
+    valid(
+        "func main() {\n    let a: u32 = 0xFF00\n    let b: u32 = 0x00FF\n    let c = (a | b) & ~b ^ 0x10\n    let d = c << 2\n    let e = d >> 1\n    var v: int = 10\n    v &= 3\n    v |= 4\n    v ^= 1\n    v <<= 2\n    v >>= 1\n}",
+    );
+
+    // Bitwise operators do not accept bools or floats
+    fails(
+        "func main() { let x = true & false }",
+        DiagnosticCode::InvalidOperator,
+    );
+    fails(
+        "func main() { let x = true | false }",
+        DiagnosticCode::InvalidOperator,
+    );
+    fails(
+        "func main() { let x = true ^ false }",
+        DiagnosticCode::InvalidOperator,
+    );
+    fails(
+        "func main() { let x = ~true }",
+        DiagnosticCode::InvalidOperator,
+    );
+    fails(
+        "func main() { let x = 1.0 & 2.0 }",
+        DiagnosticCode::InvalidOperator,
+    );
+    fails(
+        "func main() { let x = 1.0 << 2 }",
+        DiagnosticCode::InvalidOperator,
+    );
+
+    // Bitwise operators never mix widths implicitly
+    fails(
+        "func main() { let a: u8 = 1\nlet b: u16 = 2\nlet c = a & b }",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "func main() { let a: u8 = 1\nlet b: int = 2\nlet c = a << b }",
+        DiagnosticCode::TypeMismatch,
+    );
+}
+
+#[test]
+fn expression_lambdas_and_to_sorted() {
+    valid(
+        "func main() {\n    let add = (a: int, b: int) => a + b\n    let numbers = [5, 2, 8, 1]\n    let sorted_nums = numbers.to_sorted((a, b) => a - b)\n    numbers.sort((a, b) => a - b)\n}",
+    );
+
+    // Assigning the result of `sort` (which returns void) suggests `to_sorted`
+    let errors = check(
+        "func main() {\n    let numbers = [1, 2]\n    var s = numbers.sort((a, b) => a - b)\n}",
+    )
+    .expect_err("must fail");
+    let diagnostic = &errors[0];
+    assert_eq!(diagnostic.code, DiagnosticCode::InvalidValueType);
+    assert!(
+        diagnostic
+            .help
+            .as_deref()
+            .unwrap()
+            .contains("use `to_sorted`")
+    );
+}

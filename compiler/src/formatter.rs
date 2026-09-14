@@ -786,6 +786,7 @@ impl<'a> Formatter<'a> {
                     UnaryOp::Positive => self.push("+"),
                     UnaryOp::Negative => self.push("-"),
                     UnaryOp::Not => self.push("!"),
+                    UnaryOp::BitNot => self.push("~"),
                 }
                 self.format_expr(operand);
             }
@@ -877,11 +878,22 @@ impl<'a> Formatter<'a> {
                 }
                 self.push(")");
                 if let Some(ret) = &lambda.return_type {
-                    self.push(": ");
+                    self.push(" -> ");
                     self.format_type(ret);
                 }
-                self.push(" ");
-                self.format_block_inline(&lambda.body);
+                if lambda.is_expression {
+                    self.push(" => ");
+                    if let Some(Statement {
+                        kind: StatementKind::Return(Some(expr)),
+                        ..
+                    }) = lambda.body.statements.first()
+                    {
+                        self.format_expr(expr);
+                    }
+                } else {
+                    self.push(" ");
+                    self.format_block_inline(&lambda.body);
+                }
             }
             ExprKind::Try(inner) => {
                 // Postfix `?`: `expr?`
@@ -980,12 +992,17 @@ fn binary_op_str(op: BinaryOp) -> &'static str {
     match op {
         BinaryOp::Or => "||",
         BinaryOp::And => "&&",
+        BinaryOp::BitOr => "|",
+        BinaryOp::BitXor => "^",
+        BinaryOp::BitAnd => "&",
         BinaryOp::Equal => "==",
         BinaryOp::NotEqual => "!=",
         BinaryOp::Less => "<",
         BinaryOp::Greater => ">",
         BinaryOp::LessEqual => "<=",
         BinaryOp::GreaterEqual => ">=",
+        BinaryOp::ShiftLeft => "<<",
+        BinaryOp::ShiftRight => ">>",
         BinaryOp::Add => "+",
         BinaryOp::Subtract => "-",
         BinaryOp::Multiply => "*",
@@ -1001,6 +1018,11 @@ fn assignment_op_str(op: AssignmentOp) -> &'static str {
         AssignmentOp::Subtract => "-=",
         AssignmentOp::Multiply => "*=",
         AssignmentOp::Divide => "/=",
+        AssignmentOp::BitAnd => "&=",
+        AssignmentOp::BitOr => "|=",
+        AssignmentOp::BitXor => "^=",
+        AssignmentOp::ShiftLeft => "<<=",
+        AssignmentOp::ShiftRight => ">>=",
     }
 }
 

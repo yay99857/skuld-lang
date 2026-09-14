@@ -67,26 +67,30 @@ Reserved future keywords: `static`.
 builtin type syntax, not user-defined generics. In a type annotation,
 `Option<int>=None` and `Result<int, string>=value` separate the closing `>`
 from assignment even though the lexer otherwise recognizes `>=` as one operator.
-`>>` is two closing tokens, never a shift, so nested generic types need no
-special rule. Recognizing a keyword does not implement its syntax or semantics.
+`>>` is parsed as closing tokens in generic types and as a shift operator in
+expressions, so nested generic types close cleanly without special lexer modes.
+Recognizing a keyword does not implement its syntax or semantics.
 
-Delimiters: `( ) { } [ ] , . .. : ->`.
-Operators: `+ - * / % = == != < > <= >= ! ? && || += -= *= /=`.
-There are no bit operators and no hexadecimal, binary or octal literals: `&`
-is an invalid character and `0xFF` is a lexical error. M19 in
-[ROADMAP.md](ROADMAP.md) proposes both, together with the rule the current
-`>>` would collide with — see the lexical note on `>>` below.
+Delimiters: `( ) { } [ ] , . .. : -> =>`.
+Operators: `+ - * / % & | ^ ~ << >> = == != < > <= >= ! ? && || += -= *= /= %= &= |= ^= <<= >>=`.
+Bit operators: `&` (AND), `|` (OR), `^` (XOR), `~` (bitwise NOT), `<<` (shift left),
+`>>` (shift right) and their compound assignments work on all integer widths.
+Bitwise operators bind tighter than comparisons (`==`, `!=`, `<`, `>`, `<=`, `>=`).
+`>>` is arithmetic on signed types and logical on unsigned types. A shift count that
+is negative or greater than or equal to the type width causes a runtime trap.
 `?` is postfix and only valid after an expression; see error handling below.
 Operators use longest matching; a sign is separate from a number.
 
-Integers are `[0-9]+`, stored as `u64` magnitudes. Floats are
-`[0-9]+ '.' [0-9]+`, stored as finite `f64`. Leading zeros are decimal.
+Integers are decimal `[0-9]+`, hexadecimal `0x` / `0X`, binary `0b` / `0B` or
+octal `0o` / `0O`, stored as `u64` magnitudes. The digit separator `_` is allowed
+in any base (e.g. `1_000_000`, `0xFFFF_0000`, `0b1010_0101`). Floats are
+`[0-9]+ '.' [0-9]+`, stored as finite `f64`. Leading zeros in decimal are valid.
 Integer magnitudes above `u64::MAX` and non-finite float results are lexical
 errors. Signed `int` range checking is deferred to semantic analysis, so the
 magnitude in `-9223372036854775808` remains representable. Decimal float parsing
 uses normal f64 rounding. A dot without a digit on both sides is a separate
-token, e.g. `1.foo`, `.5`, and `1.`. Exponents, bases, separators and numeric
-suffixes are not supported; they can lex as adjacent tokens, which the parser rejects in a numeric expression.
+token, e.g. `1.foo`, `.5`, and `1.`. Exponents and numeric suffixes are not
+supported; they can lex as adjacent tokens, which the parser rejects in a numeric expression.
 
 Strings use double quotes; chars use single quotes and must decode to exactly
 one Unicode scalar value (not one grapheme). Both accept Unicode text and the
@@ -309,15 +313,21 @@ Numeric operators require two operands of the same numeric type, which for
 integers means the same width as well. `+ - * /` work on every integer width
 and on float; `%` works on every integer width. Arithmetic traps on overflow
 and on invalid division at every width rather than wrapping, and unary `-` is
-rejected on an unsigned type, where only zero would have a result. The left
-operand of a binary expression supplies the expected width to the right one,
-so `byte * 2` types the literal as the left operand's width; put the typed
+rejected on an unsigned type, where only zero would have a result. Bitwise
+operators `&`, `|`, `^`, `<<`, `>>` and compound assignments `&=`, `|=`, `^=`,
+`<<=`, `>>=` work on every integer width, as does bitwise NOT `~`. Bitwise
+operators never mix integer widths implicitly. `<<` shifts left; signed shift left
+guards against signed overflow UB. `>>` shifts right: arithmetic on signed integers,
+logical on unsigned integers. Shift amounts must be non-negative and strictly less
+than the integer width in bits, or the runtime traps with "shift amount out of range".
+The left operand of a binary expression supplies the expected width to the right one,
+so `byte * 2` or `byte << 2` types the literal as the left operand's width; put the typed
 operand first, or annotate, when both sides could be literals. Numeric ordering
 returns bool. Equality and inequality work on matching int, float, bool or
 string values. Strings
 compare byte content, not pointer identity. `&&`, `||` and `!` require bool;
 there is no truthiness or implicit int/float conversion. Unary `+` and `-`
-require numbers. Function values, chars, invalid member accesses and unknown types produce
+require numbers; unary `~` requires integers. Function values, chars, invalid member accesses and unknown types produce
 explicit diagnostics rather than reaching code generation.
 
 Evaluation is left to right, including call arguments. `&&` and `||`
@@ -952,8 +962,12 @@ keyword: a method already declares itself the same way.
 
 ```skuld
 let increment = (n: int): int { return n + 1 }
-numbers.sort((a: int, b: int): int { return a - b })
+let double = (n: int) => n * 2
+numbers.sort((a, b) => a - b)
 ```
+
+A lambda can have a block body or an expression body with `=>` (e.g. `(a, b) => a - b`).
+Where expected context supplies parameter and return types, annotations may be omitted.
 
 A function *type* is written `(int, int) -> int`. The result uses `->` there so
 that a parameter is not spelled `compare: (int, int): int`, with `:` meaning
@@ -1022,15 +1036,20 @@ already refuse a bare record literal, and they refuse a lambda for the same
 reason.
 
 `sort()` is the first consumer. It sorts in place and returns `void`, like
-`push`, `insert`, `pop` and `remove`, because an array is a shared reference
-and a sort that returned a new one would mislead. It is stable, and it runs on
-a snapshot: a comparator that changes the array while the sort is running
-aborts rather than reading a buffer the array no longer owns.
+`push`, `insert`, `pop` and `remove`, because an array is a shared reference.
+`to_sorted()` returns a newly allocated sorted copy (`[]T`), leaving the original
+array untouched. Both methods are stable and run on a snapshot: a comparator that
+changes the array while the sort is running aborts rather than reading a buffer the
+array no longer owns.
 
 ```skuld
 var words = ["pear", "fig", "banana", "kiwi"]
-words.sort((a: string, b: string): int { return a.len() - b.len() })
+words.sort((a, b) => a.len() - b.len())
 // fig, pear, kiwi, banana — `pear` and `kiwi` keep the order they were in
+
+let numbers = [5, 3, 9, 1]
+let sorted = numbers.to_sorted((a, b) => a - b)
+// numbers remains [5, 3, 9, 1]; sorted is [1, 3, 5, 9]
 ```
 
 A comparator returns a negative, zero or positive `int`. Writing that as
@@ -1417,11 +1436,11 @@ or automatically implement every construct it contains.
   all fields and run statements inside `func main()`.
 - Array literals such as `[1, 4, 6, 7, 3]` and the type syntax `[]int` are now
   implemented; the sketch's global placement is still unsupported.
-- `numbers.sort((a, b) => a - b)` was marked for revision by the user and has
-  been settled: the arrow is not adopted, and the sketch's shape now reads
-  `numbers.sort((a: int, b: int): int { return a - b })`. Sorting is in place
-  and returns `void`; the parameter types may be omitted where the expected
-  type supplies them.
+- `numbers.sort((a, b) => a - b)` in the sketch is settled: expression lambdas
+  using `=>` are supported for inline lambdas (`(a, b) => a - b`). In-place sorting
+  remains `numbers.sort(cmp)` returning `void`, while non-mutating copy sorting is
+  provided by `numbers.to_sorted(cmp) -> []T`. Parameter types may be omitted
+  where expected types provide them.
 - No proposal introduces null/undefined values, JavaScript coercions or a
   requirement to match TypeScript. Strong typing and Skuld's own design goals
   continue to govern these decisions.
@@ -1442,13 +1461,15 @@ string slicing and the `extern "C"` boundary.
 Future commands: `new` and `doc` (`fmt` and `test` are implemented). LLVM/Cranelift and eventual
 self-hosting remain long-term possibilities.
 
-`ROADMAP.md` records M1–M18 as implemented, including function values,
+`ROADMAP.md` records M1–M19 as implemented, including function values,
 callbacks, interfaces, blocking TCP/HTTP with JSON, the official formatter
 `skuld fmt`, find-references and rename in the editor, and a native command-line
 application with its own `skuld test` suite, field defaults at construction, a
-string-keyed map, host-name resolution, verified HTTPS and the first measured
-performance baseline, which is in `BENCHMARKS.md`. Its proposed sequence is
-finished; nothing is selected after it. These proposals do not settle their syntax
+string-keyed map, host-name resolution, verified HTTPS, the first measured
+performance baseline in `BENCHMARKS.md`, and bitwise operators with integer
+literals in binary, octal and hexadecimal with digit separators (M19), along
+with expression lambdas and array `to_sorted`. Its planned sequence continues
+with M20. These proposals do not settle their syntax
 or authorize implementation. No implementation milestone is active.
 
 ## Unsupported features and experimental status
@@ -1462,7 +1483,8 @@ Loops (`while`, `loop`, `for`), structs, classes, interpolation, weak class refe
 `Result` with `?`, enums, pattern matching, the sized integers, `[]u8`, string indexing and slicing,
 foreign `extern "C"` declarations with raw pointers, modules with `import` and
 `pub`, the embedded standard library,
-function values, stable sorting, interfaces, `let ... else`,
+function values, expression lambdas, stable sorting and `to_sorted`, interfaces, `let ... else`,
+bitwise operators, integer literal prefixes, digit separators,
 and reference-counted runtime behavior are **Implemented**. The future
 capabilities listed in the roadmap are **Planned**. No generics, macros, async/await, threads, channels,
 reflection, decorators, annotations, package registry, compiler plugins,

@@ -579,6 +579,7 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                         ast::UnaryOp::Positive => h::UnaryOp::Positive,
                         ast::UnaryOp::Negative => h::UnaryOp::Negative,
                         ast::UnaryOp::Not => h::UnaryOp::Not,
+                        ast::UnaryOp::BitNot => h::UnaryOp::BitNot,
                     },
                     op_span: *op_span,
                     operand: Box::new(expression(operand, cx)),
@@ -609,6 +610,11 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                 ast::AssignmentOp::Subtract => h::AssignmentOp::Subtract,
                 ast::AssignmentOp::Multiply => h::AssignmentOp::Multiply,
                 ast::AssignmentOp::Divide => h::AssignmentOp::Divide,
+                ast::AssignmentOp::BitAnd => h::AssignmentOp::BitAnd,
+                ast::AssignmentOp::BitOr => h::AssignmentOp::BitOr,
+                ast::AssignmentOp::BitXor => h::AssignmentOp::BitXor,
+                ast::AssignmentOp::ShiftLeft => h::AssignmentOp::ShiftLeft,
+                ast::AssignmentOp::ShiftRight => h::AssignmentOp::ShiftRight,
             },
             op_span: *op_span,
             value: Box::new(expression(value, cx)),
@@ -641,6 +647,13 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                         };
                         cx.sorts.borrow_mut().push((id, comparator));
                         Some(h::ArrayMethod::Sort)
+                    }
+                    (Some(Type::Array(id)), "to_sorted") => {
+                        let Some(Type::Function(comparator)) = cx.ty(arguments[0].span) else {
+                            unreachable!("internal compiler bug: unchecked comparator")
+                        };
+                        cx.sorts.borrow_mut().push((id, comparator));
+                        Some(h::ArrayMethod::ToSorted)
                     }
                     _ => None,
                 };
@@ -870,12 +883,17 @@ fn binary(op: ast::BinaryOp) -> h::BinaryOp {
     match op {
         ast::BinaryOp::Or => h::BinaryOp::Or,
         ast::BinaryOp::And => h::BinaryOp::And,
+        ast::BinaryOp::BitOr => h::BinaryOp::BitOr,
+        ast::BinaryOp::BitXor => h::BinaryOp::BitXor,
+        ast::BinaryOp::BitAnd => h::BinaryOp::BitAnd,
         ast::BinaryOp::Equal => h::BinaryOp::Equal,
         ast::BinaryOp::NotEqual => h::BinaryOp::NotEqual,
         ast::BinaryOp::Less => h::BinaryOp::Less,
         ast::BinaryOp::Greater => h::BinaryOp::Greater,
         ast::BinaryOp::LessEqual => h::BinaryOp::LessEqual,
         ast::BinaryOp::GreaterEqual => h::BinaryOp::GreaterEqual,
+        ast::BinaryOp::ShiftLeft => h::BinaryOp::ShiftLeft,
+        ast::BinaryOp::ShiftRight => h::BinaryOp::ShiftRight,
         ast::BinaryOp::Add => h::BinaryOp::Add,
         ast::BinaryOp::Subtract => h::BinaryOp::Subtract,
         ast::BinaryOp::Multiply => h::BinaryOp::Multiply,

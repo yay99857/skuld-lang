@@ -1418,11 +1418,23 @@ impl Checker<'_> {
                 let inferred = self.expression(&variable.initializer);
                 self.expected_context = previous_expected;
                 if inferred == Type::Void {
-                    self.error(
-                        DiagnosticCode::InvalidValueType,
-                        variable.initializer.span,
-                        "cannot store a `void` expression in a variable",
-                    );
+                    let mut help = None;
+                    if let ExprKind::Call { callee, .. } = &variable.initializer.kind
+                        && let ExprKind::Member { member, .. } = &callee.kind
+                        && member.text == "sort"
+                    {
+                        help = Some("method `sort` mutates the array in-place and returns `void`; use `to_sorted` to obtain a sorted copy, or call `sort` as a separate statement".to_string());
+                    }
+                    self.diagnostics.push(FileDiagnostic {
+                        file: self.file,
+                        diagnostic: Diagnostic {
+                            code: DiagnosticCode::InvalidValueType,
+                            message: "cannot store a `void` expression in a variable".to_string(),
+                            span: variable.initializer.span,
+                            help,
+                            fix: None,
+                        },
+                    });
                 }
                 let ty = match &variable.otherwise {
                     Some(otherwise) => self.otherwise(variable, otherwise, inferred, annotated),
@@ -1806,6 +1818,20 @@ impl Checker<'_> {
         let return_type = match (&lambda.return_type, signature.as_ref()) {
             (Some(reference), _) => self.type_ref(reference, true),
             (None, Some(signature)) => signature.return_type,
+            (None, None) if lambda.is_expression => {
+                if let Some(Statement {
+                    kind: StatementKind::Return(Some(expr)),
+                    ..
+                }) = lambda.body.statements.first()
+                {
+                    let previous_expected = self.expected_context.take();
+                    let inferred = self.expression(expr);
+                    self.expected_context = previous_expected;
+                    inferred
+                } else {
+                    Type::Void
+                }
+            }
             (None, None) => Type::Void,
         };
         self.reject_stored_function(return_type, lambda.span, "the result of a function value");
@@ -2279,6 +2305,7 @@ impl Checker<'_> {
                             ty == Type::Float || ty.int_type().is_some_and(IntType::signed)
                         }
                         UnaryOp::Positive => ty.is_numeric(),
+                        UnaryOp::BitNot => ty.int_type().is_some(),
                     };
                     if !valid && ty != Type::Error {
                         self.error(
@@ -2390,6 +2417,11 @@ impl Checker<'_> {
                         AssignmentOp::Subtract => BinaryOp::Subtract,
                         AssignmentOp::Multiply => BinaryOp::Multiply,
                         AssignmentOp::Divide => BinaryOp::Divide,
+                        AssignmentOp::BitAnd => BinaryOp::BitAnd,
+                        AssignmentOp::BitOr => BinaryOp::BitOr,
+                        AssignmentOp::BitXor => BinaryOp::BitXor,
+                        AssignmentOp::ShiftLeft => BinaryOp::ShiftLeft,
+                        AssignmentOp::ShiftRight => BinaryOp::ShiftRight,
                         AssignmentOp::Assign => unreachable!(),
                     };
                     self.binary(binary, target_type, value_type, *op_span);
@@ -2682,9 +2714,6 @@ impl Checker<'_> {
         if left == Type::Error || right == Type::Error {
             return Type::Error;
         }
-        if left != right && !self.expect_type(left, right, span) {
-            return Type::Error;
-        }
         use BinaryOp::*;
         let valid = match op {
             // `+` also concatenates; the result is a new string.
@@ -2692,7 +2721,7 @@ impl Checker<'_> {
             Subtract | Multiply | Divide | Less | Greater | LessEqual | GreaterEqual => {
                 left.is_numeric()
             }
-            Modulo => left.int_type().is_some(),
+            Modulo | BitAnd | BitOr | BitXor | ShiftLeft | ShiftRight => left.int_type().is_some(),
             And | Or => left == Type::Bool,
             Equal | NotEqual => {
                 matches!(left, Type::Int(_) | Type::Float | Type::Bool | Type::String)
@@ -2704,6 +2733,9 @@ impl Checker<'_> {
                 span,
                 format!("operator `{op:?}` does not accept `{left}` operands"),
             );
+            return Type::Error;
+        }
+        if left != right && !self.expect_type(left, right, span) {
             return Type::Error;
         }
         match op {
@@ -2728,7 +2760,7 @@ impl Checker<'_> {
                 "remove" => Some(vec![Type::INT]),
                 // A comparator returns a negative, zero or positive `int`,
                 // the ordering convention the C library already uses.
-                "sort" => {
+                "sort" | "to_sorted" => {
                     let comparator = self.function_type(vec![element, element], Type::INT);
                     Some(vec![comparator])
                 }
@@ -2758,6 +2790,8 @@ impl Checker<'_> {
                 self.expected_context = previous;
                 return if matches!(member.text.as_str(), "pop" | "remove") {
                     self.option_type(element)
+                } else if member.text == "to_sorted" {
+                    Type::Array(id)
                 } else {
                     Type::Void
                 };
