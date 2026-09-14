@@ -1109,8 +1109,8 @@ dereferences a pointer, and this removes that.
 
 ```skuld
 unsafe {
-    let value = load<u32>(register)
-    store<u32>(register, value | ENABLE)
+    let value: u32 = load(register)
+    store(register, value | ENABLE)
     let next = offset(base, index)
 }
 ```
@@ -1129,10 +1129,15 @@ unsafe {
   counter a value it never saw allocated. The narrow answer is that only
   scalars, fixed arrays of scalars and pointer types can be loaded or stored,
   and a managed type through a pointer is a diagnostic.
-- **Open decision — what spells the operation.** `load<T>`/`store<T>` are
-  functions and need no syntax; a `*pointer` dereference reads better and
-  costs a prefix operator that collides with nothing today. This is the only
-  new operator the sequence proposes and it should be decided deliberately.
+- **Decision taken — no new syntax spells it.** The load takes its type from
+  the context that receives it, exactly as an integer literal and a `None`
+  already do, so `load` and `store` are prelude bindings like `print` and
+  `u8()` rather than operators or generics. A `load<u32>(p)` form would put
+  `<>` in expression position, where today it appears only in the builtin
+  `Option` and `Result` types, and a `*pointer` dereference would add the only
+  new operator in the sequence. Neither buys anything the expected type does
+  not already give. That leaves the whole milestone costing one keyword the
+  language already has: `unsafe`.
 - **Closing marker:** a bump allocator and an intrusive linked list written in
   Skuld, running clean under the address sanitizer, with the unsafe surface
   confined to a handful of functions.
