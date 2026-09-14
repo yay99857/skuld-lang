@@ -1153,3 +1153,52 @@ fn a_match_written_on_one_line_still_places_its_arm() {
     let fixed = apply_fixes(source);
     assert!(check(&fixed).is_ok(), "{fixed}\n{:?}", check(&fixed));
 }
+
+#[test]
+fn assigning_to_a_let_offers_to_make_it_a_var() {
+    let source = "func main() {\n    let total = 1\n    total = 2\n    print(total)\n}";
+    let errors = check(source).expect_err("must fail");
+    let fix = errors[0].fix.as_deref().expect("an edit");
+    assert_eq!(fix.title, "declare it with `var`");
+    let fixed = apply_fixes(source);
+    assert_eq!(
+        fixed,
+        "func main() {\n    var total = 1\n    total = 2\n    print(total)\n}"
+    );
+    assert!(check(&fixed).is_ok(), "{:?}", check(&fixed));
+}
+
+#[test]
+fn a_declaration_that_unwraps_takes_the_same_edit() {
+    // `var name = value else { ... }` is as valid as the `let` form, so the
+    // keyword is the whole difference here too.
+    let source = "func maybe() -> Option<int> { return 3 }
+func main() {
+    let value = maybe() else {
+        return
+    }
+    value = 4
+    print(value)
+}";
+    let fixed = apply_fixes(source);
+    assert!(fixed.contains("    var value = maybe() else {"), "{fixed}");
+    assert!(check(&fixed).is_ok(), "{:?}", check(&fixed));
+}
+
+#[test]
+fn a_binding_with_no_let_to_change_is_offered_nothing() {
+    // A parameter is immutable by design, and an arm binding has no keyword
+    // of its own: neither has a `let` to rewrite.
+    for source in [
+        "func f(value: int) { value = 1 }\nfunc main() { f(1) }",
+        "enum Tag { One(int) }\nfunc main() {\n    match Tag.One(1) {\n        Tag.One(value): value = 2\n    }\n}",
+        "func main() {\n    for step in 0..3 {\n        step = 1\n    }\n}",
+    ] {
+        let errors = check(source).expect_err("must fail");
+        let assignment = errors
+            .iter()
+            .find(|error| error.code == DiagnosticCode::ImmutableAssignment)
+            .unwrap_or_else(|| panic!("{source}: {errors:?}"));
+        assert!(assignment.fix.is_none(), "{source}: {assignment:?}");
+    }
+}

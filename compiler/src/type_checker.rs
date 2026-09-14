@@ -832,6 +832,31 @@ impl Checker<'_> {
             },
         });
     }
+    /// The `let` in front of a declared name, turned into a `var`.
+    ///
+    /// The resolver records where the name was written and not where its
+    /// keyword was, so the keyword is read back out of the source: the fix is
+    /// offered only when the bytes before the name really are `let`, which a
+    /// binding introduced any other way — an `if let`, a `for`, an arm
+    /// pattern, an escape block — never is.
+    fn let_into_var(&self, declared: Span) -> Option<Fix> {
+        let text = &self.files[self.file.0].source;
+        let before = text.get(..declared.start)?.trim_end();
+        let keyword = before.strip_suffix("let")?;
+        // `let` has to be a word of its own: `varlet x` is not a declaration.
+        if keyword
+            .chars()
+            .next_back()
+            .is_some_and(|last| last.is_alphanumeric() || last == '_')
+        {
+            return None;
+        }
+        Some(Fix::new(
+            "declare it with `var`",
+            Span::new(keyword.len(), keyword.len() + 3),
+            "var",
+        ))
+    }
     /// The arm that would cover a variant nothing matches, written where the
     /// closing brace of the `match` is and indented one step past it.
     ///
@@ -2273,6 +2298,15 @@ impl Checker<'_> {
                             } else {
                                 "declare the variable with `var` to allow assignment".into()
                             });
+                            // A parameter has no keyword to change: making it
+                            // assignable is a different edit, in a different
+                            // place, and the reader decides where.
+                            if symbol.kind != SymbolKind::Parameter
+                                && let Some(declared) = symbol.span
+                                && let Some(fix) = self.let_into_var(declared)
+                            {
+                                diagnostic = diagnostic.with_fix(fix);
+                            }
                             self.diagnostics.push(FileDiagnostic {
                                 file: self.file,
                                 diagnostic,
