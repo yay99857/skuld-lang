@@ -351,15 +351,33 @@ accurate; documenting a future feature is not a request to implement it.
   The server writes nothing: a workspace edit is the client's to apply.
 - The server also answers `textDocument/documentHighlight`,
   `textDocument/signatureHelp`, `textDocument/inlayHint`,
-  `textDocument/semanticTokens/full`, `textDocument/documentSymbol` and
-  `textDocument/formatting`. The outline is drawn from the syntax alone, so it
-  needs no check at all, and it falls back to the last text that parsed rather
+  `textDocument/semanticTokens/full` and `/range`, `textDocument/documentSymbol`,
+  `textDocument/formatting`, `textDocument/hover`, `textDocument/completion`,
+  `textDocument/definition`, `textDocument/declaration`,
+  `textDocument/typeDefinition`, `textDocument/implementation`,
+  `textDocument/foldingRange`, `textDocument/selectionRange`,
+  `textDocument/prepareCallHierarchy` in both directions,
+  `textDocument/codeAction`, `workspace/symbol` and
+  `workspace/didChangeWatchedFiles`. The outline is drawn from the syntax
+  alone, so it needs no check at all, and it falls back to the last text that parsed rather
   than emptying itself mid-declaration; its entries are sorted by span, since
   the AST keeps each kind of declaration in a list of its own and a client does
   not re-sort what it is given. Formatting is the official formatter, whole
   document only — the formatter reads a program, not a fragment — and a file
   that does not parse or is already formatted is answered with no edits rather
   than an error, because the caller is usually format-on-save.
+- A diagnostic may carry a `Fix`: the exact span to replace and the bytes to
+  put there, in the diagnostic's own file. `help` stays prose for a person and
+  a `Fix` is the same knowledge for a tool, so it exists only where the
+  compiler knows the whole edit and applying it is never a guess — a missing
+  `unsafe` on an `extern` block, and a name one slip from one in scope. A
+  suggestion is searched in exactly the scopes the use could have reached, and
+  a qualified name among the module's public names only; over two mistakes
+  nothing is suggested, since every short name reaches every other. The server
+  turns these into `quickfix` code actions and reinterprets nothing: it keeps
+  what the last check offered, replaces those offers on every check, and drops
+  an edit whose span no longer fits the buffer. The other code action is a
+  `refactor.rewrite` that writes out an inferred binding type.
 - A highlight is `references` narrowed to the document and widened in what it
   accepts: a prelude binding and an import qualifier are highlighted although
   neither can be renamed. It carries no `kind`, since the resolver records
