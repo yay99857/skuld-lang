@@ -388,10 +388,15 @@ formatter, signature help, inlay hints for inferred binding types and semantic
 tokens, and
 `examples/jsontool.skuld` is a multi-module native tool with its own test suite.
 
-No implementation milestone is active, and the sequence [ROADMAP.md](ROADMAP.md)
-proposed is finished. What comes next is a selection nobody has made; the
-candidates listed there — general generics and self-hosting among them — each
-need an explicit decision first.
+No implementation milestone is active. The sequence [ROADMAP.md](ROADMAP.md)
+proposed first is finished, and it built an applications language; that
+document now proposes a second one, M19-M26, towards the systems language the
+project aims at: bit operators and hexadecimal literals, named constants,
+`usize`, fixed-size arrays, pointers that can be read inside `unsafe`, layout
+control, `defer`, and a freestanding mode with no runtime and no libc. Every
+one of them is proposed and none is authorized; starting one needs an explicit
+decision first, as do the older candidates listed there, general generics and
+self-hosting among them.
 Status is reported as completed milestones, not as a completion percentage, and
 implies no production readiness. Performance is measured in
 [BENCHMARKS.md](BENCHMARKS.md): between 1.3x and 2.2x the faster of Rust and Go

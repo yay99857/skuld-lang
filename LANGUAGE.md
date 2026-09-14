@@ -72,6 +72,10 @@ special rule. Recognizing a keyword does not implement its syntax or semantics.
 
 Delimiters: `( ) { } [ ] , . .. : ->`.
 Operators: `+ - * / % = == != < > <= >= ! ? && || += -= *= /=`.
+There are no bit operators and no hexadecimal, binary or octal literals: `&`
+is an invalid character and `0xFF` is a lexical error. M19 in
+[ROADMAP.md](ROADMAP.md) proposes both, together with the rule the current
+`>>` would collide with — see the lexical note on `>>` below.
 `?` is postfix and only valid after an expression; see error handling below.
 Operators use longest matching; a sign is separate from a number.
 
@@ -109,9 +113,12 @@ Semantic types: `int = i64`, `float = f64`, `bool`, `string`, `void`, and the
 sized integers `i8 i16 i32 i64` and `u8 u16 u32 u64`. All are platform
 independent. `int` and `i64` are two spellings of one type rather than two
 types with a conversion between them, so a value of one is a value of the
-other. Later: `f32`, `uint` and `char`; `uint`'s alias is not yet specified.
-Semantic types use an enum, never source spellings; `f32`, `uint` and `char`
-are not accepted semantic types yet.
+other. Semantic types use an enum, never source spellings. `f32` and `char` are
+not accepted semantic types yet, and neither is a word-sized integer: M21 in
+[ROADMAP.md](ROADMAP.md) proposes `usize`/`isize` and `char`, which replaces
+the older sketch of a `uint` whose alias was never specified. A word-sized
+type is also what an `extern "C"` signature needs for `size_t`, which has no
+correct spelling today.
 
 An integer literal takes the width its context expects and is range-checked
 there, so `let b: u8 = 256` is rejected where it is written rather than
