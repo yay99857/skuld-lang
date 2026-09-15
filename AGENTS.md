@@ -240,10 +240,18 @@ accurate; documenting a future feature is not a request to implement it.
   range patterns (`a..b`, `a..=b`), and mandatory wildcard `_` for exhaustiveness;
   `std/net`, `std/dns`, `std/fs` and `std/os` name every protocol number, flag and
   `errno` value.
-  The systems sequence `ROADMAP.md` proposes continues with M21–M26:
-  `usize` and integer/float conversion, fixed-size arrays, pointers that can be read
-  inside `unsafe`, layout and ABI control, `defer`, and a freestanding mode with no
-  runtime and no libc.
+  M21 (word-sized integers and conversions) is complete: `usize` and `isize` as
+  distinct word-sized integer types matching target pointer width (`size_t`/`ptrdiff_t`),
+  explicit trapping float-to-int conversions (`int(f)`, `i8(f)`..`u64(f)`, `isize(f)`,
+  `usize(f)`) truncating towards zero and trapping on out-of-range values and NaN;
+  explicit int-to-float conversions `float(i)`; distinct `char` scalar type with `'a'`
+  literals, comparisons, string interpolation `${c}`, `print(c)`, explicit conversions to/from
+  `u8`/`u32`/integers trapping on invalid Unicode code points, and pattern matching on char literals
+  and ranges. `extern "C"` declarations use `usize`/`isize` for `size_t`/`ssize_t`, and
+  `portability.rs` runs 100% of pass fixtures on i686 with no exceptions left (`TARGET_SPECIFIC = &[]`).
+  The systems sequence `ROADMAP.md` proposes continues with M22–M26:
+  fixed-size arrays, pointers that can be read inside `unsafe`, layout and ABI control,
+  `defer`, and a freestanding mode with no runtime and no libc.
   Every one of them is Planned and none is authorized; each still needs an
   explicit decision recorded here. Two decisions
   are taken there and should not be reopened by accident: M20's `const` does

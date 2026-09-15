@@ -1,0 +1,4 @@
+func main() {
+    let f: float = 0.0 / 0.0
+    print(int(f))
+}

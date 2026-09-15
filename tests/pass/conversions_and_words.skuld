@@ -1,0 +1,80 @@
+const ZERO: char = '0'
+
+func classify(c: char) -> string {
+    match c {
+        '0'..='9': {
+            return "digit"
+        }
+        'a'..='z': {
+            return "lowercase"
+        }
+        'A'..='Z': {
+            return "uppercase"
+        }
+        _: {
+            return "other"
+        }
+    }
+}
+
+func main() {
+    // Word-sized integers
+    let u: usize = usize(100)
+    let s: isize = isize(-50)
+    let u_sum = u + usize(20)
+    let s_sum = s + isize(10)
+    print(u_sum)
+    print(s_sum)
+
+    // Float conversions
+    let f1 = float(42)
+    print(f1)
+    let f2 = float(isize(-123))
+    print(f2)
+
+    // Truncation towards zero
+    let i1 = int(42.9)
+    print(i1)
+    let i2 = int(-42.9)
+    print(i2)
+    let b1 = u8(255.9)
+    print(b1)
+    let sb1 = i8(-128.9)
+    print(sb1)
+
+    // Char literals, print, interpolation, comparisons
+    let c = 'a'
+    print(c)
+    print("char: ${c}")
+    print(c < 'b')
+    print(c == 'a')
+    print(c != 'z')
+
+    // Char conversions to/from integer
+    let code: u32 = u32(c)
+    print(code)
+    let back: char = char(code)
+    print(back)
+    let byte_val: u8 = u8('Z')
+    print(byte_val)
+    let from_u8: char = char(byte_val)
+    print(from_u8)
+
+    // Match on char
+    print(classify('5'))
+    print(classify('g'))
+    print(classify('K'))
+    print(classify('#'))
+
+    match c {
+        ZERO: {
+            print("is zero")
+        }
+        'a': {
+            print("matched a constant")
+        }
+        _: {
+            print("fallback")
+        }
+    }
+}

@@ -1068,6 +1068,7 @@ impl Parser<'_> {
                     | TokenKind::Float(_)
                     | TokenKind::String(_)
                     | TokenKind::Boolean(_)
+                    | TokenKind::Char(_)
             ) || (self.at(&TokenKind::Minus)
                 && matches!(
                     self.peek_kind(1),

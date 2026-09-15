@@ -179,6 +179,7 @@ pub(crate) enum ExprKind {
     Int(i64),
     Float(f64),
     Bool(bool),
+    Char(char),
     String(String),
     /// Reading a local or a parameter. `settled` marks a binding nothing can
     /// reassign — a `let`, a parameter, `this` — which is what lets the
@@ -284,6 +285,10 @@ pub(crate) enum ExprKind {
         value: Box<Expr>,
         target: crate::types::IntType,
     },
+    /// `float(value)`. Converts an integer to float.
+    FloatConvert(Box<Expr>),
+    /// `char(value)`. Converts an integer to char, validating Unicode scalar value.
+    CharConvert(Box<Expr>),
     IsOk(Box<Expr>),
     IsErr(Box<Expr>),
     /// `value?`. Yields the success payload, or returns the error from the

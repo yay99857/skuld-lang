@@ -1,7 +1,7 @@
 # Skuld roadmap
 
 This document records completed milestones and a **proposed** next sequence.
-M1–M20 are implemented. M21–M26 propose the continuation of the systems sequence,
+M1–M21 are implemented. M22–M26 propose the continuation of the systems sequence,
 towards the language a system could be written in; every one of them is **Planned**,
 which means proposed and not authorized. Starting one still
 needs an explicit decision recorded in `AGENTS.md`. See `LANGUAGE.md` for
@@ -15,7 +15,7 @@ expectation.
 
 ## Current baseline
 
-- **Implemented:** M1–M18, including non-escaping lambdas, stable array sorting,
+- **Implemented:** M1–M21, including non-escaping lambdas, stable array sorting,
   storable class interfaces, modules, the embedded library, blocking HTTP, the
   official formatter (`skuld fmt` with `--check`), verified rename in the
   editor, whole-file reads and writes, the process arguments, `skuld test`,
@@ -1057,22 +1057,22 @@ match signal {
 - **Out:** generic constants, `const fn`, and constant expressions in type
   position — which is what a fixed-size array wants and M22 has to settle.
 
-## M21 — Word-sized integers and conversions — Planned
+## M21 — Word-sized integers and conversions — Implemented
 
 The gap M18 found, plus the conversions that today force a program through
 strings.
 
-- **In:** `usize` and `isize` as their own types, `size_t`-shaped and
+- **In:** `usize` and `isize` as their own types, `size_t`/`ptrdiff_t`-shaped and
   target-dependent; `float(i)` and `int(f)` as explicit, trapping conversions;
   a `char` value whose literal is `'a'`, with explicit conversion to and from
   `u8` and `u32`.
-- **Semantics to settle:** `usize` is a distinct type and not a spelling of
+- **Semantics settled:** `usize` is a distinct type and not a spelling of
   `u64`, so a program that assumes the two are interchangeable stops compiling
   on the target where they are not. `int(f)` truncates towards zero and traps
   on a value the target type cannot hold, including NaN.
-- **Closing marker:** `tests/pass/extern_c_ffi.skuld` uses `usize` where C uses
-  `size_t`, and `cli/tests/portability.rs` runs **every** fixture on i686 with
-  no exception left.
+- **Closing marker:** `tests/pass/extern_c_ffi.skuld` uses `usize`/`isize` where C uses
+  `size_t`/`ssize_t`, and `cli/tests/portability.rs` runs **every** fixture on i686 with
+  no exception left (`TARGET_SPECIFIC = &[]`).
 - **Out:** `f32`, 128-bit integers, and implicit widening anywhere.
 
 ## M22 — Fixed-size arrays and stack buffers — Planned

@@ -27,6 +27,10 @@ pub enum Builtin {
     /// `u8(value)` and friends. The width travels with the symbol so the
     /// checker never has to read the identifier's spelling back.
     IntConvert(IntType),
+    /// Explicit conversion to `float`.
+    FloatConvert,
+    /// Explicit conversion to `char`.
+    CharConvert,
     /// `bytes_to_string(bytes)`, which validates UTF-8 and can fail.
     BytesToString,
     /// `ptr(value)`, which borrows the bytes of a string or `[]u8` as a raw
@@ -155,6 +159,8 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
             None,
         );
     }
+    resolver.insert("float", SymbolKind::Builtin(Builtin::FloatConvert), None);
+    resolver.insert("char", SymbolKind::Builtin(Builtin::CharConvert), None);
     let prelude = resolver.current;
 
     // One scope per module, holding the declarations of all its files. They

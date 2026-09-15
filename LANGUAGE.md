@@ -113,16 +113,14 @@ width alignment and standalone-CR line indexing are future improvements.
 
 ## Types, variables and mutability — Implemented core
 
-Semantic types: `int = i64`, `float = f64`, `bool`, `string`, `void`, and the
-sized integers `i8 i16 i32 i64` and `u8 u16 u32 u64`. All are platform
-independent. `int` and `i64` are two spellings of one type rather than two
-types with a conversion between them, so a value of one is a value of the
-other. Semantic types use an enum, never source spellings. `f32` and `char` are
-not accepted semantic types yet, and neither is a word-sized integer: M21 in
-[ROADMAP.md](ROADMAP.md) proposes `usize`/`isize` and `char`, which replaces
-the older sketch of a `uint` whose alias was never specified. A word-sized
-type is also what an `extern "C"` signature needs for `size_t`, which has no
-correct spelling today.
+Semantic types: `int = i64`, `float = f64`, `bool`, `char`, `string`, `void`, the
+sized integers `i8 i16 i32 i64` and `u8 u16 u32 u64`, and the word-sized integers
+`isize` and `usize`. Sized integers are platform independent; `isize` and `usize`
+match the target pointer width (`ptrdiff_t` and `size_t` in C) and are distinct
+types rather than aliases of `i64` or `u64`. `int` and `i64` are two spellings of
+one type rather than two types with a conversion between them, so a value of one
+is a value of the other. Semantic types use an enum, never source spellings.
+`char` is an unsigned Unicode scalar value whose literal is `'a'`.
 
 An integer literal takes the width its context expects and is range-checked
 there, so `let b: u8 = 256` is rejected where it is written rather than
@@ -138,12 +136,19 @@ spelled as a call on the target type's name:
 let byte: u8 = 200
 let wide: int = int(byte)
 let back: u8 = u8(wide)
+let word: usize = usize(wide)
+let f: float = float(wide)
+let truncated: int = int(3.7) // 3
+let c: char = 'a'
+let code: u32 = u32(c)
+let back_char: char = char(code)
 ```
 
 Every such conversion is range-checked at run time and traps when the value
 does not fit, in keeping with trapping arithmetic. `int(x)` and `i64(x)` are
-the same conversion. Converting between integers and `float` is not part of
-this milestone.
+the same conversion. Converting floating-point to integer (`int(f)`, `i8(f)`, etc.)
+truncates towards zero and traps on out-of-range values or NaN. `char(v)` traps
+if the integer is not a valid Unicode scalar value.
 
 ```skuld
 let age = 27
@@ -938,7 +943,7 @@ Only `"C"` is a supported ABI, and a declaration carries no body.
 **Managed values never cross the boundary.** C knows nothing about retain and
 release, so a signature accepts only:
 
-- the scalars `i8 i16 i32 i64 u8 u16 u32 u64`, `float` and `bool`,
+- the scalars `i8 i16 i32 i64 u8 u16 u32 u64 isize usize`, `float`, `bool` and `char`,
 - raw pointers, and
 - `void`, as a return type.
 

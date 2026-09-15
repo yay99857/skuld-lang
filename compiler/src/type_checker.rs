@@ -1153,7 +1153,7 @@ impl Checker<'_> {
     fn foreign_type(&mut self, ty: Type, span: Span, is_return: bool) {
         let allowed = matches!(
             ty,
-            Type::Int(_) | Type::Float | Type::Bool | Type::Pointer(_) | Type::Error
+            Type::Int(_) | Type::Float | Type::Bool | Type::Char | Type::Pointer(_) | Type::Error
         ) || (is_return && ty == Type::Void);
         if !allowed {
             self.error(
@@ -1312,6 +1312,7 @@ impl Checker<'_> {
                     }
                     "float" if builtin => Type::Float,
                     "bool" if builtin => Type::Bool,
+                    "char" if builtin => Type::Char,
                     "string" if builtin => Type::String,
                     "void" if builtin => Type::Void,
                     _ => match self.lookup_type(path, "type") {
@@ -1342,6 +1343,7 @@ impl Checker<'_> {
                     Type::Int(kind) => Type::Pointer(Pointee::Int(kind)),
                     Type::Float => Type::Pointer(Pointee::Float),
                     Type::Bool => Type::Pointer(Pointee::Bool),
+                    Type::Char => Type::Pointer(Pointee::Char),
                     other => {
                         self.error(
                             DiagnosticCode::InvalidValueType,
@@ -1617,14 +1619,14 @@ impl Checker<'_> {
                 if !matches!(target_ty, Type::Enum(_) | Type::Result(_)) {
                     let is_scalar = matches!(
                         target_ty,
-                        Type::Int(_) | Type::Float | Type::Bool | Type::String
+                        Type::Int(_) | Type::Float | Type::Bool | Type::String | Type::Char
                     );
                     if !is_scalar {
                         self.error(
                             DiagnosticCode::TypeMismatch,
                             value.span,
                             format!(
-                                "match expects an enum, Result, integer, float, bool, or string, found `{}`",
+                                "match expects an enum, Result, integer, float, bool, char, or string, found `{}`",
                                 self.type_name(target_ty)
                             ),
                         );
@@ -1652,12 +1654,12 @@ impl Checker<'_> {
                                 inclusive: _,
                                 span,
                             } => {
-                                if target_ty.int_type().is_none() {
+                                if target_ty.int_type().is_none() && target_ty != Type::Char {
                                     self.error(
                                         DiagnosticCode::InvalidOperator,
                                         *span,
                                         format!(
-                                            "range patterns are only supported for integer types, found `{target_ty}`"
+                                            "range patterns are only supported for integer and char types, found `{target_ty}`"
                                         ),
                                     );
                                 }
@@ -2297,14 +2299,7 @@ impl Checker<'_> {
                 Literal::Float(_) => Type::Float,
                 Literal::Boolean(_) => Type::Bool,
                 Literal::String(_) => Type::String,
-                Literal::Char(_) => {
-                    self.error(
-                        DiagnosticCode::UnsupportedFeature,
-                        expr.span,
-                        "char values are not supported in this milestone",
-                    );
-                    Type::Error
-                }
+                Literal::Char(_) => Type::Char,
             },
             ExprKind::Identifier(name) => {
                 let id = self.reference(name);
@@ -2871,13 +2866,13 @@ impl Checker<'_> {
                     // textual form, and no implicit conversion beyond that.
                     if !matches!(
                         ty,
-                        Type::Int(_) | Type::Float | Type::Bool | Type::String | Type::Error
+                        Type::Int(_) | Type::Float | Type::Bool | Type::Char | Type::String | Type::Error
                     ) {
                         self.error(
                             DiagnosticCode::InvalidValueType,
                             value.span,
                             format!(
-                                "cannot interpolate `{}`; only int, float, bool and string have a textual form",
+                                "cannot interpolate `{}`; only int, float, bool, char and string have a textual form",
                                 self.type_name(ty)
                             ),
                         );
@@ -2897,13 +2892,12 @@ impl Checker<'_> {
         let valid = match op {
             // `+` also concatenates; the result is a new string.
             Add => left.is_numeric() || left == Type::String,
-            Subtract | Multiply | Divide | Less | Greater | LessEqual | GreaterEqual => {
-                left.is_numeric()
-            }
+            Subtract | Multiply | Divide => left.is_numeric(),
+            Less | Greater | LessEqual | GreaterEqual => left.is_numeric() || left == Type::Char,
             Modulo | BitAnd | BitOr | BitXor | ShiftLeft | ShiftRight => left.int_type().is_some(),
             And | Or => left == Type::Bool,
             Equal | NotEqual => {
-                matches!(left, Type::Int(_) | Type::Float | Type::Bool | Type::String)
+                matches!(left, Type::Int(_) | Type::Float | Type::Bool | Type::String | Type::Char)
             }
         };
         if !valid {
@@ -3347,12 +3341,12 @@ impl Checker<'_> {
                 self.expected_context = previous;
                 if found == Type::Error {
                     Type::Error
-                } else if found.int_type().is_none() {
+                } else if found.int_type().is_none() && found != Type::Float && found != Type::Char {
                     self.error(
                         DiagnosticCode::TypeMismatch,
                         arguments[0].span,
                         format!(
-                            "`{}` converts an integer, found `{}`",
+                            "`{}` converts an integer, float or char, found `{}`",
                             kind.name(),
                             self.type_name(found)
                         ),
@@ -3360,6 +3354,64 @@ impl Checker<'_> {
                     Type::Error
                 } else {
                     Type::Int(kind)
+                }
+            }
+            Some((_, SymbolKind::Builtin(Builtin::FloatConvert))) => {
+                if arguments.len() != 1 {
+                    for argument in arguments {
+                        self.expression(argument);
+                    }
+                    self.error(
+                        DiagnosticCode::ArgumentCount,
+                        span,
+                        "`float` converts exactly one value".to_string(),
+                    );
+                    return Type::Error;
+                }
+                let found = self.expression(&arguments[0]);
+                if found == Type::Error {
+                    Type::Error
+                } else if found.int_type().is_none() && found != Type::Float {
+                    self.error(
+                        DiagnosticCode::TypeMismatch,
+                        arguments[0].span,
+                        format!(
+                            "`float` converts an integer or float, found `{}`",
+                            self.type_name(found)
+                        ),
+                    );
+                    Type::Error
+                } else {
+                    Type::Float
+                }
+            }
+            Some((_, SymbolKind::Builtin(Builtin::CharConvert))) => {
+                if arguments.len() != 1 {
+                    for argument in arguments {
+                        self.expression(argument);
+                    }
+                    self.error(
+                        DiagnosticCode::ArgumentCount,
+                        span,
+                        "`char` converts exactly one value".to_string(),
+                    );
+                    return Type::Error;
+                }
+                let found = self.expression(&arguments[0]);
+                if found == Type::Error {
+                    Type::Error
+                } else if found.int_type().is_none() && found != Type::Char {
+                    self.error(
+                        DiagnosticCode::TypeMismatch,
+                        arguments[0].span,
+                        format!(
+                            "`char` converts an integer or char, found `{}`",
+                            self.type_name(found)
+                        ),
+                    );
+                    Type::Error
+                } else {
+                    Type::Char
                 }
             }
             Some((_, SymbolKind::Builtin(builtin @ (Builtin::Ok | Builtin::Err)))) => {
@@ -3437,13 +3489,13 @@ impl Checker<'_> {
                         );
                     } else if !matches!(
                         ty,
-                        Type::Int(_) | Type::Float | Type::Bool | Type::String | Type::Error
+                        Type::Int(_) | Type::Float | Type::Bool | Type::Char | Type::String | Type::Error
                     ) {
                         self.error(
                             DiagnosticCode::InvalidValueType,
                             arg.span,
                             format!(
-                                "`print` cannot print `{}`; only int, float, bool and string have a textual form",
+                                "`print` cannot print `{}`; only int, float, bool, char and string have a textual form",
                                 self.type_name(ty)
                             ),
                         );
@@ -3699,7 +3751,7 @@ impl Checker<'_> {
 
         let final_ty = final_val.ty();
         match final_ty {
-            Type::Int(_) | Type::Float | Type::Bool | Type::String => {}
+            Type::Int(_) | Type::Float | Type::Bool | Type::Char | Type::String => {}
             Type::Error => {}
             other => {
                 self.error(
@@ -3747,13 +3799,9 @@ impl Checker<'_> {
                     self.record(expr, Type::String);
                     Some(ConstValue::String(value.clone()))
                 }
-                Literal::Char(_) => {
-                    self.error(
-                        DiagnosticCode::UnsupportedFeature,
-                        expr.span,
-                        "char values are not supported",
-                    );
-                    None
+                Literal::Char(c) => {
+                    self.record(expr, Type::Char);
+                    Some(ConstValue::Char(*c))
                 }
             },
             ExprKind::Group(inner) => {
@@ -4223,6 +4271,15 @@ impl Checker<'_> {
                                     return None;
                                 }
                             },
+                            (ConstValue::Char(a), ConstValue::Char(b)) => match op {
+                                BinaryOp::Equal => a == b,
+                                BinaryOp::NotEqual => a != b,
+                                BinaryOp::Less => a < b,
+                                BinaryOp::LessEqual => a <= b,
+                                BinaryOp::Greater => a > b,
+                                BinaryOp::GreaterEqual => a >= b,
+                                _ => unreachable!(),
+                            },
                             (ConstValue::String(a), ConstValue::String(b)) => match op {
                                 BinaryOp::Equal => a == b,
                                 BinaryOp::NotEqual => a != b,
@@ -4312,45 +4369,203 @@ impl Checker<'_> {
                     ExprKind::Member { member, .. } => Some(self.reference(member)),
                     _ => None,
                 };
-                if let Some(sym_id) = id
-                    && let SymbolKind::Builtin(Builtin::IntConvert(target_it)) =
-                        self.resolution.symbols[sym_id.0].kind
-                {
-                    if arguments.len() != 1 {
-                        self.error(
-                            DiagnosticCode::ArgumentCount,
-                            expr.span,
-                            format!("conversion `{}` expects 1 argument", target_it.name()),
-                        );
-                        return None;
-                    }
-                    let arg_val = self.eval_constant_expr(&arguments[0], None)?;
-                    if let ConstValue::Int(val, _) = arg_val {
-                        if !int_type_fits(val, target_it) {
-                            self.error(
-                                DiagnosticCode::IntegerRange,
-                                expr.span,
-                                format!(
-                                    "constant value `{val}` does not fit target type `{}`",
-                                    target_it.name()
-                                ),
-                            );
-                            return None;
+                if let Some(sym_id) = id {
+                    match self.resolution.symbols[sym_id.0].kind {
+                        SymbolKind::Builtin(Builtin::IntConvert(target_it)) => {
+                            if arguments.len() != 1 {
+                                self.error(
+                                    DiagnosticCode::ArgumentCount,
+                                    expr.span,
+                                    format!("conversion `{}` expects 1 argument", target_it.name()),
+                                );
+                                return None;
+                            }
+                            let arg_val = self.eval_constant_expr(&arguments[0], None)?;
+                            match arg_val {
+                                ConstValue::Int(val, _) => {
+                                    if !int_type_fits(val, target_it) {
+                                        self.error(
+                                            DiagnosticCode::IntegerRange,
+                                            expr.span,
+                                            format!(
+                                                "constant value `{val}` does not fit target type `{}`",
+                                                target_it.name()
+                                            ),
+                                        );
+                                        return None;
+                                    }
+                                    let v = ConstValue::Int(val, target_it);
+                                    self.record(expr, Type::Int(target_it));
+                                    Some(v)
+                                }
+                                ConstValue::Float(f) => {
+                                    if f.is_nan() {
+                                        self.error(
+                                            DiagnosticCode::IntegerRange,
+                                            expr.span,
+                                            "constant float value is NaN",
+                                        );
+                                        return None;
+                                    }
+                                    let (min_f, max_f) = match target_it {
+                                        IntType::I8 => (-129.0, 128.0),
+                                        IntType::I16 => (-32769.0, 32768.0),
+                                        IntType::I32 => (-2147483649.0, 2147483648.0),
+                                        IntType::I64 | IntType::ISize => (-9223372036854775808.0, 9223372036854775808.0),
+                                        IntType::U8 => (-1.0, 256.0),
+                                        IntType::U16 => (-1.0, 65536.0),
+                                        IntType::U32 => (-1.0, 4294967296.0),
+                                        IntType::U64 | IntType::USize => (-1.0, 18446744073709551616.0),
+                                    };
+                                    let out_of_bounds = match target_it {
+                                        IntType::I64 | IntType::ISize => f < min_f || f >= max_f,
+                                        _ => f <= min_f || f >= max_f,
+                                    };
+                                    if out_of_bounds {
+                                        self.error(
+                                            DiagnosticCode::IntegerRange,
+                                            expr.span,
+                                            format!(
+                                                "constant float value `{f}` does not fit target type `{}`",
+                                                target_it.name()
+                                            ),
+                                        );
+                                        return None;
+                                    }
+                                    let val = f.trunc() as i128;
+                                    if !int_type_fits(val, target_it) {
+                                        self.error(
+                                            DiagnosticCode::IntegerRange,
+                                            expr.span,
+                                            format!(
+                                                "constant float value `{f}` does not fit target type `{}`",
+                                                target_it.name()
+                                            ),
+                                        );
+                                        return None;
+                                    }
+                                    let v = ConstValue::Int(val, target_it);
+                                    self.record(expr, Type::Int(target_it));
+                                    Some(v)
+                                }
+                                ConstValue::Char(c) => {
+                                    let val = (c as u32) as i128;
+                                    if !int_type_fits(val, target_it) {
+                                        self.error(
+                                            DiagnosticCode::IntegerRange,
+                                            expr.span,
+                                            format!(
+                                                "constant char code point `{val}` does not fit target type `{}`",
+                                                target_it.name()
+                                            ),
+                                        );
+                                        return None;
+                                    }
+                                    let v = ConstValue::Int(val, target_it);
+                                    self.record(expr, Type::Int(target_it));
+                                    Some(v)
+                                }
+                                _ => {
+                                    self.error(
+                                        DiagnosticCode::TypeMismatch,
+                                        arguments[0].span,
+                                        format!(
+                                            "conversion `{}` expects integer, float, or char argument, found `{}`",
+                                            target_it.name(),
+                                            arg_val.ty()
+                                        ),
+                                    );
+                                    None
+                                }
+                            }
                         }
-                        let v = ConstValue::Int(val, target_it);
-                        self.record(expr, Type::Int(target_it));
-                        Some(v)
-                    } else {
-                        self.error(
-                            DiagnosticCode::TypeMismatch,
-                            arguments[0].span,
-                            format!(
-                                "conversion `{}` expects integer argument, found `{}`",
-                                target_it.name(),
-                                arg_val.ty()
-                            ),
-                        );
-                        None
+                        SymbolKind::Builtin(Builtin::FloatConvert) => {
+                            if arguments.len() != 1 {
+                                self.error(
+                                    DiagnosticCode::ArgumentCount,
+                                    expr.span,
+                                    "conversion `float` expects 1 argument",
+                                );
+                                return None;
+                            }
+                            let arg_val = self.eval_constant_expr(&arguments[0], None)?;
+                            match arg_val {
+                                ConstValue::Int(val, _) => {
+                                    let v = ConstValue::Float(val as f64);
+                                    self.record(expr, Type::Float);
+                                    Some(v)
+                                }
+                                ConstValue::Float(f) => {
+                                    let v = ConstValue::Float(f);
+                                    self.record(expr, Type::Float);
+                                    Some(v)
+                                }
+                                _ => {
+                                    self.error(
+                                        DiagnosticCode::TypeMismatch,
+                                        arguments[0].span,
+                                        format!(
+                                            "conversion `float` expects integer or float argument, found `{}`",
+                                            arg_val.ty()
+                                        ),
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        SymbolKind::Builtin(Builtin::CharConvert) => {
+                            if arguments.len() != 1 {
+                                self.error(
+                                    DiagnosticCode::ArgumentCount,
+                                    expr.span,
+                                    "conversion `char` expects 1 argument",
+                                );
+                                return None;
+                            }
+                            let arg_val = self.eval_constant_expr(&arguments[0], None)?;
+                            match arg_val {
+                                ConstValue::Int(val, _) => {
+                                    if val < 0 || val > 0x10FFFF || (val >= 0xD800 && val <= 0xDFFF) {
+                                        self.error(
+                                            DiagnosticCode::IntegerRange,
+                                            expr.span,
+                                            format!(
+                                                "constant value `{val}` is not a valid Unicode scalar value"
+                                            ),
+                                        );
+                                        return None;
+                                    }
+                                    let c = char::from_u32(val as u32).expect("valid unicode");
+                                    let v = ConstValue::Char(c);
+                                    self.record(expr, Type::Char);
+                                    Some(v)
+                                }
+                                ConstValue::Char(c) => {
+                                    let v = ConstValue::Char(c);
+                                    self.record(expr, Type::Char);
+                                    Some(v)
+                                }
+                                _ => {
+                                    self.error(
+                                        DiagnosticCode::TypeMismatch,
+                                        arguments[0].span,
+                                        format!(
+                                            "conversion `char` expects integer or char argument, found `{}`",
+                                            arg_val.ty()
+                                        ),
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                        _ => {
+                            self.error(
+                                DiagnosticCode::UnsupportedFeature,
+                                expr.span,
+                                "function calls are not supported in constant expressions",
+                            );
+                            None
+                        }
                     }
                 } else {
                     self.error(

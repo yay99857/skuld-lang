@@ -118,6 +118,34 @@ static inline skuld_string skuld_string_from_bool(bool value) {
                  : (skuld_string){(const unsigned char *)"false", 5, NULL};
 }
 
+static inline skuld_string skuld_string_from_char(uint32_t cp) {
+    char bytes[4];
+    size_t len = 0;
+    if (cp <= 0x7F) {
+        bytes[0] = (char)cp;
+        len = 1;
+    } else if (cp <= 0x7FF) {
+        bytes[0] = (char)(0xC0 | (cp >> 6));
+        bytes[1] = (char)(0x80 | (cp & 0x3F));
+        len = 2;
+    } else if (cp <= 0xFFFF) {
+        bytes[0] = (char)(0xE0 | (cp >> 12));
+        bytes[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        bytes[2] = (char)(0x80 | (cp & 0x3F));
+        len = 3;
+    } else if (cp <= 0x10FFFF) {
+        bytes[0] = (char)(0xF0 | (cp >> 18));
+        bytes[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        bytes[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        bytes[3] = (char)(0x80 | (cp & 0x3F));
+        len = 4;
+    } else {
+        skuld_fail("invalid Unicode code point", 0);
+    }
+    return skuld_string_from_bytes(bytes, len);
+}
+
+
 /* Shared allocation header for classes and arrays. One implicit weak count
  * keeps the header alive during destruction of the last strong reference. */
 typedef struct skuld_object {

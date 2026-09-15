@@ -12,7 +12,8 @@ Skuld now checks and runs small native programs through the complete pipeline:
 lexer → parser → AST → resolver → type checker → HIR → C → clang → executable.
 Demos 0–3 work: hello, typed functions/variables, conditional flow and classes
 with methods and interpolation. Loops, structs, weak references, arrays,
-Option values, `Result<T, E>` with `?` propagation, the sized integer types and
+Option values, `Result<T, E>` with `?` propagation, the sized and word-sized integer
+types (`usize`, `isize`), explicit float/int conversions, `char` values and
 byte-level string access work too.
 
 Skuld is an independent language with its own syntax, semantics and identity.

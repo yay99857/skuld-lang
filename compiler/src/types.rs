@@ -113,22 +113,26 @@ pub enum IntType {
     I16,
     I32,
     I64,
+    ISize,
     U8,
     U16,
     U32,
     U64,
+    USize,
 }
 
 impl IntType {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::I8,
         Self::I16,
         Self::I32,
         Self::I64,
+        Self::ISize,
         Self::U8,
         Self::U16,
         Self::U32,
         Self::U64,
+        Self::USize,
     ];
     /// The canonical name used in diagnostics. `I64` renders as `int`, the
     /// spelling the language leads with.
@@ -138,10 +142,12 @@ impl IntType {
             Self::I16 => "i16",
             Self::I32 => "i32",
             Self::I64 => "int",
+            Self::ISize => "isize",
             Self::U8 => "u8",
             Self::U16 => "u16",
             Self::U32 => "u32",
             Self::U64 => "u64",
+            Self::USize => "usize",
         }
     }
     /// The suffix used to build generated C helper names.
@@ -157,21 +163,23 @@ impl IntType {
             Self::I16 => "int16_t",
             Self::I32 => "int32_t",
             Self::I64 => "int64_t",
+            Self::ISize => "ptrdiff_t",
             Self::U8 => "uint8_t",
             Self::U16 => "uint16_t",
             Self::U32 => "uint32_t",
             Self::U64 => "uint64_t",
+            Self::USize => "size_t",
         }
     }
     pub fn signed(self) -> bool {
-        matches!(self, Self::I8 | Self::I16 | Self::I32 | Self::I64)
+        matches!(self, Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::ISize)
     }
     pub fn bits(self) -> u32 {
         match self {
             Self::I8 | Self::U8 => 8,
             Self::I16 | Self::U16 => 16,
             Self::I32 | Self::U32 => 32,
-            Self::I64 | Self::U64 => 64,
+            Self::I64 | Self::U64 | Self::ISize | Self::USize => 64,
         }
     }
     /// The largest literal magnitude this type accepts without a leading `-`.
@@ -210,6 +218,7 @@ pub enum Pointee {
     Int(IntType),
     Float,
     Bool,
+    Char,
 }
 
 impl Pointee {
@@ -219,6 +228,7 @@ impl Pointee {
             Self::Int(kind) => kind.name(),
             Self::Float => "float",
             Self::Bool => "bool",
+            Self::Char => "char",
         }
     }
     pub fn c_type(self) -> &'static str {
@@ -227,6 +237,7 @@ impl Pointee {
             Self::Int(kind) => kind.c_type(),
             Self::Float => "double",
             Self::Bool => "bool",
+            Self::Char => "uint32_t",
         }
     }
 }
@@ -236,6 +247,7 @@ pub enum Type {
     Int(IntType),
     Float,
     Bool,
+    Char,
     String,
     Void,
     /// A declared struct or class; its table entry determines value/reference semantics.
@@ -284,6 +296,7 @@ impl fmt::Display for Type {
             Self::Int(kind) => kind.name(),
             Self::Float => "float",
             Self::Bool => "bool",
+            Self::Char => "char",
             Self::String => "string",
             Self::Void => "void",
             // Only the checker knows struct names; it renders them itself.
@@ -309,6 +322,7 @@ pub enum ConstValue {
     Float(f64),
     Bool(bool),
     String(String),
+    Char(char),
 }
 
 impl ConstValue {
@@ -318,6 +332,7 @@ impl ConstValue {
             ConstValue::Float(_) => Type::Float,
             ConstValue::Bool(_) => Type::Bool,
             ConstValue::String(_) => Type::String,
+            ConstValue::Char(_) => Type::Char,
         }
     }
 }

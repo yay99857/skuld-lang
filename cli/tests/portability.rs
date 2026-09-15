@@ -18,13 +18,9 @@ use std::{
 
 /// Fixtures that are deliberately not portable, and why.
 ///
-/// `extern "C"` declarations name a concrete width, and C's own types do not:
-/// `size_t` is 64 bits on x86-64 and 32 on i686. A fixture that declares
-/// `write(fd, buffer, count: u64)` is therefore right on one target and wrong
-/// on the other. Skuld has no `usize`, and inventing one is a language
-/// decision, not a portability fix — so the fixture stays as it is and this is
-/// the note that says so.
-const TARGET_SPECIFIC: &[&str] = &["extern_c_ffi"];
+/// With M21 providing `usize` and `isize`, `extern_c_ffi` uses `usize`/`isize`
+/// matching C `size_t`/`ssize_t`, so every pass fixture runs identically on i686.
+const TARGET_SPECIFIC: &[&str] = &[];
 
 fn workspace(relative: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -1,14 +1,14 @@
 // The foreign boundary: libc `write` and `abs` called from Skuld. Every line
 // of output goes through `write`, so nothing depends on stdio buffering.
 unsafe extern "C" {
-    func write(fd: i32, buffer: *u8, count: u64) -> i64
+    func write(fd: i32, buffer: *u8, count: usize) -> isize
     func abs(value: i32) -> i32
 }
 
 // `ptr` borrows the bytes the string already owns; the borrow lasts for the
 // call and keeps nothing alive afterwards.
 func emit(text: string) -> int {
-    return write(1, ptr(text), u64(text.len()))
+    return int(write(1, ptr(text), usize(text.len())))
 }
 
 func main() {
@@ -18,7 +18,7 @@ func main() {
     for byte in "from an array\n".bytes() {
         bytes.push(byte)
     }
-    let second = write(1, ptr(bytes), u64(bytes.len()))
+    let second = int(write(1, ptr(bytes), usize(bytes.len())))
 
     if written == 16 && second == 14 {
         let third = emit("both borrows wrote every byte\n")

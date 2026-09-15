@@ -1,0 +1,4 @@
+func main() {
+    let f: float = 200.0
+    print(i8(f))
+}

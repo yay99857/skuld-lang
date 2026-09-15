@@ -439,6 +439,8 @@ fn describe_builtin(builtin: Builtin, name: &str) -> String {
         Builtin::Ptr => "func ptr(value) -> *u8".to_owned(),
         Builtin::BytesToString => "func bytes_to_string([]u8) -> Result<string, string>".to_owned(),
         Builtin::IntConvert(kind) => format!("func {name}(value) -> {}", kind.name()),
+        Builtin::FloatConvert => "func float(value) -> float".to_owned(),
+        Builtin::CharConvert => "func char(value) -> char".to_owned(),
     }
 }
 

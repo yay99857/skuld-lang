@@ -334,6 +334,7 @@ fn statement(source: &ast::Statement, cx: &Lowering<'_>) -> h::Statement {
                                     ConstValue::Int(val, _) => h::ExprKind::Int(*val as i64),
                                     ConstValue::Float(val) => h::ExprKind::Float(*val),
                                     ConstValue::Bool(val) => h::ExprKind::Bool(*val),
+                                    ConstValue::Char(val) => h::ExprKind::Char(*val),
                                     ConstValue::String(val) => h::ExprKind::String(val.clone()),
                                 };
                                 h::MatchPattern::Constant(h::Expr {
@@ -555,6 +556,7 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     ConstValue::Int(val, _) => h::ExprKind::Int(*val as i64),
                     ConstValue::Float(val) => h::ExprKind::Float(*val),
                     ConstValue::Bool(val) => h::ExprKind::Bool(*val),
+                    ConstValue::Char(val) => h::ExprKind::Char(*val),
                     ConstValue::String(val) => h::ExprKind::String(val.clone()),
                 }
             } else {
@@ -577,7 +579,7 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
             ast::Literal::Float(value) => h::ExprKind::Float(*value),
             ast::Literal::Boolean(value) => h::ExprKind::Bool(*value),
             ast::Literal::String(value) => h::ExprKind::String(value.clone()),
-            ast::Literal::Char(_) => unreachable!("internal compiler bug: checked char literal"),
+            ast::Literal::Char(value) => h::ExprKind::Char(*value),
         },
         ast::ExprKind::Identifier(name) => {
             let id = cx.reference(name.span);
@@ -588,6 +590,7 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                         ConstValue::Int(val, _) => h::ExprKind::Int(*val as i64),
                         ConstValue::Float(val) => h::ExprKind::Float(*val),
                         ConstValue::Bool(val) => h::ExprKind::Bool(*val),
+                        ConstValue::Char(val) => h::ExprKind::Char(*val),
                         ConstValue::String(val) => h::ExprKind::String(val.clone()),
                     }
                 }
@@ -856,6 +859,20 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                         value: Box::new(expression(&arguments[0], cx)),
                         target,
                     },
+                    ty: cx.ty(source.span).expect("checked expression"),
+                    span: source.span,
+                };
+            }
+            if cx.typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::FloatConvert) {
+                return h::Expr {
+                    kind: h::ExprKind::FloatConvert(Box::new(expression(&arguments[0], cx))),
+                    ty: cx.ty(source.span).expect("checked expression"),
+                    span: source.span,
+                };
+            }
+            if cx.typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::CharConvert) {
+                return h::Expr {
+                    kind: h::ExprKind::CharConvert(Box::new(expression(&arguments[0], cx))),
                     ty: cx.ty(source.span).expect("checked expression"),
                     span: source.span,
                 };

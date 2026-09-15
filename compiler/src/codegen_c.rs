@@ -602,6 +602,7 @@ fn type_name(structs: &[StructInfo], ty: Type) -> String {
         Type::Int(kind) => kind.c_type().into(),
         Type::Float => "double".into(),
         Type::Bool => "bool".into(),
+        Type::Char => "uint32_t".into(),
         Type::String => "skuld_string".into(),
         Type::Void => "void".into(),
         Type::Weak(_) => "skuld_weak".into(),
@@ -1001,8 +1002,13 @@ impl Emitter {
     /// on the way is not a reason to take a count.
     fn runs_no_code(&self, expr: &Expr) -> bool {
         match &expr.kind {
-            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::Bool(_) | ExprKind::Local { .. } => {
-                true
+            ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Char(_)
+            | ExprKind::Local { .. } => true,
+            ExprKind::FloatConvert(operand) | ExprKind::CharConvert(operand) => {
+                self.runs_no_code(operand)
             }
             ExprKind::Field { object, .. }
             | ExprKind::StringLen(object)
@@ -1621,6 +1627,7 @@ impl Emitter {
             }
             ExprKind::Float(value) => format!("{value:.17e}"),
             ExprKind::Bool(value) => value.to_string(),
+            ExprKind::Char(value) => format!("((uint32_t){})", *value as u32),
             ExprKind::String(value) => {
                 // All bytes use fixed-width octal escapes: no injection, NUL
                 // truncation, trigraphs or dependence on the C source charset.
@@ -1956,8 +1963,28 @@ impl Emitter {
                 )
             }
             ExprKind::IntConvert { value, target } => {
-                let source = value.ty.int_type().expect("checked integer conversion");
                 let rendered = self.expression(value);
+                if value.ty == Type::Float {
+                    return self.temporary(
+                        expr.ty,
+                        &format!(
+                            "skuld_f_to_{}({rendered}, {})",
+                            target.suffix(),
+                            expr.span.start
+                        ),
+                    );
+                }
+                if value.ty == Type::Char {
+                    return self.temporary(
+                        expr.ty,
+                        &format!(
+                            "skuld_u_to_{}((uint64_t)({rendered}), {})",
+                            target.suffix(),
+                            expr.span.start
+                        ),
+                    );
+                }
+                let source = value.ty.int_type().expect("checked integer conversion");
                 if source == *target {
                     return self.temporary(expr.ty, &rendered);
                 }
@@ -1972,6 +1999,30 @@ impl Emitter {
                         expr.span.start
                     ),
                 )
+            }
+            ExprKind::FloatConvert(value) => {
+                let rendered = self.expression(value);
+                if value.ty == Type::Float {
+                    self.temporary(expr.ty, &rendered)
+                } else {
+                    self.temporary(expr.ty, &format!("((double)({rendered}))"))
+                }
+            }
+            ExprKind::CharConvert(value) => {
+                let rendered = self.expression(value);
+                if value.ty == Type::Char {
+                    self.temporary(expr.ty, &rendered)
+                } else if value.ty.int_type().is_some_and(|it| it.signed()) {
+                    self.temporary(
+                        expr.ty,
+                        &format!("skuld_i_to_char((int64_t)({rendered}), {})", expr.span.start),
+                    )
+                } else {
+                    self.temporary(
+                        expr.ty,
+                        &format!("skuld_u_to_char((uint64_t)({rendered}), {})", expr.span.start),
+                    )
+                }
             }
             ExprKind::IsOk(value) | ExprKind::IsErr(value) => {
                 let tag = if matches!(expr.kind, ExprKind::IsOk(_)) {
@@ -2084,6 +2135,11 @@ impl Emitter {
                                 Type::Bool => self.store(
                                     Type::String,
                                     &format!("skuld_string_from_bool({rendered})"),
+                                    true,
+                                ),
+                                Type::Char => self.store(
+                                    Type::String,
+                                    &format!("skuld_string_from_char({rendered})"),
                                     true,
                                 ),
                                 _ => unreachable!(
@@ -2245,6 +2301,7 @@ impl Emitter {
                             Type::Float => "float",
                             Type::Bool => "bool",
                             Type::String => "string",
+                            Type::Char => "char",
                             _ => unreachable!("internal compiler bug: non-printable HIR argument"),
                         };
                         format!("skuld_print_{suffix}({}, {})", values[0], expr.span.start)
@@ -2322,6 +2379,7 @@ const PRELUDE_HEAD: &str = r#"/* Generated by Skuld. C11, compiled with clang. *
 #include <string.h>
 #include <errno.h>
 #include <float.h>
+#include <math.h>
 _Static_assert(DBL_MANT_DIG == 53 && DBL_MAX_EXP == 1024, "Skuld requires binary64 double");
 
 /* Every bounds check, overflow check and trap in a generated program ends
@@ -2408,10 +2466,12 @@ SKULD_INT_OPS_SIGNED(i8, int8_t, INT8_MIN, uint8_t, 8)
 SKULD_INT_OPS_SIGNED(i16, int16_t, INT16_MIN, uint16_t, 16)
 SKULD_INT_OPS_SIGNED(i32, int32_t, INT32_MIN, uint32_t, 32)
 SKULD_INT_OPS_SIGNED(i64, int64_t, INT64_MIN, uint64_t, 64)
+SKULD_INT_OPS_SIGNED(isize, ptrdiff_t, PTRDIFF_MIN, size_t, ((ptrdiff_t)(sizeof(ptrdiff_t) * 8)))
 SKULD_INT_OPS_UNSIGNED(u8, uint8_t, 8)
 SKULD_INT_OPS_UNSIGNED(u16, uint16_t, 16)
 SKULD_INT_OPS_UNSIGNED(u32, uint32_t, 32)
 SKULD_INT_OPS_UNSIGNED(u64, uint64_t, 64)
+SKULD_INT_OPS_UNSIGNED(usize, size_t, (sizeof(size_t) * 8))
 
 /* Conversions between widths are explicit in Skuld and trap when the value
  * does not fit. A signed source widens to int64_t and an unsigned one to
@@ -2431,10 +2491,74 @@ SKULD_INT_CONVERT(i8, int8_t, INT8_MIN, INT8_MAX)
 SKULD_INT_CONVERT(i16, int16_t, INT16_MIN, INT16_MAX)
 SKULD_INT_CONVERT(i32, int32_t, INT32_MIN, INT32_MAX)
 SKULD_INT_CONVERT(i64, int64_t, INT64_MIN, INT64_MAX)
+SKULD_INT_CONVERT(isize, ptrdiff_t, PTRDIFF_MIN, PTRDIFF_MAX)
 SKULD_INT_CONVERT(u8, uint8_t, 0, UINT8_MAX)
 SKULD_INT_CONVERT(u16, uint16_t, 0, UINT16_MAX)
 SKULD_INT_CONVERT(u32, uint32_t, 0, UINT32_MAX)
 SKULD_INT_CONVERT(u64, uint64_t, 0, UINT64_MAX)
+SKULD_INT_CONVERT(usize, size_t, 0, SIZE_MAX)
+
+static inline int8_t skuld_f_to_i8(double v, size_t byte) {
+    if (isnan(v) || v <= -129.0 || v >= 128.0) skuld_fail("float conversion out of range", byte);
+    return (int8_t)v;
+}
+static inline int16_t skuld_f_to_i16(double v, size_t byte) {
+    if (isnan(v) || v <= -32769.0 || v >= 32768.0) skuld_fail("float conversion out of range", byte);
+    return (int16_t)v;
+}
+static inline int32_t skuld_f_to_i32(double v, size_t byte) {
+    if (isnan(v) || v <= -2147483649.0 || v >= 2147483648.0) skuld_fail("float conversion out of range", byte);
+    return (int32_t)v;
+}
+static inline int64_t skuld_f_to_i64(double v, size_t byte) {
+    if (isnan(v) || v < -9223372036854775808.0 || v >= 9223372036854775808.0) skuld_fail("float conversion out of range", byte);
+    return (int64_t)v;
+}
+static inline ptrdiff_t skuld_f_to_isize(double v, size_t byte) {
+    if (sizeof(ptrdiff_t) == 4) {
+        if (isnan(v) || v <= -2147483649.0 || v >= 2147483648.0) skuld_fail("float conversion out of range", byte);
+    } else {
+        if (isnan(v) || v < -9223372036854775808.0 || v >= 9223372036854775808.0) skuld_fail("float conversion out of range", byte);
+    }
+    return (ptrdiff_t)v;
+}
+static inline uint8_t skuld_f_to_u8(double v, size_t byte) {
+    if (isnan(v) || v <= -1.0 || v >= 256.0) skuld_fail("float conversion out of range", byte);
+    return (uint8_t)v;
+}
+static inline uint16_t skuld_f_to_u16(double v, size_t byte) {
+    if (isnan(v) || v <= -1.0 || v >= 65536.0) skuld_fail("float conversion out of range", byte);
+    return (uint16_t)v;
+}
+static inline uint32_t skuld_f_to_u32(double v, size_t byte) {
+    if (isnan(v) || v <= -1.0 || v >= 4294967296.0) skuld_fail("float conversion out of range", byte);
+    return (uint32_t)v;
+}
+static inline uint64_t skuld_f_to_u64(double v, size_t byte) {
+    if (isnan(v) || v <= -1.0 || v >= 18446744073709551616.0) skuld_fail("float conversion out of range", byte);
+    return (uint64_t)v;
+}
+static inline size_t skuld_f_to_usize(double v, size_t byte) {
+    if (sizeof(size_t) == 4) {
+        if (isnan(v) || v <= -1.0 || v >= 4294967296.0) skuld_fail("float conversion out of range", byte);
+    } else {
+        if (isnan(v) || v <= -1.0 || v >= 18446744073709551616.0) skuld_fail("float conversion out of range", byte);
+    }
+    return (size_t)v;
+}
+
+static inline uint32_t skuld_i_to_char(int64_t v, size_t byte) {
+    if (v < 0 || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) {
+        skuld_fail("invalid Unicode code point", byte);
+    }
+    return (uint32_t)v;
+}
+static inline uint32_t skuld_u_to_char(uint64_t v, size_t byte) {
+    if (v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) {
+        skuld_fail("invalid Unicode code point", byte);
+    }
+    return (uint32_t)v;
+}
 
 static inline bool skuld_string_equal(skuld_string a, skuld_string b) {
     return a.len == b.len && memcmp(a.data, b.data, a.len) == 0;
@@ -2450,6 +2574,33 @@ static inline void skuld_print_float(double value, size_t byte) {
 }
 static inline void skuld_print_bool(bool value, size_t byte) {
     if (puts(value ? "true" : "false") == EOF) skuld_fail("stdout write failed", byte);
+}
+static inline void skuld_print_char(uint32_t cp, size_t byte) {
+    char bytes[4];
+    size_t len = 0;
+    if (cp <= 0x7F) {
+        bytes[0] = (char)cp;
+        len = 1;
+    } else if (cp <= 0x7FF) {
+        bytes[0] = (char)(0xC0 | (cp >> 6));
+        bytes[1] = (char)(0x80 | (cp & 0x3F));
+        len = 2;
+    } else if (cp <= 0xFFFF) {
+        bytes[0] = (char)(0xE0 | (cp >> 12));
+        bytes[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        bytes[2] = (char)(0x80 | (cp & 0x3F));
+        len = 3;
+    } else if (cp <= 0x10FFFF) {
+        bytes[0] = (char)(0xF0 | (cp >> 18));
+        bytes[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        bytes[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        bytes[3] = (char)(0x80 | (cp & 0x3F));
+        len = 4;
+    } else {
+        skuld_fail("invalid Unicode code point", byte);
+    }
+    if (fwrite(bytes, 1, len, stdout) != len || fputc('\n', stdout) == EOF)
+        skuld_fail("stdout write failed", byte);
 }
 static inline void skuld_print_string(skuld_string value, size_t byte) {
     if (fwrite(value.data, 1, value.len, stdout) != value.len || fputc('\n', stdout) == EOF)

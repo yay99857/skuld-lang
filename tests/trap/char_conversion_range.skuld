@@ -1,0 +1,4 @@
+func main() {
+    let code: int = 0x110000
+    print(char(code))
+}

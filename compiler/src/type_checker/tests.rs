@@ -114,10 +114,7 @@ fn void_and_unsupported_features() {
         "func main() { let x: User = 1 }",
         DiagnosticCode::UnknownType,
     );
-    fails(
-        "func main() { print('a') }",
-        DiagnosticCode::UnsupportedFeature,
-    );
+    valid("func main() { print('a') }");
     fails(
         "func main() { let x = 1\nx.greet() }",
         DiagnosticCode::UnsupportedFeature,
