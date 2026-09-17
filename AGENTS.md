@@ -381,16 +381,46 @@ accurate; documenting a future feature is not a request to implement it.
   not an initialiser a reader wants. It is available in both build modes — a
   hosted program has the same need — and `tests/fail/reserved_declaration` was
   promoted to `tests/pass/statics`, which emptied that tripwire.
-  The rest of M26 — a build mode with no runtime and no libc, the subset the
-  checker enforces there, a user-supplied entry point and an object-file
-  build — is not implemented yet.
-  Every one of them is Planned and none is authorized; each still needs an
-  explicit decision recorded here. One decision
-  is taken there and should not be reopened by accident: M20's `const` does
-  not replace `let`, since an immutable binding is what the backend reads to
-  borrow a managed local instead of counting it.
-  No milestone is active. Do not infer authorization for further features without
-  explicit decision.
+  The rest of M26 is complete too, which closes the systems sequence.
+  `--freestanding` on `check`, `emit-c` and `build` compiles a program with no
+  runtime and no libc: the generated C carries neither `runtime/strings.c` nor
+  a generated `main`, includes only the four headers C guarantees a
+  freestanding implementation, and a trap becomes `__builtin_trap()` because
+  there is no standard error to explain itself to. Bounds checks and overflow
+  traps stay — `skuld_index` moved out of the managed runtime and into a
+  prelude both modes share, since checking an index is part of the language and
+  not part of managing memory. It is **one language, two build modes**: the
+  checker refuses the values that would need a runtime — `string`, `[]T`, a
+  class, an interface, a `weak`, anything holding one, and `print` — and
+  changes nothing else. A `pub func` is emitted under the name it was written
+  with, so an assembly stub or a bootloader has something to call; everything
+  private keeps a generated name; `main` is neither generated nor looked for. A
+  freestanding build writes an **object file** and accepts no linker argument:
+  the linker script, the target and the startup stub belong to whoever
+  assembles the result, and for a target that is not this machine `emit-c
+  --freestanding` hands over the C the way the 32-bit portability suite already
+  does. Decided here and not to be reopened: a freestanding program is **given
+  no allocator, because nothing allocates** — its storage is its statics and
+  its stack, and one that wants a heap manages a region itself with M23's
+  pointers; an interface would not have helped, since an interface is a class
+  and a class is what this mode does not have. The closing marker is met in
+  `cli/tests/freestanding.rs`: a static Linux x86-64 executable making `write`
+  and `exit` syscalls through an assembly stub, checked to be statically linked
+  rather than assumed to be, and a 32-bit multiboot kernel that writes to the
+  VGA text buffer, reads it back and stops the machine — built and checked for
+  its multiboot header everywhere, booted under `qemu-system-i386` where that
+  exists. What a freestanding program cannot do without help is exactly what
+  the language deliberately cannot spell — `syscall`, `in`/`out`, anything that
+  is one instruction rather than a value — and those are assembly declared
+  through `extern "C"`, which is the boundary the FFI already was.
+  No milestone is active. The candidates `ROADMAP.md` lists after the systems
+  sequence — inline assembly, atomics and a memory model, threads, interrupt
+  and naked calling conventions, linker sections, a target that is not Linux —
+  are each a milestone of its own and none is authorized. One older decision
+  should not be reopened by accident either: M20's `const` does not replace
+  `let`, since an immutable binding is what the backend reads to borrow a
+  managed local instead of counting it.
+  Do not infer authorization for further features without explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
   and string slices → `extern "C"` FFI → modules → standard library → function
   values → sockets. It is a plan, not a selection: a remaining entry is Planned,

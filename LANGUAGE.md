@@ -1017,6 +1017,55 @@ is how `std/fs`, `std/net` and `std/os` are written. Two modules of one program
 may declare the same C function, as `std/fs` and `std/os` both declare `read`,
 as long as they declare it identically.
 
+## Freestanding Skuld — Implemented
+
+A program with no runtime and no libc under it, which is the shape a kernel, a
+bootloader or a static utility has:
+
+```bash
+skuld check --freestanding kernel.skuld
+skuld emit-c --freestanding kernel.skuld > kernel.c
+skuld build --freestanding kernel.skuld -o kernel.o
+```
+
+**It is the same language.** There is no second dialect and no separate
+compiler: what changes is what there is to run, so the checker refuses the
+values that would need a runtime and everything else is written exactly as it
+is written in a hosted program.
+
+- **What a freestanding program holds:** the scalars, fixed arrays, structs,
+  enums, unions, pointers, `const` and `static`. A `string`, a `[]T`, a class,
+  an interface, a `weak` reference, and any `Option`, `Result`, struct or enum
+  that holds one are refused where they are written — they are reference
+  counted, and there is no runtime to count them with and no allocator to take
+  them from. `print` is refused too: there is no standard output.
+- **It has no entry point of its own.** Nothing generates `main`, and `main` is
+  not looked for. A `pub func` is emitted under the name it was written with,
+  so whatever starts the program — an assembly stub, a bootloader, another
+  object file — has something to call. Everything not `pub` keeps a generated
+  name.
+- **A build produces an object file**, not an executable: `-o` names it, and
+  the default is the source's name with `.o`. Nothing is linked, and no linker
+  argument is accepted — the linker script, the target and the startup stub
+  belong to whoever is assembling the thing this is part of. For a target that
+  is not this machine, `emit-c --freestanding` hands over the C and the C
+  compiler is driven directly, which is what the 32-bit kernel test does.
+- **The checks stay.** Every index is still bounds-checked and every
+  arithmetic overflow still traps; what changes is what a trap can do. There is
+  no standard error to explain itself to, so a trap is `__builtin_trap()` — an
+  instruction the processor refuses.
+- **The generated C includes only what C guarantees a freestanding
+  implementation**: `stdint.h`, `stdbool.h`, `stddef.h` and `float.h`.
+
+What a freestanding program cannot do without help is exactly what the language
+deliberately cannot spell: the `syscall` instruction, `in`/`out`, and anything
+else that is one instruction rather than a value. Those are written in assembly
+and declared as `extern "C"`, which is the same boundary the FFI already is.
+
+Memory is the same story. There is no allocator, because nothing allocates: a
+freestanding program's storage is its statics and its stack, and a program that
+wants more manages a region itself — the compiler stays out of it.
+
 ## `static` — Implemented
 
 `static` is storage that outlives every call:
@@ -1803,7 +1852,8 @@ foreign `extern "C"` declarations with raw pointers, modules with `import` and
 function values, expression lambdas, stable sorting and `to_sorted`, interfaces, `let ... else`,
 bitwise operators, integer literal prefixes, digit separators,
 fixed-size arrays, `unsafe` blocks with pointer loads and stores, `defer`,
-`static` storage, and reference-counted runtime behavior are **Implemented**. The future
+`static` storage, freestanding builds, and reference-counted runtime behavior
+are **Implemented**. The future
 capabilities listed in the roadmap are **Planned**. No generics, macros, async/await, threads, channels,
 reflection, decorators, annotations, package registry, compiler plugins,
 compile-time execution, operator overloading or user-defined conversions will

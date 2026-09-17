@@ -1,9 +1,14 @@
 //! Readable C11 generation from typed HIR only. No source syntax or name lookup.
 use crate::{hir::*, type_checker::StructInfo, types::Type};
 
-pub fn emit_c(program: &Program) -> String {
+pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
+    let freestanding = mode.is_freestanding();
     let mut emitter = Emitter {
-        output: format!("{PRELUDE_HEAD}{RUNTIME}{PRELUDE_TAIL}"),
+        output: if freestanding {
+            format!("{FREESTANDING_HEAD}{SHARED_CHECKS}{PRELUDE_TAIL}")
+        } else {
+            format!("{PRELUDE_HEAD}{SHARED_CHECKS}{RUNTIME}{PRELUDE_TAIL}{PRELUDE_HOSTED}")
+        },
         indent: 0,
         next_temp: 0,
         structs: program.structs.clone(),
@@ -25,6 +30,11 @@ pub fn emit_c(program: &Program) -> String {
             .iter()
             .map(|lambda| lambda.captures.iter().map(|c| c.id).collect())
             .collect(),
+        exports: if freestanding {
+            program.exports.iter().cloned().collect()
+        } else {
+            std::collections::BTreeMap::new()
+        },
         statics: program.statics.iter().map(|(id, _)| *id).collect(),
         defers: Vec::new(),
     };
@@ -515,7 +525,7 @@ pub fn emit_c(program: &Program) -> String {
         ));
         emitter.indent += 1;
         emitter.line("(void)skuld_env;");
-        let call = format!("skuld_f{}({})", id.0, arguments.join(", "));
+        let call = format!("{}({})", emitter.function_name(*id), arguments.join(", "));
         if info.return_type == Type::Void {
             emitter.line(&format!("{call};"));
         } else {
@@ -552,7 +562,11 @@ pub fn emit_c(program: &Program) -> String {
                 parameters.join(", ")
             ));
             emitter.indent += 1;
-            let call = format!("skuld_f{}({})", target.id.0, arguments.join(", "));
+            let call = format!(
+                "{}({})",
+                emitter.function_name(target.id),
+                arguments.join(", ")
+            );
             if method.return_type == Type::Void {
                 emitter.line(&format!("{call};"));
             } else {
@@ -623,17 +637,23 @@ pub fn emit_c(program: &Program) -> String {
         emitter.indent -= 1;
         emitter.line("}");
     }
-    emitter.line("");
-    // The arguments are taken here and nowhere else: a Skuld program reaches
-    // them through the runtime bridge, since following `argv` is a pointer
-    // read the foreign boundary does not do.
-    emitter.line("int main(int argc, char **argv) {");
-    emitter.indent += 1;
-    emitter.line("skuld_arguments_init(argc, argv);");
-    emitter.line(&format!("skuld_f{}();", program.entry.0));
-    emitter.line("return fflush(stdout) == 0 ? 0 : 1;");
-    emitter.indent -= 1;
-    emitter.line("}");
+    // A freestanding program is started by something this compiler did not
+    // write — an assembly stub, a bootloader, another object file — so it is
+    // given no entry point of its own, and the functions it exports are what
+    // that something calls.
+    if let Some(entry) = program.entry.filter(|_| !freestanding) {
+        emitter.line("");
+        // The arguments are taken here and nowhere else: a Skuld program reaches
+        // them through the runtime bridge, since following `argv` is a pointer
+        // read the foreign boundary does not do.
+        emitter.line("int main(int argc, char **argv) {");
+        emitter.indent += 1;
+        emitter.line("skuld_arguments_init(argc, argv);");
+        emitter.line(&format!("{}();", emitter.function_name(entry)));
+        emitter.line("return fflush(stdout) == 0 ? 0 : 1;");
+        emitter.indent -= 1;
+        emitter.line("}");
+    }
     emitter.output
 }
 fn string_literal(value: &str) -> String {
@@ -664,7 +684,7 @@ fn lambda_signature(structs: &[StructInfo], lambda: &Lambda) -> String {
         params.join(", ")
     )
 }
-fn signature_of(structs: &[StructInfo], function: &Function) -> String {
+fn signature_of(structs: &[StructInfo], function: &Function, name: &str) -> String {
     let params = if function.parameters.is_empty() {
         "void".into()
     } else {
@@ -676,9 +696,8 @@ fn signature_of(structs: &[StructInfo], function: &Function) -> String {
             .join(", ")
     };
     format!(
-        "{} skuld_f{}({params})",
-        type_name(structs, function.return_type),
-        function.id.0
+        "{} {name}({params})",
+        type_name(structs, function.return_type)
     )
 }
 struct Emitter<'a> {
@@ -704,6 +723,11 @@ struct Emitter<'a> {
     /// What each lambda captures, by index, so that building one can fill its
     /// environment without reaching back into the HIR.
     lambda_captures: Vec<Vec<crate::resolver::SymbolId>>,
+    /// The functions and statics a freestanding program exports under the
+    /// names they were written with, so that whatever starts the program — an
+    /// assembly stub, another object file — has something to call. It is empty
+    /// in a hosted program, where every generated name stays generated.
+    exports: std::collections::BTreeMap<crate::resolver::SymbolId, String>,
     /// Module-level storage, by symbol. A read or a write of one of these
     /// names is an ordinary read or write of a file-scope variable, which is
     /// why it only has to be known here.
@@ -1314,6 +1338,14 @@ impl<'a> Emitter<'a> {
 
     /// Where a name lives: a local of its own, or a field of the environment
     /// the enclosing lambda was handed.
+    /// What a function is called in the generated C: its own name where the
+    /// program exports it, and a generated one everywhere else.
+    fn function_name(&self, id: crate::resolver::SymbolId) -> String {
+        match self.exports.get(&id) {
+            Some(name) => name.clone(),
+            None => format!("skuld_f{}", id.0),
+        }
+    }
     fn local_name(&self, id: crate::resolver::SymbolId) -> String {
         if self.statics.contains(&id) {
             return format!("skuld_g{}", id.0);
@@ -1328,7 +1360,7 @@ impl<'a> Emitter<'a> {
         type_name(&self.structs, ty)
     }
     fn signature(&self, function: &Function) -> String {
-        signature_of(&self.structs, function)
+        signature_of(&self.structs, function, &self.function_name(function.id))
     }
     /// A type owns references when it is a string or holds one, directly or
     /// through another struct. Unmanaged values need no retain, release or
@@ -2846,7 +2878,9 @@ impl<'a> Emitter<'a> {
             ExprKind::Call { target, arguments } => {
                 let values: Vec<_> = arguments.iter().map(|arg| self.expression(arg)).collect();
                 let call = match target {
-                    CallTarget::Function(id) => format!("skuld_f{}({})", id.0, values.join(", ")),
+                    CallTarget::Function(id) => {
+                        format!("{}({})", self.function_name(*id), values.join(", "))
+                    }
                     // The pair is evaluated once, into the helper, so a callee
                     // with side effects runs exactly as often as it is written.
                     CallTarget::Value(callee) => {
@@ -2940,6 +2974,22 @@ fn binary_value(op: BinaryOp, ty: Type, left: &str, right: &str, byte: usize) ->
     format!("({left} {operator} {right})")
 }
 
+/// Checks the language makes in both build modes.
+///
+/// Bounds checking is part of the language, not part of managing memory: a
+/// freestanding program has no runtime and still checks every index, so this
+/// is emitted in both preludes rather than living with retain and release.
+const SHARED_CHECKS: &str = r#"
+/* One comparison covers both ends: a negative index becomes an enormous
+   unsigned value, which is already past any length. Clang was folding the two
+   into one anyway — measuring showed no difference — so this is for the reader
+   and for compilers that do not. */
+static inline size_t skuld_index(int64_t index, size_t length, size_t byte) {
+    if ((uint64_t)index >= length) skuld_fail("array index out of bounds", byte);
+    return (size_t)index;
+}
+"#;
+
 const PRELUDE_HEAD: &str = r#"/* Generated by Skuld. C11, compiled with clang. */
 #include <stdint.h>
 #include <inttypes.h>
@@ -2966,6 +3016,32 @@ _Noreturn static inline void skuld_fail(const char *message, size_t byte) {
 /// The managed-memory runtime is real C in `runtime/`, embedded verbatim so
 /// there is one source of truth for retain and release.
 const RUNTIME: &str = include_str!("../../runtime/strings.c");
+
+/// What a freestanding program starts with: the three headers C guarantees a
+/// freestanding implementation provides, and a trap that faults instead of
+/// printing.
+///
+/// There is no `stdio.h` to say why, and nothing to say it to — a kernel that
+/// divides by zero has no standard error. `__builtin_trap` is an instruction
+/// the processor refuses (`ud2` on x86), which is the most a program with no
+/// operating system under it can do about a bug in itself.
+const FREESTANDING_HEAD: &str = r#"/* Generated by Skuld (freestanding). No runtime, no libc. */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <float.h>
+_Static_assert(DBL_MANT_DIG == 53 && DBL_MAX_EXP == 1024, "Skuld requires binary64 double");
+
+/* `isnan` lives in <math.h>, which a freestanding implementation does not
+ * provide; the comparison it stands for is the definition of a NaN. */
+#define isnan(v) ((v) != (v))
+
+_Noreturn static inline void skuld_fail(const char *message, size_t byte) {
+    (void)message;
+    (void)byte;
+    __builtin_trap();
+}
+"#;
 
 const PRELUDE_TAIL: &str = r#"
 /* Arithmetic traps on overflow and on invalid division at every width, rather
@@ -3131,6 +3207,12 @@ static inline uint32_t skuld_u_to_char(uint64_t v, size_t byte) {
     return (uint32_t)v;
 }
 
+"#;
+
+/// The half of the prelude that needs a runtime and a libc behind it: string
+/// comparison and every `print`. A freestanding program has neither, and the
+/// checker has already refused the types that would reach these.
+const PRELUDE_HOSTED: &str = r#"
 static inline bool skuld_string_equal(skuld_string a, skuld_string b) {
     return a.len == b.len && memcmp(a.data, b.data, a.len) == 0;
 }

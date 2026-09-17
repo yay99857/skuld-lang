@@ -1072,6 +1072,7 @@ fn an_entrypoint_is_required_of_a_program_and_optional_for_a_tool() {
         library,
         &mut crate::module::NoModules,
         crate::type_checker::Entrypoint::Optional,
+        crate::type_checker::Mode::Hosted,
     )
     .expect("a library checks when the entrypoint is optional");
     assert_eq!(typed.entry(), None);
@@ -1084,6 +1085,7 @@ fn an_entrypoint_is_required_of_a_program_and_optional_for_a_tool() {
         "pub func twice(value: int) -> int {\n    return \"two\"\n}\n",
         &mut crate::module::NoModules,
         crate::type_checker::Entrypoint::Optional,
+        crate::type_checker::Mode::Hosted,
     )
     .expect_err("a wrong return type is still wrong");
 }
@@ -1559,4 +1561,56 @@ fn a_static_is_storage_that_outlives_every_call() {
         "static level: u8 = 300\n\nfunc main() {}",
         DiagnosticCode::IntegerRange,
     );
+}
+
+/// The freestanding subset: one language, two build modes, and the checker
+/// saying which one a file is being compiled in.
+fn freestanding(source: &str) -> Result<(), Vec<DiagnosticCode>> {
+    crate::check_program_with(
+        "kernel.skuld",
+        source,
+        &mut crate::module::NoModules,
+        crate::type_checker::Entrypoint::Optional,
+        crate::type_checker::Mode::Freestanding,
+    )
+    .map(|_| ())
+    .map_err(|errors| {
+        errors
+            .diagnostics
+            .into_iter()
+            .map(|error| error.diagnostic.code)
+            .collect()
+    })
+}
+
+#[test]
+fn a_freestanding_program_holds_what_it_can_count_for_itself() {
+    // Scalars, fixed arrays, structs, enums and pointers — and no `main`,
+    // since something else starts it.
+    freestanding(
+        "extern struct Register {\n    value: u32,\n}\n\nenum State: u8 {\n    Off = 0,\n    On = 1,\n}\n\nstatic seen: [4]u8 = [0; 4]\n\npub func tick(state: State) -> u32 {\n    seen[0] = u8(state)\n    let register = Register { value: u32(1) }\n    unsafe {\n        let cell: *u32 = ptr_from(usize(753664))\n        volatile_store(cell, register.value)\n    }\n    return register.value\n}",
+    )
+    .expect("the subset checks");
+
+    // Everything that would need the runtime is refused where it is written.
+    for source in [
+        "pub func boot() {\n    let message = \"hello\"\n}",
+        "pub func boot() {\n    var numbers: []int = []\n}",
+        "class Thing {\n    value: int,\n}\n\npub func boot() {\n    let thing = new Thing(value: 1)\n}",
+        "pub func boot() -> string {\n    return \"no\"\n}",
+    ] {
+        let codes = freestanding(source).expect_err("a managed value is refused");
+        assert!(
+            codes.contains(&DiagnosticCode::UnsupportedFeature),
+            "{source}: {codes:?}"
+        );
+    }
+
+    // `print` has nowhere to print to.
+    let codes = freestanding("pub func boot() {\n    print(1)\n}").expect_err("no stdout");
+    assert!(codes.contains(&DiagnosticCode::UnsupportedFeature));
+
+    // And the same program is ordinary in a hosted build, which is the point
+    // of there being one language.
+    valid("pub func boot() {\n    print(1)\n}\n\nfunc main() {\n    boot()\n}");
 }

@@ -160,6 +160,21 @@ pub fn lower(typed: TypedProgram) -> h::Program {
     vtables.sort();
     vtables.dedup();
     h::Program {
+        exports: {
+            let mut exported: Vec<(SymbolId, String)> = typed
+                .resolution
+                .symbols
+                .iter()
+                .enumerate()
+                .filter(|(_, symbol)| {
+                    symbol.kind == SymbolKind::Function
+                        && symbol.visibility == crate::ast::Visibility::Public
+                })
+                .map(|(index, symbol)| (SymbolId(index), symbol.name.clone()))
+                .collect();
+            exported.sort();
+            exported
+        },
         statics: typed
             .statics
             .iter()
@@ -179,11 +194,9 @@ pub fn lower(typed: TypedProgram) -> h::Program {
         options: typed.options.clone(),
         results: typed.results.clone(),
         functions,
-        // Only a program checked with `Entrypoint::Required` is lowered, and
-        // that check refuses a program with no `main`.
-        entry: typed
-            .entry()
-            .expect("internal compiler bug: lowering a program with no entrypoint"),
+        // A hosted program has been checked to have one; a freestanding
+        // program is started by something else entirely.
+        entry: typed.entry(),
         span: typed.program.files[0].program.span,
     }
 }

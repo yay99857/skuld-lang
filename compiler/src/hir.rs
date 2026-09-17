@@ -37,7 +37,14 @@ pub struct Program {
     /// its own at file scope, and a read or a write of it is an ordinary read
     /// or write of that name.
     pub(crate) statics: Vec<(SymbolId, crate::type_checker::StaticInfo)>,
-    pub(crate) entry: SymbolId,
+    /// The `pub` functions of the program, with the names they were written
+    /// with. A freestanding build emits them under those names, since
+    /// something outside the program has to be able to call one.
+    pub(crate) exports: Vec<(SymbolId, String)>,
+    /// The `main` a hosted program is started through. A freestanding program
+    /// has none: something this compiler did not write starts it, and calls
+    /// one of the functions it exports.
+    pub(crate) entry: Option<SymbolId>,
     pub(crate) span: Span,
 }
 impl Program {

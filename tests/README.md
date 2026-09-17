@@ -203,3 +203,15 @@ and a local that shadows a static without touching it. The `static_*` fixtures
 in `fail/` cover the refusals — a managed type, an initialiser that is a call,
 an array that starts at something other than zero, a value of the wrong type,
 and one that does not fit its width.
+
+M26's closing marker is `cli/tests/freestanding.rs`, which builds programs
+rather than fixtures: the golden suite compiles with libc and runs what it
+builds, and neither is true here. The first is a static Linux x86-64
+executable with an assembly `_start` that makes `write` and `exit` syscalls —
+it runs, prints, and is checked to be statically linked rather than assumed to
+be. The second is a 32-bit multiboot kernel that writes to the VGA text buffer,
+reads it back and stops the machine; it is built and checked for a valid
+multiboot header everywhere, and booted under `qemu-system-i386` where that
+exists, asserting both the serial output and the exit status. The freestanding
+subset's refusals are unit tests in the checker, since a `fail/` fixture is
+checked in the hosted mode.

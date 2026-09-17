@@ -148,12 +148,32 @@ pub enum Entrypoint {
     Optional,
 }
 
+/// Which of the language's two build modes a program is being checked in.
+///
+/// They are one language: the difference is what a program may hold, not how
+/// it is written. A hosted program has the reference-counting runtime and
+/// libc behind it, so every type in the language is available. A freestanding
+/// program has neither, so the types that would need them are refused — and
+/// nothing else changes, which is the point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Hosted,
+    Freestanding,
+}
+
+impl Mode {
+    pub fn is_freestanding(self) -> bool {
+        matches!(self, Self::Freestanding)
+    }
+}
+
 /// The resolution must belong to this exact parser AST. All source-facing
 /// callers should use `check`, which enforces phase ordering and ownership.
 pub(crate) fn type_check(
     program: LoadedProgram,
     resolution: Resolution,
     entrypoint: Entrypoint,
+    mode: Mode,
 ) -> Result<TypedProgram, Errors> {
     let mut checker = Checker {
         symbol_types: vec![Type::Error; resolution.symbols.len()],
@@ -191,6 +211,8 @@ pub(crate) fn type_check(
         statics: BTreeMap::new(),
         evaluating_constants: Vec::new(),
         constant_decls: BTreeMap::new(),
+        mode,
+        reported_hosted: std::collections::BTreeSet::new(),
         defer_depth: 0,
         place_writes: 0,
         layout_queries: BTreeMap::new(),
@@ -954,6 +976,12 @@ struct Checker<'a> {
     statics: BTreeMap<SymbolId, StaticInfo>,
     evaluating_constants: Vec<SymbolId>,
     constant_decls: BTreeMap<SymbolId, (FileId, ConstantDecl)>,
+    /// Which build mode this program is being checked in, which decides what
+    /// it may hold.
+    mode: Mode,
+    /// Positions already told they hold a value a freestanding program cannot,
+    /// so one mistake is reported once.
+    reported_hosted: std::collections::BTreeSet<(FileId, usize)>,
     /// How many `defer` statements enclose what is being checked. Leaving a
     /// block from inside one is refused, which is the rule that keeps the
     /// order deferred statements run in worth writing down.
@@ -1463,6 +1491,11 @@ impl Checker<'_> {
         }
     }
     fn type_ref(&mut self, reference: &TypeRef, allow_void: bool) -> Type {
+        let ty = self.type_ref_inner(reference, allow_void);
+        self.reject_hosted_type(ty, reference.span());
+        ty
+    }
+    fn type_ref_inner(&mut self, reference: &TypeRef, allow_void: bool) -> Type {
         match reference {
             TypeRef::Option { element, .. } => {
                 let span = element.span();
@@ -2632,9 +2665,71 @@ impl Checker<'_> {
             .copied()
     }
     fn record(&mut self, expr: &Expr, ty: Type) -> Type {
+        self.reject_hosted_type(ty, expr.span);
         self.expressions
             .insert((self.file, expr.span.start, expr.span.end), ty);
         ty
+    }
+    /// A value a freestanding program cannot hold.
+    ///
+    /// The two modes are one language: what separates them is not syntax but
+    /// what there is to run. A `string`, a `[]T`, a class and an interface are
+    /// reference counted, and a freestanding program has no runtime to count
+    /// them with and no allocator to take them from — so they are refused
+    /// where they are written, with the reason, rather than failing to link
+    /// later.
+    fn reject_hosted_type(&mut self, ty: Type, span: Span) {
+        if !self.mode.is_freestanding() || !self.needs_runtime(ty) {
+            return;
+        }
+        // One report per position: an expression and the binding it
+        // initialises are the same mistake written once.
+        if !self.reported_hosted.insert((self.file, span.start)) {
+            return;
+        }
+        let rendered = self.type_name(ty);
+        let diagnostic = Diagnostic {
+            code: DiagnosticCode::UnsupportedFeature,
+            span,
+            message: format!(
+                "`{rendered}` is reference counted, and a freestanding program has no runtime to count it with"
+            ),
+            help: Some(
+                "scalars, fixed arrays, structs, enums and pointers are what a freestanding program holds"
+                    .to_owned(),
+            ),
+            fix: None,
+        };
+        self.diagnostics.push(FileDiagnostic {
+            file: self.file,
+            diagnostic,
+        });
+    }
+    /// Whether a value of this type is one the reference-counting runtime has
+    /// to know about, directly or through something it holds.
+    fn needs_runtime(&self, ty: Type) -> bool {
+        match ty {
+            Type::String | Type::Array(_) | Type::Weak(_) | Type::Interface(_) => true,
+            Type::Struct(id) => {
+                self.structs[id.0].reference
+                    || self.structs[id.0]
+                        .fields
+                        .iter()
+                        .any(|field| self.needs_runtime(field.ty))
+            }
+            Type::FixedArray(id) => self.needs_runtime(self.fixed_arrays[id.0].element),
+            Type::Option(id) => self.needs_runtime(self.options[id.0].element),
+            Type::Result(id) => {
+                self.needs_runtime(self.results[id.0].ok)
+                    || self.needs_runtime(self.results[id.0].err)
+            }
+            Type::Enum(id) => self.enums[id.0].variants.iter().any(|variant| {
+                variant
+                    .payload
+                    .is_some_and(|payload| self.needs_runtime(payload))
+            }),
+            _ => false,
+        }
     }
     /// Only unary minus may consume the positive magnitude of a signed type's
     /// most negative value, which is one past what the literal alone accepts.
@@ -4124,6 +4219,22 @@ impl Checker<'_> {
                 Type::Error
             }
             Some((_, SymbolKind::Builtin(Builtin::Print))) => {
+                if self.mode.is_freestanding() {
+                    let diagnostic = Diagnostic {
+                        code: DiagnosticCode::UnsupportedFeature,
+                        span,
+                        message: "`print` writes to standard output, which a freestanding program does not have".to_owned(),
+                        help: Some(
+                            "write to the device this program is for, through `extern \"C\"` or a pointer"
+                                .to_owned(),
+                        ),
+                        fix: None,
+                    };
+                    self.diagnostics.push(FileDiagnostic {
+                        file: self.file,
+                        diagnostic,
+                    });
+                }
                 let arg_types: Vec<_> = arguments.iter().map(|arg| self.expression(arg)).collect();
                 if arguments.len() > 1 {
                     self.error(

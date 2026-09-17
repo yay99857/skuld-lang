@@ -207,14 +207,10 @@ static inline void *skuld_allocate(size_t base, size_t count, size_t element, si
     if (value == NULL) skuld_fail("out of memory", byte);
     return value;
 }
-/* One comparison covers both ends: a negative index becomes an enormous
- * unsigned value, which is already past any length. Clang was folding the two
- * into one anyway — measuring showed no difference — so this is for the reader
- * and for compilers that do not. */
-static inline size_t skuld_index(int64_t index, size_t length, size_t byte) {
-    if ((uint64_t)index >= length) skuld_fail("array index out of bounds", byte);
-    return (size_t)index;
-}
+/* `skuld_index` is not here: checking an index is part of the language rather
+ * than part of managing memory, and a freestanding program — which has no
+ * managed memory and none of this file — checks its indexes too. It lives in
+ * the prelude both modes share. */
 
 /* A half-open range, like every other range in the language: `start == end`
  * is the empty slice and `end == length` is the whole of it. */

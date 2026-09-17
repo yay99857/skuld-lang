@@ -1,11 +1,11 @@
 # Skuld roadmap
 
-This document records completed milestones and a **proposed** next sequence.
-M1–M25 are implemented. M26 proposes the continuation of the systems sequence,
-towards the language a system could be written in; every one of them is **Planned**,
-which means proposed and not authorized. Starting one still
-needs an explicit decision recorded in `AGENTS.md`. See `LANGUAGE.md` for
-semantics and `README.md` for usage.
+This document records completed milestones and the candidates that follow
+them. M1–M26 are implemented, which closes the systems sequence: the language a
+system could be written in, down to a kernel, now builds one. The candidates
+listed at the end of that sequence are **not** authorized — starting one needs
+an explicit decision recorded in `AGENTS.md`. See `LANGUAGE.md` for semantics
+and `README.md` for usage.
 
 Both targets this document set are reached: an HTTP document fetched and
 decoded, and a native command-line application that reads local input,
@@ -921,7 +921,7 @@ let ada = new Account(owner: "Ada", balance: 120)
   backend, changing copy semantics without evidence, threading, and a new
   memory-management model.
 
-## The systems sequence — M19–M26 — Proposed
+## The systems sequence — M19–M26 — Implemented
 
 The first eighteen milestones built an applications language: it fetches a
 document, parses it, writes a file and runs its own tests, and it does that
@@ -1230,7 +1230,7 @@ not own.
 - **Out:** destructors a user can write, `Drop`-style traits, and cleanup
   attached to a type rather than to a scope.
 
-## M26 — Freestanding Skuld — Planned
+## M26 — Freestanding Skuld — Implemented
 
 The milestone the long-range ambition actually needs: a program with no
 runtime and no libc, which is the shape a kernel, a bootloader or a static
@@ -1246,14 +1246,24 @@ utility has.
   no managed values at all, so reference counting has nothing to do; a hosted
   program keeps exactly what it has today. Two modes, one language, and the
   checker says which one a file is being compiled in.
-- **Open decision — how does a program get memory?** An allocator written in
-  Skuld against a region the program is given, declared through an interface
-  the language knows about, is the shape that keeps the compiler out of it.
-  Whether the hosted mode can then use a different allocator is a separate
-  question, and a bigger one.
-- **Closing marker:** a static Linux x86-64 program with no libc that makes
-  `write` and `exit` syscalls directly, and a bootable image that prints to
-  the VGA text buffer, both built by `skuld build` and run in CI under QEMU.
+- **Decision taken — a freestanding program is given no allocator, because
+  nothing allocates.** The subset has no managed value in it, so there is
+  nothing for the compiler to take memory for: a program's storage is its
+  statics and its stack, and one that wants a heap manages a region itself,
+  with the pointers M23 gives it. An interface would not have helped — an
+  interface is a class, and a class is exactly what this mode does not have.
+  Whether the hosted mode ever gets a replaceable allocator is untouched by
+  this, and still needs its own evidence.
+- **Decision taken — a `pub func` is the entry point.** It is emitted under
+  the name it was written with, so an assembly stub or a bootloader has
+  something to call, and everything private keeps a generated name.
+- **Closing marker:** met, in `cli/tests/freestanding.rs`. A static Linux
+  x86-64 executable that makes `write` and `exit` syscalls through an assembly
+  stub, links nothing, and is checked to be statically linked rather than
+  assumed to be; and a 32-bit multiboot kernel that writes to the VGA text
+  buffer, reads it back, and stops the machine — built and checked for its
+  multiboot header everywhere, and booted under `qemu-system-i386` where that
+  exists.
 - **Out:** interrupts, a scheduler, drivers, a memory manager, and anything
   that is an operating system rather than the language it would be written in.
 

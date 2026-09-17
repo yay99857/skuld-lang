@@ -33,6 +33,7 @@ pub fn check_program(
         entry_source,
         loader,
         type_checker::Entrypoint::Required,
+        type_checker::Mode::Hosted,
     )
 }
 
@@ -44,6 +45,7 @@ pub fn check_program_with(
     entry_source: &str,
     loader: &mut dyn module::ModuleLoader,
     entrypoint: type_checker::Entrypoint,
+    mode: type_checker::Mode,
 ) -> Result<type_checker::TypedProgram, module::Errors> {
     let program = module::load(entry_name, entry_source, loader)?;
     let resolved = resolve(&program);
@@ -53,7 +55,7 @@ pub fn check_program_with(
             diagnostics: resolved.diagnostics,
         });
     };
-    type_checker::type_check(program, resolution, entrypoint)
+    type_checker::type_check(program, resolution, entrypoint, mode)
 }
 
 /// Parse, resolve and type-check a program that is exactly one source, with
@@ -77,7 +79,7 @@ pub mod codegen_c;
 pub fn compile_to_c(source: &str) -> Result<String, Vec<diagnostic::Diagnostic>> {
     let typed = check(source)?;
     let hir = lowering::lower(typed);
-    Ok(codegen_c::emit_c(&hir))
+    Ok(codegen_c::emit_c(&hir, type_checker::Mode::Hosted))
 }
 
 /// The same, for a program made of modules.
@@ -86,7 +88,25 @@ pub fn compile_program_to_c(
     entry_source: &str,
     loader: &mut dyn module::ModuleLoader,
 ) -> Result<String, module::Errors> {
-    let typed = check_program(entry_name, entry_source, loader)?;
+    compile_program_to_c_in(entry_name, entry_source, loader, type_checker::Mode::Hosted)
+}
+
+/// The same, in the build mode the caller names. A freestanding program is
+/// checked against the subset that needs no runtime, and the C it produces
+/// carries neither the runtime nor an entry point of its own.
+pub fn compile_program_to_c_in(
+    entry_name: &str,
+    entry_source: &str,
+    loader: &mut dyn module::ModuleLoader,
+    mode: type_checker::Mode,
+) -> Result<String, module::Errors> {
+    let entrypoint = match mode {
+        // A freestanding program is started by something this compiler did not
+        // write, so `main` is not what it is looking for.
+        type_checker::Mode::Freestanding => type_checker::Entrypoint::Optional,
+        type_checker::Mode::Hosted => type_checker::Entrypoint::Required,
+    };
+    let typed = check_program_with(entry_name, entry_source, loader, entrypoint, mode)?;
     let hir = lowering::lower(typed);
-    Ok(codegen_c::emit_c(&hir))
+    Ok(codegen_c::emit_c(&hir, mode))
 }

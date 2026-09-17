@@ -475,6 +475,7 @@ impl Server {
             &source,
             &mut loader,
             skuld_compiler::type_checker::Entrypoint::Optional,
+            skuld_compiler::type_checker::Mode::Hosted,
         );
         // A failed check leaves the previous good one in place: that is what
         // completion answers from while the file is mid-edit.
@@ -1036,6 +1037,7 @@ impl Server {
             &source,
             &mut loader,
             skuld_compiler::type_checker::Entrypoint::Optional,
+            skuld_compiler::type_checker::Mode::Hosted,
         )
         .map_err(|errors| first_message(&errors))
     }

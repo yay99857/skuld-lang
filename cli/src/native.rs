@@ -73,6 +73,52 @@ pub fn build(c_source: &str, executable: &Path, link_flags: &[String]) -> Result
     emit_and_compile(c_source, &temp.path, executable, link_flags)
 }
 
+/// Compile to an object file, for a program that has no runtime, no libc and
+/// no entry point of its own.
+///
+/// The flags are fixed and few on purpose: this stops at the object file, and
+/// what happens next — the linker script, the target, the assembly stub that
+/// starts it — belongs to whoever is building the thing this is a part of.
+pub fn build_object(c_source: &str, object: &Path) -> Result<(), String> {
+    let temp = TempDir::create()
+        .map_err(|error| format!("cannot create temporary build directory: {error}"))?;
+    let source = temp.path.join("generated.c");
+    std::fs::write(&source, c_source)
+        .map_err(|error| format!("cannot write generated C: {error}"))?;
+    let output = Command::new("clang")
+        .args([
+            "-std=c11",
+            "-O2",
+            "-fno-fast-math",
+            "-c",
+            "-ffreestanding",
+            "-fno-builtin",
+            "-fno-stack-protector",
+            "-fno-asynchronous-unwind-tables",
+        ])
+        .arg(&source)
+        .arg("-o")
+        .arg(object)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                "clang was not found; install clang and make it available on PATH to build (checking does not need clang)".into()
+            } else {
+                format!("cannot launch clang: {error}")
+            }
+        })?;
+    if !output.status.success() {
+        return Err(format!(
+            "clang failed ({}):\n{}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
+}
+
 /// `arguments` are the program's own, from `--args`; the compiler passes them
 /// through without reading them.
 pub fn run(

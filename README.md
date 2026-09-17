@@ -81,6 +81,14 @@ instead of running it; a rejected program leaves no executable behind.
 preserving all comments and literal representations. `fmt --check` checks
 whether a file conforms without modifying it, returning exit code 1 on drift.
 
+`--freestanding` compiles with no runtime and no libc — the shape a kernel, a
+bootloader or a static utility has. It applies to `check`, `emit-c` and
+`build`; a freestanding `build` writes an **object file** for your own linker,
+accepts no linker argument, and has no entry point of its own, since a `pub
+func` is emitted under its own name for an assembly stub or a bootloader to
+call. The checker refuses, in that mode, every value that would need the
+reference-counting runtime.
+
 Debugging and inspecting generated code:
 
 ```bash
@@ -420,20 +428,24 @@ or inline in a class allocation, widening into a `[]T` view without allocating)
 M23 (`unsafe` blocks, where `load`, `store`, `offset`, `addr` and
 `ptr_from` read and write through a raw pointer), M24 (`extern struct` and
 `extern union` with the layout C gives them, `size_of`, `offset_of`, numbered
-enums, and structs across the ABI by value) and M25 (`defer`, which runs a
-statement on every way out of its block) are implemented too. The LSP provides
+enums, and structs across the ABI by value) M25 (`defer`, which runs a
+statement on every way out of its block) and M26 (`static` storage and
+freestanding builds, with no runtime and no libc) are implemented too. The LSP provides
 diagnostics, completion, hover, definition, find-references, rename, document
 highlights, the document outline, formatting through `skuld fmt`'s own
 formatter, signature help, inlay hints for inferred binding types and semantic
 tokens, and
 `examples/jsontool.skuld` is a multi-module native tool with its own test suite.
 
-No implementation milestone is active. The systems sequence [ROADMAP.md](ROADMAP.md)
-proposes continues with M26, towards the systems language the project aims
-at: a freestanding
-mode with no runtime and no libc. Every one of them is proposed and none is
-authorized; starting one needs an explicit decision first, as do the older
-candidates listed there, general generics and self-hosting among them.
+No implementation milestone is active. The systems sequence in
+[ROADMAP.md](ROADMAP.md) is complete: with M26 a Skuld program builds with no
+runtime and no libc, and `cli/tests/freestanding.rs` builds two — a static
+Linux executable that makes its own syscalls, and a multiboot kernel that
+writes to the VGA text buffer. What that sequence deliberately left out —
+inline assembly, atomics and a memory model, threads, interrupt and naked
+calling conventions, linker sections, a target that is not Linux — is a
+milestone each, and none is authorized; so are the older candidates listed
+there, general generics and self-hosting among them.
 Status is reported as completed milestones, not as a completion percentage, and
 implies no production readiness. Performance is measured in
 [BENCHMARKS.md](BENCHMARKS.md): between 1.3x and 2.2x the faster of Rust and Go

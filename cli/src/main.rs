@@ -107,6 +107,9 @@ struct Invocation {
     /// Only `build` writes a file, and only `-o` chooses where.
     output: Option<PathBuf>,
     check_only: bool,
+    /// `--freestanding`: no runtime, no libc, no entry point, and an object
+    /// file rather than an executable.
+    freestanding: bool,
     /// Everything after `--args`, handed to the program `run` executes.
     program_arguments: Vec<OsString>,
 }
@@ -128,6 +131,7 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
     let mut link_flags = Vec::new();
     let mut output: Option<PathBuf> = None;
     let mut check_only = false;
+    let mut freestanding = false;
     let mut flags_over = false;
     let mut pending_output = false;
     let mut program_arguments: Vec<OsString> = Vec::new();
@@ -160,6 +164,7 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
                 return Command::Print(format!("skuld {}\n", env!("CARGO_PKG_VERSION")));
             }
             "--check" => check_only = true,
+            "--freestanding" => freestanding = true,
             "-o" | "--output" => pending_output = true,
             _ if flag.starts_with("-o") => output = Some(PathBuf::from(&flag[2..])),
             _ if (flag.starts_with("-l") || flag.starts_with("-L")) && flag.len() > 2 => {
@@ -167,7 +172,7 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
             }
             _ => {
                 return Command::Misuse(format!(
-                    "unknown option `{flag}`\n{USAGE}\nonly `-o`, `-l<library>`, `-L<directory>` and `--check` are accepted"
+                    "unknown option `{flag}`\n{USAGE}\nonly `-o`, `-l<library>`, `-L<directory>`, `--check` and `--freestanding` are accepted"
                 ));
             }
         }
@@ -234,12 +239,25 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
     if check_only && action != Action::Fmt {
         return Command::Misuse(format!("`--check` is only meaningful for `fmt`\n{USAGE}"));
     }
+    // A freestanding build produces an object file for something else to link,
+    // so there is nothing for `run` to start and nothing for `test` to run.
+    if freestanding && !matches!(action, Action::Check | Action::EmitC | Action::Build) {
+        return Command::Misuse(format!(
+            "`--freestanding` applies to `check`, `emit-c` and `build`; there is no program to run\n{USAGE}"
+        ));
+    }
+    if freestanding && !link_flags.is_empty() {
+        return Command::Misuse(format!(
+            "a freestanding build links nothing; it writes an object file for your own linker\n{USAGE}"
+        ));
+    }
     Command::Invoke(Box::new(Invocation {
         action,
         file: PathBuf::from(file),
         link_flags,
         output,
         check_only,
+        freestanding,
         program_arguments,
     }))
 }
@@ -308,13 +326,26 @@ fn main() -> ExitCode {
         // declarations are part of what the entry file resolves against.
         Action::Resolve => check_program(&source.name, &source.text, &mut loader)
             .map(|typed| format!("{:#?}\n", typed.resolution())),
+        Action::Check if invocation.freestanding => skuld_compiler::check_program_with(
+            &source.name,
+            &source.text,
+            &mut loader,
+            skuld_compiler::type_checker::Entrypoint::Optional,
+            skuld_compiler::type_checker::Mode::Freestanding,
+        )
+        .map(|_| String::new()),
         Action::Check => {
             check_program(&source.name, &source.text, &mut loader).map(|_| String::new())
         }
         Action::Fmt => skuld_compiler::formatter::format_source(&source.text)
             .map_err(|diagnostics| one_file(&source, diagnostics)),
         Action::EmitC | Action::Build | Action::Run => {
-            compile_program_to_c(&source.name, &source.text, &mut loader)
+            let mode = if invocation.freestanding {
+                skuld_compiler::type_checker::Mode::Freestanding
+            } else {
+                skuld_compiler::type_checker::Mode::Hosted
+            };
+            skuld_compiler::compile_program_to_c_in(&source.name, &source.text, &mut loader, mode)
         }
         // A test file is not a program until the runner writes its entry
         // point, so this arm compiles a source the user never wrote.
@@ -361,6 +392,25 @@ fn main() -> ExitCode {
         Ok(output) if matches!(action, Action::Run) => {
             match native::run(&output, &link_flags, &invocation.program_arguments) {
                 Ok(code) => ExitCode::from(code),
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        // A freestanding build stops at an object file: there is no entry
+        // point to link and nothing to run, and the linker script and the
+        // target belong to whoever is assembling the thing this is part of.
+        Ok(output) if matches!(action, Action::Build) && invocation.freestanding => {
+            let object = match object_path(&entry, invocation.output.as_deref()) {
+                Ok(path) => path,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            match native::build_object(&output, &object) {
+                Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
                     eprintln!("error: {error}");
                     ExitCode::FAILURE
@@ -459,6 +509,30 @@ fn executable_path(source: &Path, requested: Option<&Path>) -> Result<PathBuf, S
         ));
     }
     Ok(executable)
+}
+
+/// Where a freestanding build writes its object file: where `-o` says, or the
+/// source's own name with `.o`.
+fn object_path(source: &Path, requested: Option<&Path>) -> Result<PathBuf, String> {
+    if let Some(path) = requested {
+        return executable_path(source, Some(path));
+    }
+    let stem = source
+        .file_stem()
+        .ok_or_else(|| format!("`{}` has no file name to build from", source.display()))?;
+    if stem.is_empty() {
+        return Err(format!("`{}` has an empty file name", source.display()));
+    }
+    let mut name = stem.to_os_string();
+    name.push(".o");
+    let object = PathBuf::from(&name);
+    if same_file(&object, source) {
+        return Err(format!(
+            "building `{}` would overwrite it; choose another path with `-o`",
+            source.display()
+        ));
+    }
+    Ok(object)
 }
 
 fn same_file(left: &Path, right: &Path) -> bool {
@@ -587,11 +661,34 @@ mod tests {
             link_flags: vec!["-lm".to_owned()],
             output: None,
             check_only: false,
+            freestanding: false,
             program_arguments: Vec::new(),
         };
         assert_eq!(invocation(&["run", "program.skuld", "-lm"]), expected);
         assert_eq!(invocation(&["run", "-lm", "program.skuld"]), expected);
         assert_eq!(invocation(&["-lm", "run", "program.skuld"]), expected);
+    }
+
+    #[test]
+    fn freestanding_applies_to_the_commands_that_compile() {
+        let expected = Invocation {
+            action: Action::Build,
+            file: PathBuf::from("kernel.skuld"),
+            link_flags: Vec::new(),
+            output: Some(PathBuf::from("kernel.o")),
+            check_only: false,
+            freestanding: true,
+            program_arguments: Vec::new(),
+        };
+        assert_eq!(
+            invocation(&["build", "--freestanding", "kernel.skuld", "-o", "kernel.o"]),
+            expected
+        );
+        // There is no program to start and nothing to link.
+        assert!(misuse(&["run", "--freestanding", "kernel.skuld"]).contains("no program to run"));
+        assert!(
+            misuse(&["build", "--freestanding", "kernel.skuld", "-lm"]).contains("links nothing")
+        );
     }
 
     #[test]
@@ -602,6 +699,7 @@ mod tests {
             link_flags: Vec::new(),
             output: None,
             check_only: true,
+            freestanding: false,
             program_arguments: Vec::new(),
         };
         assert_eq!(invocation(&["fmt", "--check", "program.skuld"]), expected);
@@ -613,6 +711,7 @@ mod tests {
             link_flags: Vec::new(),
             output: None,
             check_only: false,
+            freestanding: false,
             program_arguments: Vec::new(),
         };
         assert_eq!(invocation(&["fmt", "program.skuld"]), uncheck);
