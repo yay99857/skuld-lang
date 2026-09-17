@@ -995,12 +995,27 @@ skuld run program.skuld -lm
 skuld build program.skuld -L/opt/lib -lfoo
 ```
 
-Out of scope, and still out: Skuld functions called back from C, structs passed
-by value across the ABI, varargs, pointers to pointers, and any ABI other than
-C. Pointer arithmetic and reading through a pointer arrived with `unsafe`
-blocks, below, and neither is available outside one. A
-declaration whose C prototype disagrees with a header the generated program
-already includes is a clang error at build time, not a Skuld diagnostic.
+Any pointer converts to `*void` where one is expected, with nothing written at
+the call. It is the one pointer conversion that cannot be wrong — `*void`
+points at no particular type, so nothing can be read through it and nothing
+about the pointee is claimed — and C makes it implicitly for the same reason.
+
+Out of scope, and still out: Skuld functions called back from C, varargs,
+pointers to pointers, and any ABI other than C. A struct crosses by value when
+it declares its layout, which is what `extern struct` is for. Pointer
+arithmetic and reading through a pointer arrived with `unsafe` blocks, below,
+and neither is available outside one.
+
+A declaration whose C prototype disagrees with a header the generated program
+already includes is a clang error at build time, not a Skuld diagnostic. That
+is worth knowing before writing one: the generated program includes the C
+standard headers, so `system`, `getenv`, `fread` and their neighbours cannot be
+declared here at all — their prototypes take `char *` or `FILE *`, neither of
+which Skuld can name. The POSIX functions those headers do not declare —
+`open`, `read`, `write`, `close`, `socket`, `fork` — are free to declare, which
+is how `std/fs`, `std/net` and `std/os` are written. Two modules of one program
+may declare the same C function, as `std/fs` and `std/os` both declare `read`,
+as long as they declare it identically.
 
 ## Layout and the ABI — Implemented
 
@@ -1532,6 +1547,23 @@ same list without the program), `flush()` and `exit(code)`. Following `argv`
 means reading a pointer to pointers, which the foreign boundary does not do, so
 the runtime offers a count, a length and a copy into bytes Skuld already owns.
 
+It also runs other programs. `run(program, arguments)` looks the program up on
+`PATH`, waits for it, and answers an `Output` with its exit status, what it
+wrote to standard output, and whether that was longer than the 64 KiB kept.
+**There is no shell**: nothing is expanded, split or quoted, so an argument
+containing a space or an asterisk is one argument and stays literal. A program
+that does not exist answers 127, the status a shell reports for the same thing,
+and one killed by a signal answers -1. Its standard error is left alone, so a
+program that complains still complains where a person can see it. The `argv`
+array is the pointer-to-pointer the boundary refuses to describe, so it is
+built in raw memory with `store`, and `size_of` over a one-pointer
+`extern struct` is how the module asks how wide a pointer is on this target.
+
+`environment(name)` answers the value of an environment variable, or nothing.
+It reads `/proc/self/environ` rather than calling `getenv`, whose prototype
+takes a `char *` — a type Skuld cannot name, since its own `char` is a Unicode
+scalar and not a byte.
+
 **`std/testing`** is what `skuld test` runs: `check`, `equal_int`, `equal_text`,
 `equal_bool`, `fail` and `passed`. A failing assertion prints why and ends the
 process, because Skuld has no recoverable panic to carry on from.
@@ -1572,7 +1604,7 @@ move with the language.
 | `std/net` | A blocking TCP connection over libc sockets |
 | `std/http` | An HTTP/1.1 client written on `std/net` |
 | `std/fs` | Reading and writing a whole file, by path |
-| `std/os` | The process arguments, a flush, an exit status and `errno` |
+| `std/os` | The process arguments, environment, running a program, a flush, an exit status and `errno` |
 | `std/testing` | The assertions `skuld test` runs |
 | `std/map` | A map from `string` to `int`, iterated in insertion order |
 | `std/dns` | Host names, by speaking DNS over UDP |

@@ -292,6 +292,28 @@ accurate; documenting a future feature is not a request to implement it.
   marker is `tests/pass/pointers.skuld`, a bump allocator and an intrusive
   linked list over `malloc`ed memory, clean under the address, leak and UB
   sanitizers.
+  Two additions followed M24, both from trying to write a real status-bar
+  module in Skuld and finding what stopped it. Any pointer now converts to
+  `*void` where one is expected: it is the one pointer conversion that cannot
+  be wrong, since `*void` claims nothing about a pointee and nothing can be
+  read through it, and without it every call taking a `void *` was written
+  `ptr_from(addr(p))` inside an `unsafe` block — a block that suspends real
+  guarantees, to express a conversion that suspends none. And `std/os` gained
+  `run(program, arguments)` and `environment(name)`: the caller is that module,
+  which is what an addition to `std/` needs. `run` looks the program up on
+  `PATH`, waits, and answers the exit status, the output and whether it was
+  truncated at 64 KiB; there is **no shell**, so nothing is expanded, split or
+  quoted, a missing program answers 127 and a signalled one -1, and standard
+  error is left alone. Its `argv` is the pointer-to-pointer the boundary
+  refuses, so it is built in raw memory with `store`, and `size_of` over a
+  one-pointer `extern struct` is how the module asks how wide a pointer is
+  here. `environment` reads `/proc/self/environ` rather than calling `getenv`,
+  whose prototype takes a `char *`. That is the general rule worth remembering:
+  the generated program includes the C standard headers, so a function declared
+  there with a `char *` or a `FILE *` cannot be declared in Skuld at all, while
+  the POSIX functions those headers leave out are free to declare — and two
+  modules may declare one C function only if they declare it identically, as
+  `std/fs` and `std/os` both declare `read`.
   M24 (layout and the ABI) is complete. The ordinary `struct` layout stays the
   compiler's own and deliberately unspecified; a type that describes memory
   somebody else defined is written `extern struct Name { ... }` and is laid out

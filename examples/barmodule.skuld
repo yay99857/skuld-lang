@@ -1,0 +1,127 @@
+// A status-bar module: one JSON object on stdout, which is what a bar widget
+// polls and parses.
+//
+// It is here because it is the shape of program the language is now able to
+// be used for end to end — read the machine's own files, ask another program
+// something, and answer in JSON — and because every part of it is a check on
+// the standard library: `std/fs` for the files, `std/os` for the program and
+// the environment, `std/strings` for the parsing and `std/json` for the
+// answer.
+//
+//     skuld build examples/barmodule.skuld -o bar-status
+//     ./bar-status
+//     {"text":"󰍛 41%  0.62","class":"ok","tooltip":"memory 41% · load 0.62 · kernel 6.17.1"}
+
+import "std/fs"
+import "std/os"
+import "std/strings"
+import "std/json"
+
+// Above this, the module says so rather than just reporting a number: a bar
+// exists to be glanced at.
+const WARNING_PERCENT: int = 75
+
+const CRITICAL_PERCENT: int = 90
+
+func read_text(path: string) -> string {
+    let bytes = fs.read_file(path) else problem {
+        return ""
+    }
+    let text = bytes_to_string(bytes) else invalid {
+        return ""
+    }
+    return text
+}
+
+// The first number in a line, which is how every file under /proc answers.
+func first_number(text: string) -> int {
+    var value = 0
+    var seen = false
+    var index = 0
+    while index < text.len() {
+        let byte = text[index]
+        if byte >= 48 && byte <= 57 {
+            value = value * 10 + (int(byte) - 48)
+            seen = true
+        } else if seen {
+            return value
+        }
+        index += 1
+    }
+    return value
+}
+
+// The one-minute load, kept as text: it has a decimal point, and the module
+// is displaying it rather than comparing it.
+func load_average() -> string {
+    let fields = strings.split(strings.trim(read_text("/proc/loadavg")), " ")
+    if fields.len() == 0 {
+        return "?"
+    }
+    return fields[0]
+}
+
+// How much memory is in use, as a percentage of what there is. `MemAvailable`
+// is the kernel's own answer to "how much could a program still have", which
+// is the number a person means.
+func memory_used_percent() -> int {
+    var total = 0
+    var available = 0
+    for line in strings.split(read_text("/proc/meminfo"), "\n") {
+        let halves = strings.split(line, ":")
+        if halves.len() < 2 {
+            continue
+        }
+        if halves[0] == "MemTotal" {
+            total = first_number(halves[1])
+        } else if halves[0] == "MemAvailable" {
+            available = first_number(halves[1])
+        }
+    }
+    if total == 0 {
+        return 0
+    }
+    return ((total - available) * 100) / total
+}
+
+// Something only another program knows. `run` looks the program up on `PATH`
+// and passes the arguments as written, with no shell in between.
+func kernel_release() -> string {
+    let answer = os.run("uname", ["-r"]) else problem {
+        return "?"
+    }
+    if answer.status != 0 {
+        return "?"
+    }
+    return strings.trim(answer.text)
+}
+
+func state_of(used: int) -> string {
+    if used >= CRITICAL_PERCENT {
+        return "critical"
+    }
+    if used >= WARNING_PERCENT {
+        return "warning"
+    }
+    return "ok"
+}
+
+func main() {
+    let used = memory_used_percent()
+    let load = load_average()
+    let kernel = kernel_release()
+    // A module may be asked for a shorter label, which is what a vertical bar
+    // wants; anything else prints the full one.
+    let parameters = os.parameters() else problem {
+        print("{}")
+        return
+    }
+    let brief = parameters.len() > 0 && parameters[0] == "--brief"
+    var label = "󰍛 ${used}%  ${load}"
+    if brief {
+        label = "${used}%"
+    }
+    let tooltip = "memory ${used}% · load ${load} · kernel ${kernel}"
+    print("{\"text\":\"${json.escape(label)}\",\"class\":\"${state_of(used)}\",\"tooltip\":\"${json.escape(tooltip)}\"}")
+    os.flush()
+}

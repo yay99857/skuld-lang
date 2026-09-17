@@ -116,6 +116,19 @@ The file is compiled once with an entry point the runner writes, so the suite is
 one program: the first failure stops it, and the report says which tests never
 started. A failing suite exits non-zero.
 
+`std/os` runs other programs and reads what they write, with no shell in
+between, which is what a small tool usually needs:
+
+```skuld
+let answer = os.run("uname", ["-r"]) else problem {
+    return
+}
+print(answer.text)
+```
+
+`examples/barmodule.skuld` is a status-bar module written that way: it reads
+`/proc`, asks another program a question and prints one JSON object.
+
 A program that declares foreign functions from a library other than libc names
 it on the command line; `build` and `run` forward `-l` and `-L` to clang and
 accept no other linker argument, so nothing here can redirect the output or

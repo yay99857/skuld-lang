@@ -179,3 +179,10 @@ writes, two members written at once, a managed member, two variants worth the
 same number, a value out of its type's range, a payload in a numbered enum, a
 value written without a type to number it, and a conversion on an enum that is
 not numbered.
+
+Running another program lives in `cli/tests/process.rs` rather than in a
+fixture: `std/os`'s `run` needs a program on `PATH` and a status to come back,
+which is a property of the machine and not of the language. The test uses
+`echo` and `false`, checks that a missing program answers 127, and checks that
+an asterisk stays an asterisk — there is no shell in `run`, and that is the
+part most worth pinning down.

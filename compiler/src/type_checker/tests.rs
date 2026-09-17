@@ -1480,3 +1480,16 @@ fn a_union_is_written_one_member_at_a_time_and_read_under_a_claim() {
         DiagnosticCode::InvalidValueType,
     );
 }
+
+#[test]
+fn any_pointer_is_also_an_opaque_one() {
+    valid(
+        "unsafe extern \"C\" {\n    func take(value: *void) -> i32\n}\n\nextern struct Point {\n    x: i32,\n}\n\nfunc main() {\n    let text = \"hi\"\n    print(take(ptr(text)))\n    var bytes: [4]u8 = [0; 4]\n    print(take(ptr(bytes)))\n    let point = Point { x: 1 }\n    print(take(ptr(point)))\n}",
+    );
+    // It goes one way only: an opaque pointer claims nothing about what it
+    // points at, so it cannot become a pointer that does.
+    fails(
+        "unsafe extern \"C\" {\n    func take(value: *u8) -> i32\n    func give() -> *void\n}\n\nfunc main() {\n    print(take(give()))\n}",
+        DiagnosticCode::TypeMismatch,
+    );
+}

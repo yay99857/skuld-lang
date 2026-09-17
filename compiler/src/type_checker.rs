@@ -1687,6 +1687,17 @@ impl Checker<'_> {
                 return true;
             }
         }
+        // Any pointer is also an opaque one. C makes this conversion
+        // implicitly, and it is the one pointer conversion that cannot be
+        // wrong: `*void` points at no particular type, so nothing can be read
+        // through it and nothing about the pointee is being claimed. Without
+        // it every call taking a `void *` would be written
+        // `ptr_from(addr(p))` inside an `unsafe` block, which is a block that
+        // suspends real guarantees to express a conversion that suspends
+        // none.
+        if expected == Type::Pointer(Pointee::Void) && matches!(found, Type::Pointer(_)) {
+            return true;
+        }
         // A class widens to an interface it declared, the way a value wraps
         // into an expected Option: the declaration is what makes it safe.
         if let Type::Interface(interface) = expected

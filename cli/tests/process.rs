@@ -155,3 +155,83 @@ fn everything_after_a_double_dash_reaches_the_program_unchanged() {
         "count 3\n[--]\n[-o]\n[--help]\n"
     );
 }
+
+/// Running another program and reading what it wrote. The programs used here
+/// are the ones every POSIX system has, and none of them is a shell: `run`
+/// does no quoting, splitting or expansion, which is what the last case
+/// checks.
+const RUNNER: &str = r#"
+import "std/os"
+
+func main() {
+    let hello = os.run("echo", ["one", "two three"]) else problem {
+        print(os.describe_run(problem))
+        os.exit(1)
+        return
+    }
+    print("status ${hello.status}")
+    print("[${hello.text}]")
+    print("truncated ${hello.truncated}")
+
+    // A status other than zero comes back as itself rather than as a failure:
+    // a program that answers "no" has still run.
+    let refused = os.run("false", []) else problem {
+        print(os.describe_run(problem))
+        os.exit(1)
+        return
+    }
+    print("false says ${refused.status}")
+
+    // A program that does not exist is the shell's 127, not a crash.
+    let missing = os.run("skuld-no-such-program", []) else problem {
+        print(os.describe_run(problem))
+        os.exit(1)
+        return
+    }
+    print("missing says ${missing.status}")
+
+    // No shell means no expansion: the asterisk is a character, not a glob.
+    let literal = os.run("echo", ["*"]) else problem {
+        print(os.describe_run(problem))
+        os.exit(1)
+        return
+    }
+    print("[${literal.text}]")
+
+    if let home = os.environment("SKULD_TEST_VARIABLE") {
+        print("variable ${home}")
+    } else {
+        print("variable missing")
+    }
+    if let absent = os.environment("SKULD_TEST_ABSENT") {
+        print("unexpected ${absent}")
+    } else {
+        print("absent is nothing")
+    }
+}
+"#;
+
+#[test]
+fn a_program_runs_another_and_reads_what_it_wrote() {
+    if !clang_available() {
+        eprintln!("skipping: clang is not on PATH");
+        return;
+    }
+    let scratch = Scratch::new("run");
+    let binary = scratch.build(RUNNER);
+    let output = Command::new(&binary)
+        .env("SKULD_TEST_VARIABLE", "a value with spaces")
+        .env_remove("SKULD_TEST_ABSENT")
+        .output()
+        .expect("run the program");
+    assert!(
+        output.status.success(),
+        "the program failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "status 0\n[one two three\n]\ntruncated false\nfalse says 1\nmissing says 127\n[*\n]\nvariable a value with spaces\nabsent is nothing\n"
+    );
+}
