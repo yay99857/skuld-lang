@@ -1,0 +1,12 @@
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+unsafe extern "C" {
+    func take(point: Point) -> i32
+}
+
+func main() {
+    print(take(Point { x: 1, y: 2 }))
+}

@@ -1,0 +1,7 @@
+extern struct Bad align 7 {
+    value: u8,
+}
+
+func main() {
+    print(int(size_of(Bad)))
+}

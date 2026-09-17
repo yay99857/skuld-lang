@@ -372,11 +372,24 @@ impl<'a> Formatter<'a> {
 
     fn format_struct(&mut self, st: &StructDecl) {
         self.format_visibility(st.visibility);
+        if st.layout.is_foreign() {
+            self.push("extern ");
+        }
         match st.kind {
             TypeDeclKind::Value => self.push("struct "),
             TypeDeclKind::Reference => self.push("class "),
         }
         self.push(&st.name.text);
+        // `packed` and `align N` sit between the name and the body, in that
+        // order however they were written.
+        if let Layout::Foreign { packed, align } = &st.layout {
+            if *packed {
+                self.push(" packed");
+            }
+            if let Some((value, _)) = align {
+                self.push(&format!(" align {value}"));
+            }
+        }
         if !st.conforms.is_empty() {
             self.push(": ");
             for (i, path) in st.conforms.iter().enumerate() {

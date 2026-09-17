@@ -13,8 +13,11 @@
 // `errno` is a macro over a function returning a pointer and cannot cross the
 // boundary itself.
 //
-// The address layout below is `struct sockaddr_in` on a little-endian Linux:
-// the family is host order, the port and address are network order.
+// The address is a declared type rather than hand-packed bytes: `SockaddrIn`
+// below is an `extern struct`, so the C compiler lays it out and `size_of`
+// answers how long it is on the target being built for. `htons` and `htonl`
+// put the port and the address in network order, which is what makes this
+// file say nothing about the machine's own byte order.
 
 import "std/os"
 
@@ -26,11 +29,20 @@ pub const IPPROTO_IP: i32 = 0
 
 pub const MSG_NOSIGNAL: i32 = 16384
 
-pub const SOCKADDR_IN_SIZE: u32 = 16
+// `struct sockaddr_in`: the family in host order, the port and the address in
+// network order, then the padding that makes it as long as `struct sockaddr`.
+pub extern struct SockaddrIn {
+    family: u16
+    port: u16
+    address: u32
+    zero: [8]u8
+}
 
 unsafe extern "C" {
     func socket(domain: i32, kind: i32, protocol: i32) -> i32
-    func connect(handle: i32, address: *u8, length: u32) -> i32
+    func connect(handle: i32, address: *void, length: u32) -> i32
+    func htons(value: u16) -> u16
+    func htonl(value: u32) -> u32
     func send(handle: i32, buffer: *u8, length: u64, flags: i32) -> i64
     func recv(handle: i32, buffer: *u8, length: u64, flags: i32) -> i64
     func close(handle: i32) -> i32
@@ -157,6 +169,12 @@ pub class Connection {
     }
 }
 
+// Four octets as one host-order `u32`, which `htonl` then puts in network
+// order. The shifts are the value's arithmetic, not the machine's layout.
+func packed_address(octets: []u8) -> u32 {
+    return (u32(octets[0]) << 24) | (u32(octets[1]) << 16) | (u32(octets[2]) << 8) | u32(octets[3])
+}
+
 pub func open(address: string, port: int) -> Result<Connection, NetError> {
     if port < 1 || port > 65535 {
         return Err(NetError.Port(port))
@@ -166,25 +184,8 @@ pub func open(address: string, port: int) -> Result<Connection, NetError> {
     if handle < 0 {
         return Err(NetError.OpenFailed(os.failure("a socket")))
     }
-    let sockaddr: [16]u8 = [
-        u8(AF_INET),
-        0,
-        u8(port / 256),
-        u8(port % 256),
-        octets[0],
-        octets[1],
-        octets[2],
-        octets[3],
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-    ]
-    if connect(i32(handle), ptr(sockaddr), SOCKADDR_IN_SIZE) < 0 {
+    let sockaddr = SockaddrIn { family: u16(AF_INET), port: htons(u16(port)), address: htonl(packed_address(octets)), zero: [0; 8] }
+    if connect(i32(handle), ptr(sockaddr), u32(size_of(SockaddrIn))) < 0 {
         let problem = os.failure("${address}:${port}")
         let ignored = close(i32(handle))
         return Err(NetError.ConnectFailed(problem))

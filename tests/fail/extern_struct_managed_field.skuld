@@ -1,0 +1,7 @@
+extern struct Bad {
+    name: string,
+}
+
+func main() {
+    let b = Bad { name: "x" }
+}

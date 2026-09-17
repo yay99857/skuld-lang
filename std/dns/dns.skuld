@@ -29,16 +29,32 @@ pub const SOL_SOCKET: i32 = 1
 
 pub const SO_RCVTIMEO: i32 = 20
 
-pub const SOCKADDR_IN_SIZE: u32 = 16
-
 pub const DNS_PORT: int = 53
 
 pub const TIMEOUT_SECONDS: u8 = 3
 
+// `struct sockaddr_in` and `struct timeval`, both laid out by the C compiler
+// for the target being built. `timeval` is the reason this matters twice over:
+// its two fields are `long`, so the structure is sixteen bytes on a 64-bit
+// target and eight on a 32-bit one, which hand-packed bytes cannot be.
+pub extern struct SockaddrIn {
+    family: u16
+    port: u16
+    address: u32
+    zero: [8]u8
+}
+
+pub extern struct Timeval {
+    seconds: isize
+    microseconds: isize
+}
+
 unsafe extern "C" {
     func socket(domain: i32, kind: i32, protocol: i32) -> i32
-    func connect(handle: i32, address: *u8, length: u32) -> i32
-    func setsockopt(handle: i32, level: i32, option: i32, value: *u8, length: u32) -> i32
+    func connect(handle: i32, address: *void, length: u32) -> i32
+    func setsockopt(handle: i32, level: i32, option: i32, value: *void, length: u32) -> i32
+    func htons(value: u16) -> u16
+    func htonl(value: u32) -> u32
     func send(handle: i32, buffer: *u8, length: u64, flags: i32) -> i64
     func recv(handle: i32, buffer: *u8, length: u64, flags: i32) -> i64
     func close(handle: i32) -> i32
@@ -203,35 +219,23 @@ func query(name: string) -> Result<[]u8, DnsError> {
 
 // Send one datagram and wait for one, with a timeout so an unreachable server
 // is a failure rather than a hang.
+// Four octets as one host-order `u32`; `htonl` puts it in network order.
+func packed_address(octets: []u8) -> u32 {
+    return (u32(octets[0]) << 24) | (u32(octets[1]) << 16) | (u32(octets[2]) << 8) | u32(octets[3])
+}
+
 func exchange(server: string, port: int, question: []u8) -> Result<[]u8, DnsError> {
     let octets = address_bytes(server)?
     let handle = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
     if handle < 0 {
         return Err(DnsError.Transport(os.failure("a datagram socket")))
     }
-    // SO_RCVTIMEO on SOL_SOCKET: a `struct timeval` of two 64-bit fields.
-    var timeout: []u8 = []
-    timeout.push(TIMEOUT_SECONDS)
-    var pad = 0
-    while pad < 15 {
-        timeout.push(0)
-        pad += 1
-    }
-    let ignored_option = setsockopt(i32(handle), SOL_SOCKET, SO_RCVTIMEO, ptr(timeout), SOCKADDR_IN_SIZE)
-    var sockaddr: []u8 = []
-    sockaddr.push(u8(AF_INET))
-    sockaddr.push(0)
-    sockaddr.push(u8(port / 256))
-    sockaddr.push(u8(port % 256))
-    for octet in octets {
-        sockaddr.push(octet)
-    }
-    var zeros = 0
-    while zeros < 8 {
-        sockaddr.push(0)
-        zeros += 1
-    }
-    if connect(i32(handle), ptr(sockaddr), SOCKADDR_IN_SIZE) < 0 {
+    // SO_RCVTIMEO on SOL_SOCKET, so a server that never answers is a failure
+    // rather than a hang.
+    let timeout = Timeval { seconds: isize(int(TIMEOUT_SECONDS)), microseconds: isize(0) }
+    let ignored_option = setsockopt(i32(handle), SOL_SOCKET, SO_RCVTIMEO, ptr(timeout), u32(size_of(Timeval)))
+    let sockaddr = SockaddrIn { family: u16(AF_INET), port: htons(u16(port)), address: htonl(packed_address(octets)), zero: [0; 8] }
+    if connect(i32(handle), ptr(sockaddr), u32(size_of(SockaddrIn))) < 0 {
         let problem = os.failure("${server}:${port}")
         let ignored = close(i32(handle))
         return Err(DnsError.Transport(problem))

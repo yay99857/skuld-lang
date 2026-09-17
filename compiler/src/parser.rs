@@ -96,6 +96,17 @@ impl Parser<'_> {
             fix: None,
         }
     }
+    /// An error about a token already consumed, whose span is therefore not
+    /// the one `error` would take.
+    fn error_at(&self, code: DiagnosticCode, span: Span, message: impl Into<String>) -> Diagnostic {
+        Diagnostic {
+            code,
+            message: message.into(),
+            span,
+            help: None,
+            fix: None,
+        }
+    }
     fn expected(&self, description: &str) -> Diagnostic {
         let found = if self.at(&TokenKind::Eof) {
             "end of file".to_owned()
@@ -341,6 +352,19 @@ impl Parser<'_> {
                 Some(_) => Visibility::Public,
                 None => Visibility::Private,
             };
+            // `extern struct` describes memory somebody else defined; `extern
+            // "C"` declares a function somebody else compiled. One token of
+            // lookahead separates them.
+            if self.at(&TokenKind::Extern) && matches!(self.peek_kind(1), TokenKind::Struct) {
+                match self.foreign_struct_declaration(visibility) {
+                    Ok(declaration) => structs.push(declaration),
+                    Err(diagnostic) => {
+                        self.diagnostics.push(diagnostic);
+                        self.recover_declaration(start);
+                    }
+                }
+                continue;
+            }
             if self.at(&TokenKind::Unsafe) || self.at(&TokenKind::Extern) {
                 if visibility == Visibility::Public {
                     self.diagnostics.push(self.error(
@@ -673,13 +697,41 @@ impl Parser<'_> {
         })
     }
     fn struct_declaration(&mut self, visibility: Visibility) -> Parsed<StructDecl> {
+        self.struct_declaration_with_layout(visibility, Layout::Skuld, None)
+    }
+    /// `extern struct Name packed align 4 { ... }`.
+    ///
+    /// `packed` and `align` are read as ordinary identifiers in this one
+    /// position rather than as keywords, so a field, a variable or a function
+    /// may still be called either of them anywhere else.
+    fn foreign_struct_declaration(&mut self, visibility: Visibility) -> Parsed<StructDecl> {
+        let start = self.bump().span.start;
+        self.struct_declaration_with_layout(
+            visibility,
+            Layout::Foreign {
+                packed: false,
+                align: None,
+            },
+            Some(start),
+        )
+    }
+    fn struct_declaration_with_layout(
+        &mut self,
+        visibility: Visibility,
+        layout: Layout,
+        foreign_start: Option<usize>,
+    ) -> Parsed<StructDecl> {
         let (kind, noun) = if self.at(&TokenKind::Class) {
             (TypeDeclKind::Reference, "class")
         } else {
             (TypeDeclKind::Value, "struct")
         };
-        let start = self.bump().span.start;
+        let keyword = self.bump().span.start;
+        let start = foreign_start.unwrap_or(keyword);
         let name = self.name(&format!("a {noun} name"))?;
+        // `packed` and `align N` follow the name, before the body. They are
+        // read here as ordinary identifiers, so neither is a reserved word.
+        let layout = self.layout_modifiers(layout)?;
         // `class User: Printable, Comparable`. Parsed for a struct too, so
         // that refusing it is a diagnostic rather than a syntax error.
         let mut conforms = Vec::new();
@@ -730,12 +782,60 @@ impl Parser<'_> {
         Ok(StructDecl {
             visibility,
             kind,
+            layout,
             name,
             conforms,
             fields,
             methods,
             span: Span::new(start, end),
         })
+    }
+    /// `packed` and `align N`, in either order, each written at most once.
+    fn layout_modifiers(&mut self, layout: Layout) -> Parsed<Layout> {
+        let Layout::Foreign {
+            mut packed,
+            mut align,
+        } = layout
+        else {
+            return Ok(layout);
+        };
+        while let TokenKind::Identifier(word) = &self.current().kind {
+            let word = word.clone();
+            match word.as_str() {
+                "packed" => {
+                    let span = self.bump().span;
+                    if packed {
+                        return Err(self.error_at(
+                            DiagnosticCode::UnsupportedSyntax,
+                            span,
+                            "`packed` is written once",
+                        ));
+                    }
+                    packed = true;
+                }
+                "align" => {
+                    let keyword = self.bump().span;
+                    let token = self.bump();
+                    let TokenKind::Integer(value) = token.kind else {
+                        return Err(self.error_at(
+                            DiagnosticCode::ExpectedSyntax,
+                            token.span,
+                            "`align` takes a power of two, as in `align 8`",
+                        ));
+                    };
+                    if align.is_some() {
+                        return Err(self.error_at(
+                            DiagnosticCode::UnsupportedSyntax,
+                            keyword,
+                            "`align` is written once",
+                        ));
+                    }
+                    align = Some((value, Span::new(keyword.start, token.span.end)));
+                }
+                _ => break,
+            }
+        }
+        Ok(Layout::Foreign { packed, align })
     }
     /// The name and `(` are already known; methods carry no `func` keyword.
     fn method(&mut self, name: Name, start: usize) -> Parsed<FunctionDecl> {

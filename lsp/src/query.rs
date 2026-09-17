@@ -450,6 +450,8 @@ fn describe_builtin(builtin: Builtin, name: &str) -> String {
         Builtin::Offset => "func offset(pointer: *T, count: int) -> *T // unsafe".to_owned(),
         Builtin::Addr => "func addr(pointer: *T) -> usize // unsafe".to_owned(),
         Builtin::PtrFrom => "func ptr_from(address: usize) -> *T // unsafe".to_owned(),
+        Builtin::SizeOf => "func size_of(Type) -> usize".to_owned(),
+        Builtin::OffsetOf => "func offset_of(Type, field) -> usize".to_owned(),
     }
 }
 

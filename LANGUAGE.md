@@ -1002,6 +1002,60 @@ blocks, below, and neither is available outside one. A
 declaration whose C prototype disagrees with a header the generated program
 already includes is a clang error at build time, not a Skuld diagnostic.
 
+## Layout and the ABI — Implemented
+
+An ordinary `struct` is laid out by the compiler, and that layout is
+deliberately unspecified: nothing outside the program may depend on it. A type
+that describes memory somebody else defined says so, and is then laid out the
+way the platform's C compiler lays out the same fields:
+
+```skuld
+extern struct SockaddrIn {
+    family: u16
+    port: u16
+    address: u32
+    zero: [8]u8
+}
+
+extern struct Tagged packed {
+    tag: u8
+    value: u32
+}
+
+extern struct Page align 4096 {
+    bytes: [4096]u8
+}
+```
+
+- **Fields** must be things C can describe: the scalars, a raw pointer, a fixed
+  array of those, and another `extern struct`. A string, an array, a class, an
+  `Option` or a `Result` is refused — a managed field would put a reference
+  count inside a layout C decides, where nothing would retain or release it.
+- **`packed`** removes the padding between fields; **`align N`** aligns the
+  whole type to at least `N` bytes, where `N` is a power of two up to 4096.
+  Both are written between the name and the body, and both are ordinary
+  identifiers everywhere else in the language.
+- **Crossing the boundary.** An `extern struct` may be a parameter and a return
+  type of an `extern "C"` function, passed and returned by value the way C
+  does it. `ptr(value)` takes the address of one as a `*void`, which is what a
+  call like `connect` expects. Nothing else about the boundary changed: a
+  managed type is still refused.
+- **`size_of(Type)`** and **`offset_of(Type, field)`** answer in bytes, as a
+  `usize`. Both are refused for a type whose layout the compiler chose, since
+  there is no answer a program is allowed to depend on. Neither argument is a
+  value: one names a type and the other a field. The answer comes from the C
+  compiler for the target being built, so it is right on every target rather
+  than recomputed by Skuld — which also means it is not a compile-time constant
+  and cannot initialize a `const`.
+
+`std/net` and `std/dns` are written this way: `SockaddrIn` and `Timeval` are
+declared types rather than hand-packed bytes, and `struct timeval` is why it
+matters — its two fields are `long`, so it is sixteen bytes on a 64-bit target
+and eight on a 32-bit one.
+
+Out of scope: bitfields with C's allocation rules, a guarantee about the
+ordinary layout, and a layout that varies by target in the same source.
+
 ## `unsafe` blocks and pointers — Implemented
 
 An `unsafe` block is where the guarantees the compiler makes everywhere else are

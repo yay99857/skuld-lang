@@ -153,3 +153,16 @@ load written outside an `unsafe` block, a value that is not the pointee's type,
 a read through `*void`, the address of an immutable binding or of a parameter,
 `ptr_from` where no context says which pointer it becomes, a load over
 something that is not a pointer, and a pointer to a managed type.
+
+`pass/extern_structs` covers the declared layouts of M24: padding, `packed`,
+`align`, a fixed array and another declared type as fields, and `size_of` and
+`offset_of` against each. It reads a `packed` field back byte by byte through a
+pointer, summing the bytes rather than reading them in order, because which end
+they start at is the target's business and this fixture also runs on i686. The
+half no fixture can reach — a struct passed and returned by value across the
+ABI — is `cli/tests/abi.rs`, which compiles a C object of its own and links it,
+since the golden suite links nothing but libc. The `extern_struct_*`,
+`layout_of_*` and `offset_of_*` fixtures in `fail/` cover the refusals: a
+managed field, an ordinary struct as a field or in a signature, an alignment
+that is not a power of two, `size_of` of a type the compiler laid out, and a
+field that is not there.

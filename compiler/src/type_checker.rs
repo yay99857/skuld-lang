@@ -56,6 +56,9 @@ pub struct TypedProgram {
     pub(crate) results: Vec<ResultInfo>,
     pub(crate) implicit_wraps: BTreeMap<(FileId, usize, usize), Type>,
     pub(crate) slice_coercions: BTreeMap<(FileId, usize, usize), Type>,
+    /// The type, and field where there is one, that a `size_of` or `offset_of`
+    /// call asked about, by call position.
+    pub(crate) layout_queries: BTreeMap<(FileId, usize, usize), (StructId, Option<usize>)>,
     pub(crate) function_signatures: Vec<FunctionTypeInfo>,
     pub(crate) constants: BTreeMap<SymbolId, ConstValue>,
 }
@@ -183,6 +186,7 @@ pub(crate) fn type_check(
         constants: BTreeMap::new(),
         evaluating_constants: Vec::new(),
         constant_decls: BTreeMap::new(),
+        layout_queries: BTreeMap::new(),
         unsafe_depth: 0,
     };
     // Where each type was declared, aligned with the ids handed out below, so
@@ -235,6 +239,7 @@ pub(crate) fn type_check(
                 module: file.module,
                 visibility: declaration.visibility,
                 reference: declaration.kind == TypeDeclKind::Reference,
+                layout: declaration.layout.clone(),
                 fields: Vec::new(),
                 methods: Vec::new(),
                 file: FileId(index),
@@ -312,6 +317,41 @@ pub(crate) fn type_check(
         }
         checker.structs[index].fields = fields;
         checker.structs[index].file = file;
+        // A type that describes memory somebody else defined may hold only
+        // what that other language can see. A managed field would put a
+        // reference count inside a layout C decides, where nothing would
+        // retain or release it.
+        if declaration.layout.is_foreign() {
+            let field_types: Vec<Type> = checker.structs[index]
+                .fields
+                .iter()
+                .map(|field| field.ty)
+                .collect();
+            for (field, ty) in declaration.fields.iter().zip(field_types) {
+                if !checker.foreign_layout_type(ty) {
+                    let rendered = checker.type_name(ty);
+                    checker.error(
+                        DiagnosticCode::InvalidValueType,
+                        field.type_ref.span(),
+                        format!(
+                            "`{rendered}` cannot be a field of an `extern struct`; its layout is the C compiler's, so every field must be one C can describe"
+                        ),
+                    );
+                }
+            }
+            if let crate::ast::Layout::Foreign {
+                align: Some((value, span)),
+                ..
+            } = declaration.layout
+                && (value == 0 || !value.is_power_of_two() || value > 4096)
+            {
+                checker.error(
+                    DiagnosticCode::IntegerRange,
+                    span,
+                    "`align` takes a power of two between 1 and 4096",
+                );
+            }
+        }
     }
     // A value type has no indirection, so containing itself — directly or
     // through other value types — would have no size. A class field is a
@@ -712,6 +752,7 @@ pub(crate) fn type_check(
         externs,
         implicit_wraps,
         slice_coercions,
+        layout_queries,
         constants,
         ..
     } = checker;
@@ -732,6 +773,7 @@ pub(crate) fn type_check(
         results,
         implicit_wraps,
         slice_coercions,
+        layout_queries,
         expressions,
         symbol_types,
         signatures,
@@ -799,6 +841,9 @@ struct Checker<'a> {
     constants: BTreeMap<SymbolId, ConstValue>,
     evaluating_constants: Vec<SymbolId>,
     constant_decls: BTreeMap<SymbolId, (FileId, ConstantDecl)>,
+    /// What `size_of` and `offset_of` were asked about, by call position, so
+    /// lowering finds the type and field without re-reading the syntax.
+    layout_queries: BTreeMap<(FileId, usize, usize), (StructId, Option<usize>)>,
     /// How many `unsafe` blocks enclose what is being checked. The pointer
     /// builtins read and write memory the compiler cannot vouch for, so they
     /// are refused wherever this is zero.
@@ -828,6 +873,9 @@ pub struct StructInfo {
     pub visibility: Visibility,
     /// A class is a reference to a shared object; a struct is a value.
     pub reference: bool,
+    /// The compiler's own layout, or the platform C compiler's for a type that
+    /// describes memory somebody else defined.
+    pub layout: crate::ast::Layout,
     /// Field order is declaration order, which the backend layout follows.
     pub fields: Vec<FieldInfo>,
     pub methods: Vec<MethodInfo>,
@@ -1176,22 +1224,44 @@ impl Checker<'_> {
         }
     }
     /// Managed values never cross the foreign boundary: a C function knows
-    /// nothing about retain and release, so only scalars, raw pointers and a
-    /// `void` return may appear in an `extern` signature.
+    /// nothing about retain and release, so only scalars, raw pointers, a type
+    /// whose layout is C's own and a `void` return may appear in an `extern`
+    /// signature.
     fn foreign_type(&mut self, ty: Type, span: Span, is_return: bool) {
-        let allowed = matches!(
-            ty,
-            Type::Int(_) | Type::Float | Type::Bool | Type::Char | Type::Pointer(_) | Type::Error
-        ) || (is_return && ty == Type::Void);
+        let allowed = self.foreign_layout_type(ty) || (is_return && ty == Type::Void);
         if !allowed {
+            let extra = match ty {
+                Type::Struct(id) if !self.structs[id.0].reference => {
+                    "; declare it `extern struct` to give it the layout C expects"
+                }
+                _ => "",
+            };
             self.error(
                 DiagnosticCode::InvalidValueType,
                 span,
                 format!(
-                    "`{}` cannot cross the `extern \"C\"` boundary; only scalars and raw pointers can",
+                    "`{}` cannot cross the `extern \"C\"` boundary; only scalars, raw pointers and `extern struct` types can{extra}",
                     self.type_name(ty)
                 ),
             );
+        }
+    }
+    /// Whether a value of this type has a layout C can describe: a scalar, a
+    /// raw pointer, a fixed array of such, or an `extern struct` of them.
+    ///
+    /// The ordinary struct layout is the compiler's own and unspecified on
+    /// purpose, which is exactly why it is not in this list.
+    fn foreign_layout_type(&self, ty: Type) -> bool {
+        match ty {
+            Type::Int(_) | Type::Float | Type::Bool | Type::Char | Type::Pointer(_) => true,
+            // Recovery: a second diagnostic about a type that is already wrong
+            // would be noise.
+            Type::Error => true,
+            Type::FixedArray(id) => self.foreign_layout_type(self.fixed_arrays[id.0].element),
+            Type::Struct(id) => {
+                !self.structs[id.0].reference && self.structs[id.0].layout.is_foreign()
+            }
+            _ => false,
         }
     }
     fn option_type(&mut self, element: Type) -> Type {
@@ -3506,6 +3576,9 @@ impl Checker<'_> {
                     self.option_type(element)
                 }
             }
+            Some((_, SymbolKind::Builtin(builtin @ (Builtin::SizeOf | Builtin::OffsetOf)))) => {
+                self.layout_builtin(builtin, arguments, span)
+            }
             Some((
                 _,
                 SymbolKind::Builtin(
@@ -3549,6 +3622,16 @@ impl Checker<'_> {
                         Type::Bool => Some(Pointee::Bool),
                         _ => None,
                     },
+                    // An `extern struct` is bytes C already knows the shape
+                    // of, so its address is what a foreign call takes. It is
+                    // `*void`: there is no pointer to a struct type, and
+                    // nothing in Skuld can read through it anyway.
+                    Type::Struct(id)
+                        if !self.structs[id.0].reference
+                            && self.structs[id.0].layout.is_foreign() =>
+                    {
+                        Some(Pointee::Void)
+                    }
                     // The address of a scalar local. It points into the frame
                     // it was taken in, which nothing tracks, so it is written
                     // inside `unsafe` like every other pointer operation.
@@ -4102,6 +4185,102 @@ impl Checker<'_> {
                 }
             }
             ExprKind::Group(inner) => self.addressable_local(inner),
+            _ => None,
+        }
+    }
+
+    /// `size_of(Type)` and `offset_of(Type, field)`.
+    ///
+    /// Both answer a question about a layout, so both are refused for a type
+    /// whose layout is the compiler's own and deliberately unspecified: only
+    /// an `extern struct` has an answer a program is allowed to depend on.
+    /// Neither argument is a value — one names a type and the other a field —
+    /// which is why the resolver leaves them alone and they are read here from
+    /// the syntax.
+    fn layout_builtin(&mut self, builtin: Builtin, arguments: &[Expr], span: Span) -> Type {
+        let (name, wanted) = match builtin {
+            Builtin::SizeOf => ("size_of", 1),
+            _ => ("offset_of", 2),
+        };
+        if arguments.len() != wanted {
+            self.error(
+                DiagnosticCode::ArgumentCount,
+                span,
+                match builtin {
+                    Builtin::SizeOf => "`size_of` expects exactly one type".to_owned(),
+                    _ => "`offset_of` expects a type and a field name".to_owned(),
+                },
+            );
+            return Type::Error;
+        }
+        let Some(path) = self.type_path(&arguments[0]) else {
+            self.error(
+                DiagnosticCode::ExpectedSyntax,
+                arguments[0].span,
+                format!("`{name}` takes the name of a type, not an expression"),
+            );
+            return Type::Error;
+        };
+        let Some(TypeEntry::Struct(id)) = self.lookup_type(&path, "type") else {
+            return Type::Error;
+        };
+        if self.structs[id.0].reference || !self.structs[id.0].layout.is_foreign() {
+            self.error(
+                DiagnosticCode::InvalidValueType,
+                arguments[0].span,
+                format!(
+                    "`{name}` needs a declared layout; `{}` is laid out by the compiler, which makes no promise about where its fields sit",
+                    self.structs[id.0].name
+                ),
+            );
+            return Type::Error;
+        }
+        let field = match builtin {
+            Builtin::SizeOf => None,
+            _ => {
+                let ExprKind::Identifier(written) = &arguments[1].kind else {
+                    self.error(
+                        DiagnosticCode::ExpectedSyntax,
+                        arguments[1].span,
+                        "`offset_of` takes a field name".to_owned(),
+                    );
+                    return Type::Error;
+                };
+                let Some((index, _)) = self.structs[id.0].field(&written.text) else {
+                    let candidates = self.structs[id.0]
+                        .fields
+                        .iter()
+                        .map(|field| field.name.clone())
+                        .collect();
+                    let message = format!(
+                        "`{}` has no field `{}`",
+                        self.structs[id.0].name, written.text
+                    );
+                    self.unknown_member(DiagnosticCode::MissingField, written, message, candidates);
+                    return Type::Error;
+                };
+                Some(index)
+            }
+        };
+        self.layout_queries
+            .insert((self.file, span.start, span.end), (id, field));
+        Type::Int(IntType::USize)
+    }
+    /// The type name an argument spells: `Header` or `headers.Header`.
+    fn type_path(&self, expr: &Expr) -> Option<Path> {
+        match &expr.kind {
+            ExprKind::Identifier(name) => Some(Path::bare(name.clone())),
+            ExprKind::Member { object, member } => {
+                let ExprKind::Identifier(qualifier) = &object.kind else {
+                    return None;
+                };
+                self.resolution.module_in_file(self.file, &qualifier.text)?;
+                Some(Path {
+                    module: Some(qualifier.clone()),
+                    name: member.clone(),
+                    span: expr.span,
+                })
+            }
             _ => None,
         }
     }

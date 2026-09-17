@@ -53,6 +53,10 @@ pub enum Builtin {
     /// `ptr_from(address)`, which turns a `usize` back into a pointer. The
     /// type it becomes comes from the context that receives it.
     PtrFrom,
+    /// `size_of(Type)`: the size in bytes of a type whose layout is declared.
+    SizeOf,
+    /// `offset_of(Type, field)`: where a field sits inside one.
+    OffsetOf,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
@@ -180,6 +184,8 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
     resolver.insert("offset", SymbolKind::Builtin(Builtin::Offset), None);
     resolver.insert("addr", SymbolKind::Builtin(Builtin::Addr), None);
     resolver.insert("ptr_from", SymbolKind::Builtin(Builtin::PtrFrom), None);
+    resolver.insert("size_of", SymbolKind::Builtin(Builtin::SizeOf), None);
+    resolver.insert("offset_of", SymbolKind::Builtin(Builtin::OffsetOf), None);
     // `int` and `i64` name one type, so both spellings convert to it.
     for kind in IntType::ALL {
         resolver.insert(
@@ -569,6 +575,18 @@ impl Resolver {
     /// The right half of `module.name`. A module's scope is not an enclosing
     /// scope of the importing file, so this looks in exactly one place rather
     /// than walking parents, and the name has to be exported to be found.
+    /// Whether a callee is `size_of` or `offset_of` as the prelude defines
+    /// them — a shadowing binding of either name is an ordinary call again.
+    fn names_layout_builtin(&self, callee: &Expr) -> bool {
+        let ExprKind::Identifier(name) = &callee.kind else {
+            return false;
+        };
+        matches!(
+            self.lookup(&name.text)
+                .map(|symbol| self.result.symbols[symbol.0].kind),
+            Some(SymbolKind::Builtin(Builtin::SizeOf | Builtin::OffsetOf))
+        )
+    }
     fn module_member(&mut self, module: ModuleId, qualifier: &Name, name: &Name) {
         let scope = self.result.module_scopes[module.0];
         let Some(symbol) = self.result.scopes[scope.0].symbols.get(&name.text).copied() else {
@@ -812,6 +830,13 @@ impl Resolver {
             }
             ExprKind::Call { callee, arguments } => {
                 self.expression(callee);
+                // `size_of(Type)` and `offset_of(Type, field)` are asked about
+                // a type and one of its fields, neither of which is a value
+                // name. Resolving them here would report every one of them as
+                // unknown, so the checker reads the syntax instead.
+                if self.names_layout_builtin(callee) {
+                    return;
+                }
                 for argument in arguments {
                     self.expression(argument);
                 }

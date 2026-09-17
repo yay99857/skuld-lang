@@ -26,27 +26,6 @@ pub fn emit_c(program: &Program) -> String {
             .map(|lambda| lambda.captures.iter().map(|c| c.id).collect())
             .collect(),
     };
-    // Foreign declarations first: they name symbols from another object file
-    // and depend on nothing this backend generates.
-    for function in &program.externs {
-        let parameters = if function.parameters.is_empty() {
-            "void".to_owned()
-        } else {
-            function
-                .parameters
-                .iter()
-                .map(|ty| type_name(&program.structs, *ty))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        emitter.line(&format!(
-            "extern {} {}({parameters}); /* extern \"C\": source bytes {}..{} */",
-            type_name(&program.structs, function.return_type),
-            function.name,
-            function.span.start,
-            function.span.end
-        ));
-    }
     // An interface value is a pair: the object, and the table of methods to
     // call on it. The pair is declared before the aggregates, because an array
     // or a field may hold one; the table itself stays incomplete until every
@@ -202,10 +181,30 @@ pub fn emit_c(program: &Program) -> String {
             declaration.span.start,
             declaration.span.end
         ));
+        // An `extern struct` is laid out the way the platform's C compiler
+        // lays out the same fields, which is what it is for; `packed` and
+        // `align` are passed straight through to it.
+        let attributes = match &declaration.layout {
+            crate::ast::Layout::Foreign { packed, align } => {
+                let mut parts = Vec::new();
+                if *packed {
+                    parts.push("packed".to_owned());
+                }
+                if let Some((value, _)) = align {
+                    parts.push(format!("aligned({value})"));
+                }
+                if parts.is_empty() {
+                    String::new()
+                } else {
+                    format!("__attribute__(({})) ", parts.join(", "))
+                }
+            }
+            crate::ast::Layout::Skuld => String::new(),
+        };
         if declaration.reference {
             emitter.line(&format!("struct skuld_s{index} {{"));
         } else {
-            emitter.line("typedef struct {");
+            emitter.line(&format!("typedef struct {attributes}{{"));
         }
         emitter.indent += 1;
         if declaration.reference {
@@ -224,6 +223,28 @@ pub fn emit_c(program: &Program) -> String {
         } else {
             emitter.line(&format!("}} skuld_s{index};"));
         }
+    }
+    // Foreign declarations come after the aggregates rather than first: a
+    // signature may name an `extern struct`, which has to be complete before
+    // it is passed or returned by value.
+    for function in &program.externs {
+        let parameters = if function.parameters.is_empty() {
+            "void".to_owned()
+        } else {
+            function
+                .parameters
+                .iter()
+                .map(|ty| type_name(&program.structs, *ty))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        emitter.line(&format!(
+            "extern {} {}({parameters}); /* extern \"C\": source bytes {}..{} */",
+            type_name(&program.structs, function.return_type),
+            function.name,
+            function.span.start,
+            function.span.end
+        ));
     }
     // Complete array layouts after value types; arrays themselves are pointers.
     for (index, array) in program.arrays.iter().enumerate() {
@@ -2119,9 +2140,17 @@ impl Emitter {
             // The address of a scalar local. It is a C local, so its address
             // is its address; nothing is copied and nothing is counted.
             ExprKind::AddressOf(value) => {
-                let place = self
-                    .lvalue(value)
-                    .expect("internal compiler bug: unchecked `ptr` operand");
+                // A local is already a place; anything else is first settled
+                // into a temporary, whose address is then good for as long as
+                // every other borrow this expression takes.
+                let place = match self.lvalue(value) {
+                    Some(place) => place,
+                    None => {
+                        let ty = value.ty;
+                        let computed = self.expression(value);
+                        self.store(ty, &computed, true)
+                    }
+                };
                 let cast = self.c_type(expr.ty);
                 self.temporary(expr.ty, &format!("({cast})&{place}"))
             }
@@ -2158,6 +2187,13 @@ impl Emitter {
             ExprKind::PointerAddr(pointer) => {
                 let pointer = self.expression(pointer);
                 self.temporary(expr.ty, &format!("((size_t){pointer})"))
+            }
+            ExprKind::LayoutOf { id, field } => {
+                let query = match field {
+                    Some(index) => format!("offsetof(skuld_s{}, f{index})", id.0),
+                    None => format!("sizeof(skuld_s{})", id.0),
+                };
+                self.temporary(expr.ty, &format!("((size_t){query})"))
             }
             ExprKind::PointerFrom(address) => {
                 let address = self.expression(address);

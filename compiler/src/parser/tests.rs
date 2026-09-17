@@ -1082,3 +1082,31 @@ fn an_unsafe_block_nests_like_any_other_block() {
     );
     assert_eq!(parsed.functions[0].body.statements.len(), 1);
 }
+
+#[test]
+fn an_extern_struct_carries_its_layout_and_leaves_the_words_ordinary() {
+    let parsed =
+        program("extern struct Header packed align 8 {\n    magic: u32,\n}\n\nfunc main() {}");
+    assert_eq!(
+        parsed.structs[0].layout,
+        Layout::Foreign {
+            packed: true,
+            align: Some((8, Span::new(28, 35)))
+        }
+    );
+    // Written plain, it is still a foreign layout, just without modifiers.
+    let plain = program("extern struct P {\n    x: i32,\n}\n\nfunc main() {}");
+    assert_eq!(
+        plain.structs[0].layout,
+        Layout::Foreign {
+            packed: false,
+            align: None
+        }
+    );
+    // An ordinary struct says nothing about its layout.
+    let ordinary = program("struct P {\n    x: int,\n}\n\nfunc main() {}");
+    assert_eq!(ordinary.structs[0].layout, Layout::Skuld);
+    // `packed` and `align` are read as keywords in that one position only.
+    let names = program("func main() {\n    let packed = 1\n    let align = packed + 1\n}");
+    assert_eq!(names.functions[0].body.statements.len(), 2);
+}

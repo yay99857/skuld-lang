@@ -1,0 +1,79 @@
+// A type that describes memory somebody else defined: the C compiler lays it
+// out, and `size_of` and `offset_of` answer for the target being built.
+
+extern struct Point {
+    x: i32
+    y: i32
+}
+
+// No padding at all: five bytes, and the `u32` starts at one.
+extern struct Tagged packed {
+    tag: u8
+    value: u32
+}
+
+// Padded to its own alignment: the `u16` sits after a byte of padding.
+extern struct Padded {
+    kind: u8
+    code: u16
+}
+
+extern struct Aligned align 32 {
+    value: u8
+}
+
+// A fixed array and another declared type are both things C can describe, so
+// both may be fields.
+extern struct Envelope {
+    head: Point
+    bytes: [4]u8
+}
+
+func main() {
+    let point = Point { x: 3, y: 4 }
+    print(point.x + point.y)
+    print(int(size_of(Point)))
+    print(int(offset_of(Point, y)))
+
+    print(int(size_of(Tagged)))
+    print(int(offset_of(Tagged, value)))
+
+    print(int(size_of(Padded)))
+    print(int(offset_of(Padded, code)))
+
+    print(int(size_of(Aligned)))
+
+    print(int(size_of(Envelope)))
+    print(int(offset_of(Envelope, bytes)))
+
+    // Value semantics are unchanged: a copy is a copy.
+    var moved = point
+    moved.x = 30
+    print(point.x)
+    print(moved.x)
+
+    // The address of one is what a foreign call takes. Reading it back byte
+    // by byte is how this fixture checks that the layout really is the one C
+    // described, without a libc function whose prototype it would have to
+    // restate.
+    let tagged = Tagged { tag: u8(0xAB), value: u32(0x11223344) }
+    unsafe {
+        let bytes: *u8 = ptr_from(addr(ptr(tagged)))
+        print(int(load(bytes)))
+        // The four bytes of the `u32` are summed rather than read in order:
+        // which end they start at is the target's business, and this fixture
+        // runs on more than one.
+        var total = 0
+        var index = 0
+        while index < 4 {
+            let at = int(offset_of(Tagged, value)) + index
+            total += int(load(offset(bytes, at)))
+            index += 1
+        }
+        print(total)
+    }
+
+    let envelope = Envelope { head: point, bytes: [7, 8, 9, 10] }
+    print(envelope.head.y)
+    print(int(envelope.bytes[2]))
+}

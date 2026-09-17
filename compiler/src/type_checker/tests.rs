@@ -1375,3 +1375,40 @@ fn an_address_is_only_taken_of_a_mutable_local() {
         DiagnosticCode::InvalidValueType,
     );
 }
+
+#[test]
+fn a_declared_layout_is_what_crosses_the_boundary_and_what_can_be_measured() {
+    valid(
+        "extern struct Point {\n    x: i32,\n    y: i32,\n}\n\nunsafe extern \"C\" {\n    func take(p: Point) -> i32\n    func make() -> Point\n}\n\nfunc main() {\n    let p = Point { x: 1, y: 2 }\n    print(take(p))\n    print(int(size_of(Point)))\n    print(int(offset_of(Point, y)))\n}",
+    );
+    // A managed field would put a reference count inside a layout C decides.
+    fails(
+        "extern struct Bad {\n    name: string,\n}\n\nfunc main() {}",
+        DiagnosticCode::InvalidValueType,
+    );
+    // So would a struct whose own layout is unspecified.
+    fails(
+        "struct Inner {\n    x: int,\n}\n\nextern struct Outer {\n    inner: Inner,\n}\n\nfunc main() {}",
+        DiagnosticCode::InvalidValueType,
+    );
+    // The compiler's layout is unspecified on purpose, so it cannot be asked
+    // about.
+    fails(
+        "struct Point {\n    x: int,\n}\n\nfunc main() {\n    print(int(size_of(Point)))\n}",
+        DiagnosticCode::InvalidValueType,
+    );
+    fails(
+        "extern struct Point {\n    x: i32,\n}\n\nfunc main() {\n    print(int(offset_of(Point, y)))\n}",
+        DiagnosticCode::MissingField,
+    );
+    // Neither argument is a value, and neither is an expression.
+    fails(
+        "extern struct Point {\n    x: i32,\n}\n\nfunc main() {\n    print(int(size_of(1 + 1)))\n}",
+        DiagnosticCode::ExpectedSyntax,
+    );
+    // `align` describes an alignment, so it has to be one.
+    fails(
+        "extern struct Bad align 6 {\n    x: u8,\n}\n\nfunc main() {}",
+        DiagnosticCode::IntegerRange,
+    );
+}

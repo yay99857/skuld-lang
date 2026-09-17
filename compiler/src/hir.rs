@@ -298,6 +298,13 @@ pub(crate) enum ExprKind {
     PointerAddr(Box<Expr>),
     /// `ptr_from(address)`: the pointer an address names.
     PointerFrom(Box<Expr>),
+    /// `size_of(Type)` and `offset_of(Type, field)`. The backend asks the C
+    /// compiler rather than computing a layout of its own, so the answer is
+    /// right on every target by construction.
+    LayoutOf {
+        id: StructId,
+        field: Option<usize>,
+    },
     StringLen(Box<Expr>),
     StringBytes(Box<Expr>),
     /// `bytes_to_string(bytes)`. Yields `Result<string, string>`.

@@ -121,10 +121,34 @@ pub enum TypeDeclKind {
     Reference,
 }
 
+/// How a declared type is laid out in memory.
+///
+/// The default is the compiler's own and deliberately unspecified: nothing
+/// outside the program may depend on it. A type that describes memory somebody
+/// else defined says so with `extern`, and then it is laid out the way the
+/// platform's C compiler lays out the same fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Layout {
+    Skuld,
+    Foreign {
+        /// `packed`: no padding between fields.
+        packed: bool,
+        /// `align N`: the whole type is aligned to at least N bytes.
+        align: Option<(u64, Span)>,
+    },
+}
+
+impl Layout {
+    pub fn is_foreign(&self) -> bool {
+        matches!(self, Self::Foreign { .. })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructDecl {
     pub visibility: Visibility,
     pub kind: TypeDeclKind,
+    pub layout: Layout,
     pub name: Name,
     /// `class User: Printable, Comparable`. Conformance is declared here
     /// rather than inferred from the methods that happen to be present.

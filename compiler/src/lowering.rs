@@ -952,6 +952,17 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     span: source.span,
                 };
             }
+            if let Some(&(id, field)) =
+                cx.typed
+                    .layout_queries
+                    .get(&(cx.file.get(), source.span.start, source.span.end))
+            {
+                return h::Expr {
+                    kind: h::ExprKind::LayoutOf { id, field },
+                    ty: cx.ty(source.span).expect("checked expression"),
+                    span: source.span,
+                };
+            }
             if let SymbolKind::Builtin(
                 builtin @ (Builtin::Load
                 | Builtin::Store

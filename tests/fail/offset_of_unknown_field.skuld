@@ -1,0 +1,8 @@
+extern struct Point {
+    x: i32,
+    y: i32,
+}
+
+func main() {
+    print(int(offset_of(Point, z)))
+}
