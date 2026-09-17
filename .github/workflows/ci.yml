@@ -41,9 +41,15 @@ jobs:
         run: cargo test --workspace
 
       # The README tells readers these commands work; keep that honest.
+      # A `*_tests.skuld` file holds `test_` functions and no entrypoint, so it
+      # is `skuld test`'s to run: handing it to `run` fails on a missing `main`
+      # and, under `bash -e`, takes the whole step down with it.
       - name: Run the documented examples
         run: |
           for example in examples/*.skuld; do
             echo "== $example"
-            cargo run --quiet -p skuld-cli -- run "$example"
+            case "$example" in
+              *_tests.skuld) cargo run --quiet -p skuld-cli -- test "$example" ;;
+              *) cargo run --quiet -p skuld-cli -- run "$example" ;;
+            esac
           done
