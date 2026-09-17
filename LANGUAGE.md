@@ -976,8 +976,9 @@ rejected (`E0103`), as is a pointer to one. The declared name may not be `main`
 or start with `skuld_`, which the generated program already uses.
 
 `*T` is a raw pointer, where `T` is a scalar or `void`. It is unmanaged: it
-keeps nothing alive, and Skuld cannot read or write through it. `*void` is the
-opaque handle a C library hands back.
+keeps nothing alive, and outside an `unsafe` block Skuld cannot read or write
+through it. `*void` is the opaque handle a C library hands back. Reading and
+writing through a pointer is described under [unsafe blocks](#unsafe-blocks-and-pointers--implemented).
 
 `ptr(value)` borrows the bytes a `string` or an array of scalars already owns
 and yields `*u8` for a string, or `*T` for a `[]T`. It retains nothing: the
@@ -995,10 +996,68 @@ skuld build program.skuld -L/opt/lib -lfoo
 ```
 
 Out of scope, and still out: Skuld functions called back from C, structs passed
-by value across the ABI, varargs, pointers to pointers, arithmetic on pointers,
-reading or writing through one from Skuld, and any ABI other than C. A
+by value across the ABI, varargs, pointers to pointers, and any ABI other than
+C. Pointer arithmetic and reading through a pointer arrived with `unsafe`
+blocks, below, and neither is available outside one. A
 declaration whose C prototype disagrees with a header the generated program
 already includes is a clang error at build time, not a Skuld diagnostic.
+
+## `unsafe` blocks and pointers — Implemented
+
+An `unsafe` block is where the guarantees the compiler makes everywhere else are
+suspended, and says so in the source:
+
+```skuld
+unsafe {
+    var register: u32 = 0
+    let port = ptr(register)
+    volatile_store(port, u32(1))
+    print(int(volatile_load(port)))
+}
+```
+
+Everything outside such a block keeps every rule it had: no unchecked index, no
+aliasing of a managed value, no pointer read at all. The block changes nothing
+about the generated code — it is a claim the programmer makes, and the only
+thing the compiler does with it is stop refusing the operations below.
+
+| Operation | Meaning |
+| --- | --- |
+| `load(pointer)` | The value at `pointer`, of the pointer's own pointee type |
+| `store(pointer, value)` | Writes `value` through `pointer` |
+| `volatile_load(pointer)` | A read the backend may neither drop nor reorder against another volatile access |
+| `volatile_store(pointer, value)` | The same for a write |
+| `offset(pointer, count)` | Steps `count` elements, not bytes |
+| `addr(pointer)` | The address, as a `usize` |
+| `ptr_from(address)` | The pointer an address names; its type comes from the context |
+| `ptr(local)` | The address of a scalar local |
+
+- Nothing new spells a load. Its type is the pointer's pointee, so `load(p)`
+  over a `*u32` is a `u32`; there is no `load<u32>(p)` form and no `*p`
+  operator. `ptr_from` is the one that reads the expected type from its
+  context, as `None` and an integer literal already do, and it is an error
+  where that context does not name a pointer type.
+- These are prelude bindings like `print` and `u8()`, and can be shadowed the
+  same way.
+- A pointer still points only at a scalar or `void`. A `*string`, a `*[]u8` or
+  a pointer to a class stays a diagnostic: loading one would hand the reference
+  counter a value it never saw allocated. `*void` points at no particular type,
+  so `load`, `store` and `offset` all refuse it.
+- A pointer to a pointer is still not a type. An address travels as a `usize`
+  and comes back through `ptr_from`, which is how a linked structure stores its
+  links.
+- `ptr(local)` takes the address of a scalar `var`. A `let` is refused, since a
+  pointer can always write through it, and a parameter is refused, since its
+  address is the address of a copy.
+- An `unsafe` block is lexical, not dynamic: a function called from inside one
+  is not itself inside it, and needs its own block.
+- The foreign boundary does not widen: an `extern "C"` signature still refuses
+  managed types, and `ptr()` over a string or an array still borrows rather
+  than escapes.
+
+Out of scope: references with lifetimes, aliasing rules, a borrow checker, and
+unchecked indexing — `load` and `store` are the only unchecked accesses in the
+language, and each one is written where a reader can see it.
 
 ## Function values — Implemented
 
@@ -1506,16 +1565,18 @@ string slicing and the `extern "C"` boundary.
 Future commands: `new` and `doc` (`fmt` and `test` are implemented). LLVM/Cranelift and eventual
 self-hosting remain long-term possibilities.
 
-`ROADMAP.md` records M1–M19 as implemented, including function values,
+`ROADMAP.md` records M1–M23 as implemented, including function values,
 callbacks, interfaces, blocking TCP/HTTP with JSON, the official formatter
 `skuld fmt`, find-references and rename in the editor, and a native command-line
 application with its own `skuld test` suite, field defaults at construction, a
 string-keyed map, host-name resolution, verified HTTPS, the first measured
 performance baseline in `BENCHMARKS.md`, and bitwise operators with integer
 literals in binary, octal and hexadecimal with digit separators (M19), along
-with expression lambdas and array `to_sorted`. Its planned sequence continues
-with M20. These proposals do not settle their syntax
-or authorize implementation. No implementation milestone is active.
+with expression lambdas and array `to_sorted` (M19), named constants and value
+patterns (M20), word-sized integers and float/integer conversion (M21),
+fixed-size arrays (M22) and pointers that can be read inside `unsafe` (M23).
+Its planned sequence continues with M24. These proposals do not settle their
+syntax or authorize implementation. No implementation milestone is active.
 
 ## Unsupported features and experimental status
 
@@ -1530,6 +1591,7 @@ foreign `extern "C"` declarations with raw pointers, modules with `import` and
 `pub`, the embedded standard library,
 function values, expression lambdas, stable sorting and `to_sorted`, interfaces, `let ... else`,
 bitwise operators, integer literal prefixes, digit separators,
+fixed-size arrays, `unsafe` blocks with pointer loads and stores,
 and reference-counted runtime behavior are **Implemented**. The future
 capabilities listed in the roadmap are **Planned**. No generics, macros, async/await, threads, channels,
 reflection, decorators, annotations, package registry, compiler plugins,

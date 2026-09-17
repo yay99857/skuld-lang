@@ -1,0 +1,7 @@
+func main() {
+    var cell: int = 1
+    unsafe {
+        let p = ptr(cell)
+        store(p, true)
+    }
+}

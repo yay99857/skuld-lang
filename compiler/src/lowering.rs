@@ -275,7 +275,12 @@ fn statement(source: &ast::Statement, cx: &Lowering<'_>) -> h::Statement {
         ast::StatementKind::Return(value) => {
             h::StatementKind::Return(value.as_ref().map(|e| expression(e, cx)))
         }
-        ast::StatementKind::Block(source) => h::StatementKind::Block(block(source, cx)),
+        // `unsafe` is a promise the checker already made the caller keep. It
+        // changes nothing about the code that runs, so it lowers to the block
+        // it wraps.
+        ast::StatementKind::Block(source) | ast::StatementKind::Unsafe(source) => {
+            h::StatementKind::Block(block(source, cx))
+        }
         ast::StatementKind::If {
             condition,
             then_block,
@@ -932,8 +937,60 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                 };
             }
             if cx.typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::Ptr) {
+                let operand = expression(&arguments[0], cx);
+                // `ptr` over a string or an array borrows the bytes it already
+                // owns; over a scalar local it takes that local's address.
+                let kind = match operand.ty {
+                    Type::String | Type::Array(_) | Type::FixedArray(_) => {
+                        h::ExprKind::Ptr(Box::new(operand))
+                    }
+                    _ => h::ExprKind::AddressOf(Box::new(operand)),
+                };
                 return h::Expr {
-                    kind: h::ExprKind::Ptr(Box::new(expression(&arguments[0], cx))),
+                    kind,
+                    ty: cx.ty(source.span).expect("checked expression"),
+                    span: source.span,
+                };
+            }
+            if let SymbolKind::Builtin(
+                builtin @ (Builtin::Load
+                | Builtin::Store
+                | Builtin::VolatileLoad
+                | Builtin::VolatileStore
+                | Builtin::Offset
+                | Builtin::Addr
+                | Builtin::PtrFrom),
+            ) = cx.typed.resolution.symbols[id.0].kind
+            {
+                let pointer = Box::new(expression(&arguments[0], cx));
+                let kind = match builtin {
+                    Builtin::Load => h::ExprKind::Load {
+                        pointer,
+                        volatile: false,
+                    },
+                    Builtin::VolatileLoad => h::ExprKind::Load {
+                        pointer,
+                        volatile: true,
+                    },
+                    Builtin::Store => h::ExprKind::Store {
+                        pointer,
+                        value: Box::new(expression(&arguments[1], cx)),
+                        volatile: false,
+                    },
+                    Builtin::VolatileStore => h::ExprKind::Store {
+                        pointer,
+                        value: Box::new(expression(&arguments[1], cx)),
+                        volatile: true,
+                    },
+                    Builtin::Offset => h::ExprKind::PointerOffset {
+                        pointer,
+                        count: Box::new(expression(&arguments[1], cx)),
+                    },
+                    Builtin::Addr => h::ExprKind::PointerAddr(pointer),
+                    _ => h::ExprKind::PointerFrom(pointer),
+                };
+                return h::Expr {
+                    kind,
                     ty: cx.ty(source.span).expect("checked expression"),
                     span: source.span,
                 };

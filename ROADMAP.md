@@ -1,7 +1,7 @@
 # Skuld roadmap
 
 This document records completed milestones and a **proposed** next sequence.
-M1–M22 are implemented. M23–M26 propose the continuation of the systems sequence,
+M1–M23 are implemented. M24–M26 propose the continuation of the systems sequence,
 towards the language a system could be written in; every one of them is **Planned**,
 which means proposed and not authorized. Starting one still
 needs an explicit decision recorded in `AGENTS.md`. See `LANGUAGE.md` for
@@ -1107,7 +1107,7 @@ let header: [4]u8 = [0x7F, 'E', 'L', 'F']
 - **Out:** multidimensional array syntax, array-of-array literals with
   inference across dimensions, and a growable buffer type in `std`.
 
-## M23 — Pointers that can be read — Planned
+## M23 — Pointers that can be read — Implemented
 
 The milestone that makes Skuld a systems language, and the one that has to be
 argued rather than assumed: today's FFI is safe precisely because nothing
@@ -1121,20 +1121,31 @@ unsafe {
 }
 ```
 
-- **In:** typed load and store through `*T` inside an `unsafe` block,
-  pointer arithmetic in element units, pointer/integer conversion, a
-  `volatile` load and store that the backend may not reorder or elide, and
-  taking the address of a local or a fixed array.
+- **In:** typed load and store through `*T` inside an `unsafe` block
+  (`load`, `store`), pointer arithmetic in element units (`offset`),
+  pointer/integer conversion (`addr`, `ptr_from`), a `volatile` load and store
+  that the backend may not reorder or elide (`volatile_load`,
+  `volatile_store`), and taking the address of a scalar local or a fixed array
+  with `ptr`.
 - **The rule that must survive:** an `unsafe` block is where the compiler's
   guarantees are suspended *and says so*. Everything outside one keeps every
   rule it has today — no unchecked index, no aliasing of a managed value, no
   pointer at all. The FFI does not become unrestricted: a signature still
   refuses managed types, and `ptr()` still borrows rather than escapes.
-- **Open decision — does a pointer read produce a managed value?** Loading a
-  `string` or a class reference through a pointer would hand the reference
-  counter a value it never saw allocated. The narrow answer is that only
-  scalars, fixed arrays of scalars and pointer types can be loaded or stored,
-  and a managed type through a pointer is a diagnostic.
+- **Decision taken — a pointer read never produces a managed value.** Loading
+  a `string` or a class reference would hand the reference counter a value it
+  never saw allocated, so a pointer still points only at a scalar or `void`,
+  exactly as it did at the foreign boundary, and a managed pointee stays a
+  diagnostic. A pointer to a pointer was part of the narrow answer and is
+  **not** implemented: it is not a type the language can spell, and an address
+  travels as a `usize` through `addr` and `ptr_from` instead, which is how the
+  closing marker's linked list stores its links. `*void` points at no
+  particular type, so it can be carried and converted but never read.
+- **Decision taken — `unsafe` is lexical.** A function called from inside a
+  block is not inside it and needs its own, which is what keeps the unsafe
+  surface countable. Taking the address of a local also requires a `var`: a
+  pointer can always write, so handing one out for a `let` would undo what the
+  binding promises and what the backend relies on.
 - **Decision taken — no new syntax spells it.** The load takes its type from
   the context that receives it, exactly as an integer literal and a `None`
   already do, so `load` and `store` are prelude bindings like `print` and
@@ -1144,9 +1155,11 @@ unsafe {
   new operator in the sequence. Neither buys anything the expected type does
   not already give. That leaves the whole milestone costing one keyword the
   language already has: `unsafe`.
-- **Closing marker:** a bump allocator and an intrusive linked list written in
-  Skuld, running clean under the address sanitizer, with the unsafe surface
-  confined to a handful of functions.
+- **Closing marker:** met by `tests/pass/pointers.skuld` — a bump allocator and
+  an intrusive linked list written in Skuld over `malloc`ed memory, running
+  clean under the address, leak and UB sanitizers, with every pointer
+  operation confined to eight small functions and nothing above them naming a
+  pointer at all.
 - **Out:** references with lifetimes, aliasing rules, a borrow checker, and
   unchecked indexing outside `unsafe`.
 

@@ -2116,6 +2116,54 @@ impl Emitter {
                 };
                 self.temporary(expr.ty, &bytes)
             }
+            // The address of a scalar local. It is a C local, so its address
+            // is its address; nothing is copied and nothing is counted.
+            ExprKind::AddressOf(value) => {
+                let place = self
+                    .lvalue(value)
+                    .expect("internal compiler bug: unchecked `ptr` operand");
+                let cast = self.c_type(expr.ty);
+                self.temporary(expr.ty, &format!("({cast})&{place}"))
+            }
+            ExprKind::Load { pointer, volatile } => {
+                let pointer = self.expression(pointer);
+                let read = if *volatile {
+                    let cell = self.c_type(expr.ty);
+                    format!("(*(volatile {cell} *){pointer})")
+                } else {
+                    format!("(*{pointer})")
+                };
+                self.temporary(expr.ty, &read)
+            }
+            ExprKind::Store {
+                pointer,
+                value,
+                volatile,
+            } => {
+                let target = self.expression(pointer);
+                let written = self.expression(value);
+                if *volatile {
+                    let cell = self.c_type(value.ty);
+                    self.line(&format!("*(volatile {cell} *){target} = {written};"));
+                } else {
+                    self.line(&format!("*{target} = {written};"));
+                }
+                String::new()
+            }
+            ExprKind::PointerOffset { pointer, count } => {
+                let pointer = self.expression(pointer);
+                let count = self.expression(count);
+                self.temporary(expr.ty, &format!("({pointer} + {count})"))
+            }
+            ExprKind::PointerAddr(pointer) => {
+                let pointer = self.expression(pointer);
+                self.temporary(expr.ty, &format!("((size_t){pointer})"))
+            }
+            ExprKind::PointerFrom(address) => {
+                let address = self.expression(address);
+                let cast = self.c_type(expr.ty);
+                self.temporary(expr.ty, &format!("(({cast})(uintptr_t){address})"))
+            }
             ExprKind::StringLen(value) => {
                 if let Some(storage) = self.settled_storage(value) {
                     return self.temporary(Type::INT, &format!("(int64_t){storage}.len"));

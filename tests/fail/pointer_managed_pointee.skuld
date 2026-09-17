@@ -1,0 +1,7 @@
+func take(text: *string) -> int {
+    return 1
+}
+
+func main() {
+    print(take(ptr("hello")))
+}

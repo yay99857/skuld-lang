@@ -1320,3 +1320,58 @@ fn expression_lambdas_and_to_sorted() {
             .contains("use `to_sorted`")
     );
 }
+
+#[test]
+fn pointer_reads_and_writes_need_an_unsafe_block() {
+    valid(
+        "func main() {\n    var cell: int = 1\n    unsafe {\n        let p = ptr(cell)\n        store(p, load(p) + 1)\n        let stepped = offset(p, 1)\n        let address = addr(stepped)\n        let back: *i64 = ptr_from(address)\n        print(load(back))\n    }\n}",
+    );
+    // The block is what suspends the rule, so leaving it puts the rule back.
+    fails(
+        "func main() {\n    var cell: int = 1\n    unsafe {\n        let p = ptr(cell)\n    }\n    print(load(ptr(cell)))\n}",
+        DiagnosticCode::RequiresUnsafe,
+    );
+    // An inner function is not inside the block that encloses its call.
+    fails(
+        "func read(p: *i64) -> int {\n    return load(p)\n}\nfunc main() {\n    var cell: int = 1\n    unsafe {\n        print(read(ptr(cell)))\n    }\n}",
+        DiagnosticCode::RequiresUnsafe,
+    );
+}
+
+#[test]
+fn a_pointer_operation_keeps_the_type_its_pointee_names() {
+    // The value written has to be the type the pointer points at; nothing
+    // widens on the way through.
+    fails(
+        "func main() {\n    var cell: u8 = 1\n    unsafe {\n        let p = ptr(cell)\n        store(p, 300)\n    }\n}",
+        DiagnosticCode::IntegerRange,
+    );
+    fails(
+        "func main() {\n    var cell: int = 1\n    unsafe {\n        store(ptr(cell), true)\n    }\n}",
+        DiagnosticCode::TypeMismatch,
+    );
+    // `*void` points at no particular value, so there is nothing to read.
+    fails(
+        "unsafe extern \"C\" {\n    func opaque() -> *void\n}\nfunc main() {\n    unsafe {\n        print(load(opaque()))\n    }\n}",
+        DiagnosticCode::InvalidValueType,
+    );
+    // An address is a `usize` in both directions.
+    fails(
+        "func main() {\n    var cell: int = 1\n    unsafe {\n        let address: int = addr(ptr(cell))\n    }\n}",
+        DiagnosticCode::TypeMismatch,
+    );
+}
+
+#[test]
+fn an_address_is_only_taken_of_a_mutable_local() {
+    fails(
+        "func main() {\n    let cell: int = 1\n    unsafe {\n        let p = ptr(cell)\n    }\n}",
+        DiagnosticCode::ImmutableAssignment,
+    );
+    // A parameter is a copy the caller cannot see, so its address is refused
+    // along with everything else that is not a local.
+    fails(
+        "func write(value: int) {\n    unsafe {\n        let p = ptr(value)\n    }\n}\nfunc main() {\n    write(1)\n}",
+        DiagnosticCode::InvalidValueType,
+    );
+}

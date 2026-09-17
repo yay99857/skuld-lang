@@ -1006,6 +1006,14 @@ impl Parser<'_> {
                     kind: StatementKind::Block(block),
                 });
             }
+            Unsafe => {
+                let start = self.bump().span.start;
+                let block = self.block()?;
+                return Ok(Statement {
+                    kind: StatementKind::Unsafe(block),
+                    span: Span::new(start, self.previous_end()),
+                });
+            }
             If => return self.if_statement(),
             While => return self.while_statement(),
             Loop => {

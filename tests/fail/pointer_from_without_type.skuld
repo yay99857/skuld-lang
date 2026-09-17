@@ -1,0 +1,7 @@
+func main() {
+    unsafe {
+        let address = usize(4096)
+        let p = ptr_from(address)
+        print(load(p))
+    }
+}

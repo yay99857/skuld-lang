@@ -183,6 +183,7 @@ pub(crate) fn type_check(
         constants: BTreeMap::new(),
         evaluating_constants: Vec::new(),
         constant_decls: BTreeMap::new(),
+        unsafe_depth: 0,
     };
     // Where each type was declared, aligned with the ids handed out below, so
     // that a later pass finds its syntax without searching for it.
@@ -798,6 +799,10 @@ struct Checker<'a> {
     constants: BTreeMap<SymbolId, ConstValue>,
     evaluating_constants: Vec<SymbolId>,
     constant_decls: BTreeMap<SymbolId, (FileId, ConstantDecl)>,
+    /// How many `unsafe` blocks enclose what is being checked. The pointer
+    /// builtins read and write memory the compiler cannot vouch for, so they
+    /// are refused wherever this is zero.
+    unsafe_depth: usize,
 }
 
 /// One module's type namespace, which is separate from its value scope: a
@@ -1608,6 +1613,12 @@ impl Checker<'_> {
                 true
             }
             StatementKind::Block(block) => self.block(block),
+            StatementKind::Unsafe(block) => {
+                self.unsafe_depth += 1;
+                let returns = self.block(block);
+                self.unsafe_depth -= 1;
+                returns
+            }
             StatementKind::If {
                 condition,
                 then_block,
@@ -3495,6 +3506,18 @@ impl Checker<'_> {
                     self.option_type(element)
                 }
             }
+            Some((
+                _,
+                SymbolKind::Builtin(
+                    builtin @ (Builtin::Load
+                    | Builtin::Store
+                    | Builtin::VolatileLoad
+                    | Builtin::VolatileStore
+                    | Builtin::Offset
+                    | Builtin::Addr
+                    | Builtin::PtrFrom),
+                ),
+            )) => self.pointer_builtin(builtin, arguments, span, expected),
             Some((_, SymbolKind::Builtin(Builtin::Ptr))) => {
                 if arguments.len() != 1 {
                     for argument in arguments {
@@ -3526,6 +3549,25 @@ impl Checker<'_> {
                         Type::Bool => Some(Pointee::Bool),
                         _ => None,
                     },
+                    // The address of a scalar local. It points into the frame
+                    // it was taken in, which nothing tracks, so it is written
+                    // inside `unsafe` like every other pointer operation.
+                    scalar
+                        if self.addressable_local(&arguments[0]).is_some()
+                            && Pointee::of(scalar).is_some() =>
+                    {
+                        self.require_unsafe("ptr", span);
+                        // A pointer can always write, so handing one out for an
+                        // immutable binding would undo what `let` promises.
+                        if self.addressable_local(&arguments[0]) == Some(Mutability::Immutable) {
+                            self.error(
+                                DiagnosticCode::ImmutableAssignment,
+                                arguments[0].span,
+                                "cannot take the address of an immutable binding, since a pointer can write through it",
+                            );
+                        }
+                        Pointee::of(scalar)
+                    }
                     _ => None,
                 };
                 match pointee {
@@ -3535,7 +3577,7 @@ impl Checker<'_> {
                             DiagnosticCode::InvalidValueType,
                             arguments[0].span,
                             format!(
-                                "`ptr` borrows the bytes of a string or an array of scalars, not `{}`",
+                                "`ptr` borrows the bytes of a string, an array of scalars or a scalar local, not `{}`",
                                 self.type_name(found)
                             ),
                         );
@@ -3912,6 +3954,181 @@ impl Checker<'_> {
         })
     }
     /// True when the assignment writes into an object reached by reference.
+    /// `load`, `store`, `offset`, `addr` and the rest.
+    ///
+    /// Every one of them either reads memory the compiler cannot vouch for or
+    /// hands out an address that outlives what it points at, so every one of
+    /// them is refused outside an `unsafe` block. That check lives here
+    /// because it is the only meaning `unsafe` has: nothing about the
+    /// generated code changes, and everything outside such a block keeps the
+    /// rules it had before this milestone.
+    fn pointer_builtin(
+        &mut self,
+        builtin: Builtin,
+        arguments: &[Expr],
+        span: Span,
+        expected: Option<Type>,
+    ) -> Type {
+        let name = match builtin {
+            Builtin::Load => "load",
+            Builtin::Store => "store",
+            Builtin::VolatileLoad => "volatile_load",
+            Builtin::VolatileStore => "volatile_store",
+            Builtin::Offset => "offset",
+            Builtin::Addr => "addr",
+            Builtin::PtrFrom => "ptr_from",
+            _ => unreachable!("internal compiler bug: not a pointer builtin"),
+        };
+        let wanted = match builtin {
+            Builtin::Store | Builtin::VolatileStore | Builtin::Offset => 2,
+            _ => 1,
+        };
+        if arguments.len() != wanted {
+            let previous = self.expected_context;
+            self.expected_context = None;
+            for argument in arguments {
+                self.expression(argument);
+            }
+            self.expected_context = previous;
+            let plural = if wanted == 1 { "argument" } else { "arguments" };
+            self.error(
+                DiagnosticCode::ArgumentCount,
+                span,
+                format!("`{name}` expects exactly {wanted} {plural}"),
+            );
+            return Type::Error;
+        }
+        self.require_unsafe(name, span);
+        // `ptr_from` takes an address rather than a pointer, so it is the one
+        // that reads its type from the context instead of from its argument.
+        if builtin == Builtin::PtrFrom {
+            let previous = self.expected_context;
+            self.expected_context = Some(Type::Int(IntType::USize));
+            let found = self.expression(&arguments[0]);
+            self.expected_context = previous;
+            if found != Type::Error {
+                self.expect_type(Type::Int(IntType::USize), found, arguments[0].span);
+            }
+            return match expected {
+                Some(Type::Pointer(pointee)) => Type::Pointer(pointee),
+                _ => {
+                    self.error(
+                        DiagnosticCode::TypeMismatch,
+                        span,
+                        "`ptr_from` needs the pointer type it becomes to be known here",
+                    );
+                    Type::Error
+                }
+            };
+        }
+        let previous = self.expected_context;
+        self.expected_context = None;
+        let pointer_type = self.expression(&arguments[0]);
+        self.expected_context = previous;
+        let pointee = match pointer_type {
+            Type::Error => return Type::Error,
+            Type::Pointer(pointee) => pointee,
+            other => {
+                self.error(
+                    DiagnosticCode::TypeMismatch,
+                    arguments[0].span,
+                    format!(
+                        "`{name}` expects a pointer, not `{}`",
+                        self.type_name(other)
+                    ),
+                );
+                for argument in &arguments[1..] {
+                    self.expression(argument);
+                }
+                return Type::Error;
+            }
+        };
+        if builtin == Builtin::Addr {
+            return Type::Int(IntType::USize);
+        }
+        // `*void` points at no particular value, so there is nothing to read,
+        // nothing to write, and no element to step over.
+        let Some(value_type) = pointee.value_type() else {
+            self.error(
+                DiagnosticCode::InvalidValueType,
+                arguments[0].span,
+                format!("`{name}` cannot work through `*void`, which points at no particular type"),
+            );
+            for argument in &arguments[1..] {
+                self.expression(argument);
+            }
+            return Type::Error;
+        };
+        match builtin {
+            Builtin::Load | Builtin::VolatileLoad => value_type,
+            Builtin::Offset => {
+                let previous = self.expected_context;
+                self.expected_context = Some(Type::INT);
+                let count = self.expression(&arguments[1]);
+                self.expected_context = previous;
+                if count != Type::Error {
+                    self.expect_type(Type::INT, count, arguments[1].span);
+                }
+                Type::Pointer(pointee)
+            }
+            Builtin::Store | Builtin::VolatileStore => {
+                let previous = self.expected_context;
+                self.expected_context = Some(value_type);
+                let written = self.expression(&arguments[1]);
+                self.expected_context = previous;
+                if written != Type::Error {
+                    self.expect_type(value_type, written, arguments[1].span);
+                }
+                Type::Void
+            }
+            _ => unreachable!("internal compiler bug: pointer builtin handled above"),
+        }
+    }
+
+    /// Whether an expression names a local variable, which is the one thing
+    /// whose address `ptr` hands out. A parameter is left out on purpose: its
+    /// address is the address of a copy, which is never what a caller wants.
+    fn addressable_local(&self, expr: &Expr) -> Option<Mutability> {
+        match &expr.kind {
+            ExprKind::Identifier(name) => {
+                match self
+                    .resolution
+                    .references
+                    .get(&(self.file, name.span.start))
+                    .map(|id| self.resolution.symbols[id.0].kind)
+                {
+                    Some(SymbolKind::Variable(mutability)) => Some(mutability),
+                    _ => None,
+                }
+            }
+            ExprKind::Group(inner) => self.addressable_local(inner),
+            _ => None,
+        }
+    }
+
+    /// Refuse an operation that only an `unsafe` block allows, once.
+    fn require_unsafe(&mut self, name: &str, span: Span) -> bool {
+        if self.unsafe_depth > 0 {
+            return true;
+        }
+        let mut diagnostic = Diagnostic {
+            code: DiagnosticCode::RequiresUnsafe,
+            span,
+            message: format!("`{name}` is only allowed inside an `unsafe` block"),
+            help: None,
+            fix: None,
+        };
+        diagnostic.help = Some(
+            "the compiler cannot check what a pointer points at, so reading or writing through one is written inside `unsafe { ... }`"
+                .to_string(),
+        );
+        self.diagnostics.push(FileDiagnostic {
+            file: self.file,
+            diagnostic,
+        });
+        false
+    }
+
     fn through_reference(&self, target: &Expr) -> bool {
         match &target.kind {
             ExprKind::Member { object, .. } => {

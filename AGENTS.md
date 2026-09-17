@@ -267,16 +267,39 @@ accurate; documenting a future feature is not a request to implement it.
   rejected. The closing marker is met — `std/fs`'s `read_file` and `std/net`'s
   `receive_all` and `open` read into stack buffers instead of pushing byte by
   byte, and `tests/bench/strings.skuld` formats integers through one.
-  The systems sequence `ROADMAP.md` proposes continues with M23–M26:
-  pointers that can be read inside `unsafe`, layout and ABI control,
-  `defer`, and a freestanding mode with no runtime and no libc.
+  M23 (pointers that can be read) is complete. `unsafe { ... }` is a statement
+  block, and it is where the guarantees the compiler makes everywhere else are
+  suspended *and say so*: everything outside one keeps every rule it had, and
+  the block itself changes nothing about the generated code. Inside one,
+  `load(p)` and `store(p, v)` read and write through a `*T`, `volatile_load`
+  and `volatile_store` do the same where the backend may neither elide nor
+  reorder the access, `offset(p, n)` steps in element units, `addr(p)` and
+  `ptr_from(a)` convert between a pointer and a `usize`, and `ptr(local)` takes
+  the address of a scalar local. They are prelude bindings like `print` and
+  `u8()`, shadowable like them. A load takes its type from the pointer's own
+  pointee, so nothing spells it at the call: there is no `load<u32>(p)` and no
+  `*p` operator, and `ptr_from` is the one that reads the expected type from
+  its context, as `None` already does. A pointer still points only at a scalar
+  or `void`, so no pointer read ever produces a managed value the counter never
+  saw allocated; `*void` can be carried and converted but not read, and a
+  pointer to a pointer is still not a type — an address travels as a `usize`.
+  Two rules carry the safety argument and must survive: `unsafe` is lexical, so
+  a function called from inside a block is not inside it and needs its own,
+  which keeps the unsafe surface countable; and `ptr` over a local requires a
+  `var`, since a pointer can always write and a `let` is what the backend reads
+  to borrow instead of counting. The foreign boundary did not widen: a
+  signature still refuses managed types and `ptr()` still borrows. The closing
+  marker is `tests/pass/pointers.skuld`, a bump allocator and an intrusive
+  linked list over `malloc`ed memory, clean under the address, leak and UB
+  sanitizers.
+  The systems sequence `ROADMAP.md` proposes continues with M24–M26:
+  layout and ABI control, `defer`, and a freestanding mode with no runtime and
+  no libc.
   Every one of them is Planned and none is authorized; each still needs an
-  explicit decision recorded here. Two decisions
-  are taken there and should not be reopened by accident: M20's `const` does
+  explicit decision recorded here. One decision
+  is taken there and should not be reopened by accident: M20's `const` does
   not replace `let`, since an immutable binding is what the backend reads to
-  borrow a managed local instead of counting it, and M23 spells a load through
-  a pointer with the expected type rather than with `<>` or a new prefix
-  operator.
+  borrow a managed local instead of counting it.
   No milestone is active. Do not infer authorization for further features without
   explicit decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes

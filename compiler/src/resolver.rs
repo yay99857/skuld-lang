@@ -36,6 +36,23 @@ pub enum Builtin {
     /// `ptr(value)`, which borrows the bytes of a string or `[]u8` as a raw
     /// pointer for the foreign boundary. It keeps nothing alive.
     Ptr,
+    /// `load(pointer)`, which reads the value a pointer points at. Its type is
+    /// the pointer's own pointee, so nothing spells it at the call.
+    Load,
+    /// `store(pointer, value)`, which writes through a pointer.
+    Store,
+    /// `volatile_load(pointer)`: a read the backend may neither elide nor
+    /// reorder against other volatile accesses.
+    VolatileLoad,
+    /// `volatile_store(pointer, value)`: the same for a write.
+    VolatileStore,
+    /// `offset(pointer, count)`, which moves a pointer in element units.
+    Offset,
+    /// `addr(pointer)`, which reads a pointer as a `usize` address.
+    Addr,
+    /// `ptr_from(address)`, which turns a `usize` back into a pointer. The
+    /// type it becomes comes from the context that receives it.
+    PtrFrom,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SymbolKind {
@@ -146,6 +163,23 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
         None,
     );
     resolver.insert("ptr", SymbolKind::Builtin(Builtin::Ptr), None);
+    // The pointer builtins. They are prelude bindings like `print` and `u8()`,
+    // shadowable like them, and the checker refuses them outside `unsafe`.
+    resolver.insert("load", SymbolKind::Builtin(Builtin::Load), None);
+    resolver.insert("store", SymbolKind::Builtin(Builtin::Store), None);
+    resolver.insert(
+        "volatile_load",
+        SymbolKind::Builtin(Builtin::VolatileLoad),
+        None,
+    );
+    resolver.insert(
+        "volatile_store",
+        SymbolKind::Builtin(Builtin::VolatileStore),
+        None,
+    );
+    resolver.insert("offset", SymbolKind::Builtin(Builtin::Offset), None);
+    resolver.insert("addr", SymbolKind::Builtin(Builtin::Addr), None);
+    resolver.insert("ptr_from", SymbolKind::Builtin(Builtin::PtrFrom), None);
     // `int` and `i64` name one type, so both spellings convert to it.
     for kind in IntType::ALL {
         resolver.insert(
@@ -642,7 +676,7 @@ impl Resolver {
                     self.expression(expr);
                 }
             }
-            StatementKind::Block(block) => self.block(block),
+            StatementKind::Block(block) | StatementKind::Unsafe(block) => self.block(block),
             StatementKind::If {
                 condition,
                 then_block,

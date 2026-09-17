@@ -143,3 +143,13 @@ and each refusal — a struct, a missing method, a differing signature, a class
 that never declared conformance, and a method the interface does not name.
 `reserved_declaration` kept its name and lost `interface` to `pass/interfaces`;
 `static` stays behind, which is what a promoted tripwire should look like.
+
+`pass/pointers` is M23's closing marker: a bump allocator and an intrusive
+linked list written in Skuld over `malloc`ed memory. It is a fixture precisely
+because the sanitizers run it — an allocator that hands out overlapping blocks,
+or a list that walks off the end of one, fails the suite rather than the
+reader's attention. The `pointer_*` fixtures in `fail/` cover each refusal: a
+load written outside an `unsafe` block, a value that is not the pointee's type,
+a read through `*void`, the address of an immutable binding or of a parameter,
+`ptr_from` where no context says which pointer it becomes, a load over
+something that is not a pointer, and a pointer to a managed type.

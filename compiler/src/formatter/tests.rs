@@ -262,3 +262,14 @@ fn an_empty_struct_literal_has_nothing_to_space_out() {
     let input = "struct Point {\n    x: int = 0\n}\n\nfunc main() {\n    let p = Point {}\n}\n";
     assert_eq!(fmt(input), input);
 }
+
+#[test]
+fn an_unsafe_block_keeps_its_keyword_on_the_brace() {
+    let input = "func main() {\n    var cell: int = 1\n\n    unsafe {\n        store(ptr(cell), 2)\n    }\n}\n";
+    assert_eq!(fmt(input), input);
+    // A block written tight is opened up like any other.
+    assert_eq!(
+        fmt("func main() {\n    unsafe{let x = 1}\n}\n"),
+        "func main() {\n    unsafe {\n        let x = 1\n    }\n}\n"
+    );
+}

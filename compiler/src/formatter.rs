@@ -605,6 +605,10 @@ impl<'a> Formatter<'a> {
             StatementKind::Block(b) => {
                 self.format_block_inline(b);
             }
+            StatementKind::Unsafe(b) => {
+                self.push("unsafe ");
+                self.format_block_inline(b);
+            }
             StatementKind::If {
                 condition,
                 then_block,

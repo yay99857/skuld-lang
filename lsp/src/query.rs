@@ -441,6 +441,15 @@ fn describe_builtin(builtin: Builtin, name: &str) -> String {
         Builtin::IntConvert(kind) => format!("func {name}(value) -> {}", kind.name()),
         Builtin::FloatConvert => "func float(value) -> float".to_owned(),
         Builtin::CharConvert => "func char(value) -> char".to_owned(),
+        Builtin::Load => "func load(pointer: *T) -> T // unsafe".to_owned(),
+        Builtin::Store => "func store(pointer: *T, value: T) -> void // unsafe".to_owned(),
+        Builtin::VolatileLoad => "func volatile_load(pointer: *T) -> T // unsafe".to_owned(),
+        Builtin::VolatileStore => {
+            "func volatile_store(pointer: *T, value: T) -> void // unsafe".to_owned()
+        }
+        Builtin::Offset => "func offset(pointer: *T, count: int) -> *T // unsafe".to_owned(),
+        Builtin::Addr => "func addr(pointer: *T) -> usize // unsafe".to_owned(),
+        Builtin::PtrFrom => "func ptr_from(address: usize) -> *T // unsafe".to_owned(),
     }
 }
 

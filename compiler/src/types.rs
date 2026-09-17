@@ -253,6 +253,27 @@ impl Pointee {
             Self::Char => "uint32_t",
         }
     }
+    /// The value a read through this pointer produces. `*void` points at
+    /// nothing in particular, so there is none.
+    pub fn value_type(self) -> Option<Type> {
+        match self {
+            Self::Void => None,
+            Self::Int(kind) => Some(Type::Int(kind)),
+            Self::Float => Some(Type::Float),
+            Self::Bool => Some(Type::Bool),
+            Self::Char => Some(Type::Char),
+        }
+    }
+    /// The pointer that borrows a value of this type, when one exists.
+    pub fn of(ty: Type) -> Option<Self> {
+        match ty {
+            Type::Int(kind) => Some(Self::Int(kind)),
+            Type::Float => Some(Self::Float),
+            Type::Bool => Some(Self::Bool),
+            Type::Char => Some(Self::Char),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

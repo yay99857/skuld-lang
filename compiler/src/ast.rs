@@ -280,6 +280,10 @@ pub enum StatementKind {
     Expression(Expr),
     Return(Option<Expr>),
     Block(Block),
+    /// `unsafe { ... }`. An ordinary block that also says, in the source, that
+    /// the guarantees the compiler makes everywhere else are suspended inside
+    /// it. It is the only place a pointer may be read or written.
+    Unsafe(Block),
     If {
         condition: Expr,
         then_block: Block,

@@ -1,0 +1,137 @@
+// A bump allocator and an intrusive linked list, written in Skuld over raw
+// memory. Every pointer operation is confined to the handful of functions
+// below; nothing above them names a pointer at all.
+
+unsafe extern "C" {
+    func malloc(size: usize) -> *void
+    func free(block: *void) -> void
+}
+
+const NODE_SIZE: usize = 16
+
+const ALIGNMENT: usize = 8
+
+class Arena {
+    base: usize
+    next: usize
+    end: usize
+}
+
+func arena_new(size: int) -> Arena {
+    unsafe {
+        let block = malloc(usize(size))
+        let start = addr(block)
+        return new Arena(base: start, next: start, end: start + usize(size))
+    }
+}
+
+func arena_release(arena: Arena) {
+    unsafe {
+        let block: *void = ptr_from(arena.base)
+        free(block)
+    }
+}
+
+// An address of zero means the arena is full. There is no null in Skuld, and
+// this is not one: it is an address the allocator never hands out.
+func arena_alloc(arena: Arena, size: usize) -> usize {
+    let aligned = (arena.next + ALIGNMENT - usize(1)) & ~(ALIGNMENT - usize(1))
+    if aligned + size > arena.end {
+        return usize(0)
+    }
+    arena.next = aligned + size
+    return aligned
+}
+
+// A node is sixteen bytes: an `int` value, then the address of the next node.
+func node_value(node: usize) -> int {
+    unsafe {
+        let cell: *i64 = ptr_from(node)
+        return load(cell)
+    }
+}
+
+func node_set_value(node: usize, value: int) {
+    unsafe {
+        let cell: *i64 = ptr_from(node)
+        store(cell, value)
+    }
+}
+
+func node_next(node: usize) -> usize {
+    unsafe {
+        let link: *usize = ptr_from(node + usize(8))
+        return load(link)
+    }
+}
+
+func node_set_next(node: usize, next: usize) {
+    unsafe {
+        let link: *usize = ptr_from(node + usize(8))
+        store(link, next)
+    }
+}
+
+func main() {
+    // Taking the address of a local, writing through it, and reading it back
+    // the ordinary way.
+    var counter: int = 7
+    unsafe {
+        let cell = ptr(counter)
+        print(load(cell))
+        store(cell, load(cell) * 6)
+    }
+    print(counter)
+
+    // A device register is the reason `volatile` exists: the read must happen
+    // even when nothing in the program can tell the difference.
+    var register: u32 = 0
+    unsafe {
+        let port = ptr(register)
+        volatile_store(port, u32(1))
+        print(int(volatile_load(port)))
+    }
+
+    // Bytes stepped over one element at a time.
+    var digits: [4]u8 = [0; 4]
+    unsafe {
+        let first = ptr(digits)
+        var index = 0
+        while index < 4 {
+            store(offset(first, index), u8(index * 2))
+            index += 1
+        }
+    }
+    for digit in digits {
+        print(int(digit))
+    }
+
+    let arena = arena_new(1024)
+    var head = usize(0)
+    var tail = usize(0)
+    var value = 1
+    while value <= 5 {
+        let node = arena_alloc(arena, NODE_SIZE)
+        node_set_value(node, value * 10)
+        node_set_next(node, usize(0))
+        if head == usize(0) {
+            head = node
+        } else {
+            node_set_next(tail, node)
+        }
+        tail = node
+        value += 1
+    }
+
+    var total = 0
+    var walk = head
+    while walk != usize(0) {
+        total += node_value(walk)
+        walk = node_next(walk)
+    }
+    print(total)
+
+    // The arena hands out aligned addresses and refuses what it cannot fit.
+    print(arena_alloc(arena, usize(4096)) == usize(0))
+    arena_release(arena)
+}

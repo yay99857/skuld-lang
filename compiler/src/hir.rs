@@ -274,6 +274,30 @@ pub(crate) enum ExprKind {
     /// `ptr(value)`. Borrows the bytes of a string or array as a raw pointer,
     /// valid only while the borrowed value is alive.
     Ptr(Box<Expr>),
+    /// `ptr(local)`. The address of a scalar local, taken inside `unsafe`.
+    AddressOf(Box<Expr>),
+    /// `load(pointer)`. `volatile` marks a read the backend may neither drop
+    /// nor move across another volatile access.
+    Load {
+        pointer: Box<Expr>,
+        volatile: bool,
+    },
+    /// `store(pointer, value)`, with the same `volatile` distinction.
+    Store {
+        pointer: Box<Expr>,
+        value: Box<Expr>,
+        volatile: bool,
+    },
+    /// `offset(pointer, count)`. Steps in element units, as C pointer
+    /// arithmetic already does.
+    PointerOffset {
+        pointer: Box<Expr>,
+        count: Box<Expr>,
+    },
+    /// `addr(pointer)`: the address as a `usize`.
+    PointerAddr(Box<Expr>),
+    /// `ptr_from(address)`: the pointer an address names.
+    PointerFrom(Box<Expr>),
     StringLen(Box<Expr>),
     StringBytes(Box<Expr>),
     /// `bytes_to_string(bytes)`. Yields `Result<string, string>`.

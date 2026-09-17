@@ -163,6 +163,21 @@ class references are supported; strong cycles require weak links or explicit bre
 scalars and raw pointers cross that boundary: a reference-counted value never
 does.
 
+An `unsafe` block is where a pointer may be read and written, and the only
+place it may be:
+
+```skuld
+unsafe {
+    let cell = ptr(counter)
+    store(cell, load(cell) + 1)
+}
+```
+
+`load`, `store`, `volatile_load`, `volatile_store`, `offset`, `addr` and
+`ptr_from` work there and nowhere else, over a pointer to a scalar. Everything
+outside the block keeps every rule it had, and `unsafe` is lexical: a function
+called from inside one is not inside it.
+
 A lambda is written without a keyword, the way a method already declares
 itself, and a function type keeps `->`:
 
@@ -387,9 +402,10 @@ prefixed integer literals in hex, octal and binary, and digit separators, along
 with expression lambdas and array `to_sorted`), M20 (named constants at
 module and local scope, and scalar/string value and range patterns in `match`),
 M21 (`usize` and `isize`, trapping float/integer conversions and a `char`
-scalar type) and M22 (fixed-size arrays `[N]T` living on the stack, in a struct
+scalar type), M22 (fixed-size arrays `[N]T` living on the stack, in a struct
 or inline in a class allocation, widening into a `[]T` view without allocating)
-are implemented too. The LSP provides
+and M23 (`unsafe` blocks, where `load`, `store`, `offset`, `addr` and
+`ptr_from` read and write through a raw pointer) are implemented too. The LSP provides
 diagnostics, completion, hover, definition, find-references, rename, document
 highlights, the document outline, formatting through `skuld fmt`'s own
 formatter, signature help, inlay hints for inferred binding types and semantic
@@ -397,8 +413,8 @@ tokens, and
 `examples/jsontool.skuld` is a multi-module native tool with its own test suite.
 
 No implementation milestone is active. The systems sequence [ROADMAP.md](ROADMAP.md)
-proposes continues with M23–M26, towards the systems language the project aims
-at: pointers that can be read inside `unsafe`, layout control, `defer`, and a freestanding
+proposes continues with M24–M26, towards the systems language the project aims
+at: layout control, `defer`, and a freestanding
 mode with no runtime and no libc. Every one of them is proposed and none is
 authorized; starting one needs an explicit decision first, as do the older
 candidates listed there, general generics and self-hosting among them.

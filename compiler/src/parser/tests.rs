@@ -1059,3 +1059,26 @@ fn nested_generics_close_with_greater_greater() {
     );
     assert_eq!(parsed.functions[0].body.statements.len(), 3);
 }
+
+#[test]
+fn an_unsafe_block_is_a_statement_and_keeps_its_keyword_in_its_span() {
+    let source = "func main() {\n    unsafe {\n        let x = 1\n    }\n}";
+    let parsed = program(source);
+    let statement = &parsed.functions[0].body.statements[0];
+    let StatementKind::Unsafe(block) = &statement.kind else {
+        panic!("an unsafe block is its own statement");
+    };
+    assert_eq!(block.statements.len(), 1);
+    assert_eq!(
+        &source[statement.span.start..statement.span.start + 6],
+        "unsafe"
+    );
+}
+
+#[test]
+fn an_unsafe_block_nests_like_any_other_block() {
+    let parsed = program(
+        "func main() {\n    if true {\n        unsafe {\n            unsafe {\n                let x = 1\n            }\n        }\n    }\n}",
+    );
+    assert_eq!(parsed.functions[0].body.statements.len(), 1);
+}

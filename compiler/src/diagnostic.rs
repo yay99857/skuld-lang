@@ -34,6 +34,8 @@ pub enum DiagnosticCode {
     UnknownModule,
     ImportCycle,
     PrivateName,
+    /// A pointer read or write written outside an `unsafe` block.
+    RequiresUnsafe,
 }
 
 impl DiagnosticCode {
@@ -71,6 +73,7 @@ impl DiagnosticCode {
             Self::UnknownModule => "E0205",
             Self::ImportCycle => "E0206",
             Self::PrivateName => "E0207",
+            Self::RequiresUnsafe => "E0114",
         }
     }
 }

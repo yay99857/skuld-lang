@@ -1,0 +1,10 @@
+unsafe extern "C" {
+    func malloc(size: usize) -> *void
+}
+
+func main() {
+    unsafe {
+        let block = malloc(usize(8))
+        print(load(block))
+    }
+}

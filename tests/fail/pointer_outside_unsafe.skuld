@@ -1,0 +1,5 @@
+func main() {
+    var cell: int = 1
+    let p = ptr(cell)
+    print(load(p))
+}
