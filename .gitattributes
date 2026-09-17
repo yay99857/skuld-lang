@@ -1,0 +1,14 @@
+# Skuld is not a language GitHub's Linguist knows, and an override naming one
+# it does not know is ignored — so `.skuld` and `.sk` files counted as nothing
+# at all, and the language bar of this repository described everything except
+# the language it is the compiler for.
+#
+# Until the entry in `.github/linguist/skuld.yml` is merged upstream, the
+# extensions are borrowed from a language Linguist does know, so that the
+# 9,000-odd lines of Skuld here are at least counted and highlighted. The name
+# and the colour in the bar are Rust's, not Skuld's. This is a placeholder, and
+# these are the lines to delete the day Linguist learns the real name.
+*.skuld linguist-language=Rust
+*.sk linguist-language=Rust
+*.skuld linguist-detectable=true
+*.sk linguist-detectable=true

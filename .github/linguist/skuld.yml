@@ -1,0 +1,31 @@
+# The entry this project proposes for github/linguist's `languages.yml`.
+#
+# GitHub decides a language's name and colour in that one file, in that one
+# repository: there is no per-repository setting for either, and no API that
+# assigns one. Until this is merged, `.skuld` files show as no language, which
+# is why `.gitattributes` next to this file borrows Rust's entry in the
+# meantime.
+#
+# Linguist asks for evidence of use before adding a language — a few hundred
+# public repositories with the extension — and for a TextMate grammar, which
+# is what gives the highlighting. The grammar is the real work; the colour
+# below is the settled part.
+#
+# Two things checked against Linguist's current `languages.yml`:
+#
+#   * `.skuld` and `.sk` are unclaimed, so the extensions are free.
+#   * `#7a1515` sits 10 units from Ruby's `#701516` in RGB, which is close
+#     enough that the two are hard to tell apart in a language bar. Linguist
+#     asks for colours distinguishable from their neighbours, so this is the
+#     part of the entry a reviewer is most likely to push back on. The next
+#     nearest are ActionScript's `#882B0F` (27) and Squirrel's `#800000` (30);
+#     `#5e0f2e` and `#6b0f2b` both clear every existing colour by more than 40.
+Skuld:
+  type: programming
+  color: "#7a1515"
+  extensions:
+    - ".skuld"
+    - ".sk"
+  tm_scope: source.skuld
+  ace_mode: text
+  language_id: 1000000001   # assigned by Linguist on merge; a placeholder here
