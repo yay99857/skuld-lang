@@ -1360,7 +1360,22 @@ impl<'a> Emitter<'a> {
         type_name(&self.structs, ty)
     }
     fn signature(&self, function: &Function) -> String {
-        signature_of(&self.structs, function, &self.function_name(function.id))
+        let signature = signature_of(&self.structs, function, &self.function_name(function.id));
+        // A whole program is emitted as one translation unit, so nothing
+        // outside it can name a generated function, and external linkage
+        // only obliges the C compiler to keep every one of them: a function
+        // it may not discard is a function it must emit, and a call inside
+        // that function is a symbol the linker must then resolve. One
+        // `import` therefore drags in every function of that module, the
+        // unused ones included, along with everything they call. Internal
+        // linkage lets the C compiler drop what the program never reaches.
+        // A freestanding program is the exception and says so through its
+        // exports: it has no `main`, and what calls it is linked separately.
+        if self.exports.contains_key(&function.id) {
+            signature
+        } else {
+            format!("static {signature}")
+        }
     }
     /// A type owns references when it is a string or holds one, directly or
     /// through another struct. Unmanaged values need no retain, release or

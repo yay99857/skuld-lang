@@ -394,10 +394,12 @@ accurate; documenting a future feature is not a request to implement it.
   class, an interface, a `weak`, anything holding one, and `print` — and
   changes nothing else. A `pub func` is emitted under the name it was written
   with, so an assembly stub or a bootloader has something to call; everything
-  private keeps a generated name; `main` is neither generated nor looked for. A
-  freestanding build writes an **object file** and accepts no linker argument:
-  the linker script, the target and the startup stub belong to whoever
-  assembles the result, and for a target that is not this machine `emit-c
+  private keeps a generated name and, in either build mode, internal
+  linkage, so the C compiler may discard what the program never reaches;
+  `main` is neither generated nor looked for. A freestanding build writes
+  an **object file** and accepts no linker argument: the linker script, the
+  target and the startup stub belong to whoever assembles the result, and
+  for a target that is not this machine `emit-c
   --freestanding` hands over the C the way the 32-bit portability suite already
   does. Decided here and not to be reopened: a freestanding program is **given
   no allocator, because nothing allocates** — its storage is its statics and
