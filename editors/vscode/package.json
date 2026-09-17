@@ -1,0 +1,33 @@
+{
+  "name": "skuld",
+  "displayName": "Skuld",
+  "description": "Syntax highlighting and language server support for Skuld",
+  "version": "0.1.0",
+  "license": "MIT",
+  "publisher": "skuld",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yay99857/skuld-lang"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "skuld",
+        "aliases": ["Skuld", "skuld"],
+        "extensions": [".skuld", ".sk"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "skuld",
+        "scopeName": "source.skuld",
+        "path": "./syntaxes/skuld.tmLanguage.json"
+      }
+    ]
+  }
+}

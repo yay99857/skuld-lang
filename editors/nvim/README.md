@@ -22,9 +22,16 @@ the keyword list mirrors `compiler/src/lexer.rs`, the prelude mirrors
 accepts — a `\q` is shown as an error because `E0004` is what the compiler
 would report.
 
-`interface` and `impl` are highlighted as keywords because the lexer produces
-tokens for them. Their milestone is unimplemented, and highlighting them is
-not a claim otherwise.
+`impl` is highlighted as a keyword because the lexer produces a token for it.
+It has no meaning in the language yet, and highlighting it is not a claim
+otherwise. `union`, `packed` and `align` are keywords in one position each and
+ordinary identifiers everywhere else, which a regex highlighter cannot tell
+apart reliably, so they are left uncoloured rather than coloured wrongly.
+
+That the lists here match the compiler is checked rather than intended:
+`cli/tests/editors.rs` reads the lexer's keyword table and the resolver's
+prelude and fails if a name is missing from this file. It had drifted seven
+milestones before that test existed.
 
 ## What it does not cover
 

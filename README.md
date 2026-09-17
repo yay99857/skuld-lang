@@ -437,6 +437,22 @@ formatter, signature help, inlay hints for inferred binding types and semantic
 tokens, and
 `examples/jsontool.skuld` is a multi-module native tool with its own test suite.
 
+## Editors
+
+`editors/` holds the client side of the tooling, and both halves describe what
+the compiler accepts rather than what the roadmap plans — `cli/tests/editors.rs`
+reads the lexer's keyword table and the resolver's prelude and fails when
+either file falls behind.
+
+| Editor | What is there |
+| --- | --- |
+| [Neovim](editors/nvim) | Syntax file, filetype detection, `skuld-lsp` client, file icon |
+| [VS Code](editors/vscode) | TextMate grammar, language configuration; link it in as a local extension |
+
+The grammar is also what GitHub's Linguist needs before `.skuld` can be a
+language it knows: the entry this project proposes, colour included, is in
+[`.github/linguist/skuld.yml`](.github/linguist/skuld.yml).
+
 No implementation milestone is active. The systems sequence in
 [ROADMAP.md](ROADMAP.md) is complete: with M26 a Skuld program builds with no
 runtime and no libc, and `cli/tests/freestanding.rs` builds two — a static

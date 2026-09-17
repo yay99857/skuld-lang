@@ -1,0 +1,324 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Skuld",
+  "scopeName": "source.skuld",
+  "fileTypes": ["skuld", "sk"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#characters" },
+    { "include": "#numbers" },
+    { "include": "#declarations" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#prelude" },
+    { "include": "#methods" },
+    { "include": "#calls" },
+    { "include": "#operators" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "comment": "The lexer knows `//` only; there is no block comment form.",
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.skuld",
+          "begin": "//",
+          "end": "$",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.comment.skuld" }
+          },
+          "patterns": [
+            {
+              "name": "keyword.codetag.notation.skuld",
+              "match": "\\b(TODO|FIXME|XXX|NOTE)\\b"
+            }
+          ]
+        }
+      ]
+    },
+    "strings": {
+      "comment": "A string carries `${ ... }` interpolation, which is source the parser reads as expressions, so it is highlighted as such.",
+      "patterns": [
+        {
+          "name": "string.quoted.double.skuld",
+          "begin": "\"",
+          "end": "\"",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.string.begin.skuld" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.string.end.skuld" }
+          },
+          "patterns": [
+            { "include": "#escapes" },
+            {
+              "name": "meta.embedded.line.skuld",
+              "begin": "\\$\\{",
+              "end": "\\}",
+              "beginCaptures": {
+                "0": { "name": "punctuation.section.embedded.begin.skuld" }
+              },
+              "endCaptures": {
+                "0": { "name": "punctuation.section.embedded.end.skuld" }
+              },
+              "patterns": [
+                { "include": "#numbers" },
+                { "include": "#keywords" },
+                { "include": "#types" },
+                { "include": "#prelude" },
+                { "include": "#methods" },
+                { "include": "#calls" },
+                { "include": "#operators" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "characters": {
+      "comment": "`char` is a Unicode scalar value, not a byte: one character between single quotes.",
+      "patterns": [
+        {
+          "name": "string.quoted.single.skuld",
+          "match": "'(\\\\([nrt0\\\\'\"]|u\\{[0-9A-Fa-f_]+\\})|[^'\\\\])'",
+          "captures": {
+            "1": { "name": "constant.character.escape.skuld" }
+          }
+        }
+      ]
+    },
+    "escapes": {
+      "patterns": [
+        {
+          "name": "constant.character.escape.skuld",
+          "match": "\\\\([nrt0\\\\'\"$]|u\\{[0-9A-Fa-f_]+\\})"
+        }
+      ]
+    },
+    "numbers": {
+      "comment": "`_` separates digits in every base. A float is decimal only.",
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.skuld",
+          "match": "\\b0x[0-9A-Fa-f_]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.skuld",
+          "match": "\\b0b[01_]+\\b"
+        },
+        {
+          "name": "constant.numeric.octal.skuld",
+          "match": "\\b0o[0-7_]+\\b"
+        },
+        {
+          "name": "constant.numeric.decimal.skuld",
+          "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*\\b"
+        },
+        {
+          "name": "constant.numeric.decimal.skuld",
+          "match": "\\b[0-9][0-9_]*\\b"
+        }
+      ]
+    },
+    "declarations": {
+      "comment": "The name a declaration introduces, highlighted as what it declares rather than as a use of it.",
+      "patterns": [
+        {
+          "match": "\\b(func)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.function.skuld" },
+            "2": { "name": "entity.name.function.skuld" }
+          }
+        },
+        {
+          "match": "\\b(class|struct|enum|interface)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.type.skuld" },
+            "2": { "name": "entity.name.type.skuld" }
+          }
+        },
+        {
+          "comment": "`extern struct Name packed align 8` and `extern union Name`: `union`, `packed` and `align` are ordinary identifiers everywhere else, and keywords only here.",
+          "match": "\\b(extern)\\s+(union)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.other.unsafe.skuld" },
+            "2": { "name": "keyword.declaration.type.skuld" },
+            "3": { "name": "entity.name.type.skuld" }
+          }
+        },
+        {
+          "match": "\\b(packed|align)\\b(?=[^{]*\\{)",
+          "name": "storage.modifier.layout.skuld"
+        },
+        {
+          "match": "\\b(const|static)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.skuld" },
+            "2": { "name": "variable.other.constant.skuld" }
+          }
+        },
+        {
+          "match": "\\b(let|var)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "keyword.declaration.skuld" },
+            "2": { "name": "variable.other.skuld" }
+          }
+        },
+        {
+          "comment": "An import binds its path's last segment, which is the only way to name that module.",
+          "match": "\\b(import)\\s+(\"[^\"]*\")",
+          "captures": {
+            "1": { "name": "keyword.control.import.skuld" },
+            "2": { "name": "string.quoted.double.skuld" }
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.conditional.skuld",
+          "match": "\\b(if|else|match)\\b"
+        },
+        {
+          "name": "keyword.control.repeat.skuld",
+          "match": "\\b(while|loop|for|in)\\b"
+        },
+        {
+          "name": "keyword.control.flow.skuld",
+          "match": "\\b(return|break|continue|defer)\\b"
+        },
+        {
+          "name": "keyword.control.import.skuld",
+          "match": "\\b(import)\\b"
+        },
+        {
+          "name": "keyword.other.unsafe.skuld",
+          "match": "\\b(unsafe|extern)\\b"
+        },
+        {
+          "name": "keyword.declaration.skuld",
+          "match": "\\b(func|let|var|const|static|pub|new|weak|class|struct|enum|interface|impl)\\b"
+        },
+        {
+          "name": "constant.language.boolean.skuld",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "variable.language.this.skuld",
+          "match": "\\bthis\\b"
+        }
+      ]
+    },
+    "types": {
+      "comment": "`int` is a spelling of `i64` and `float` of `f64`. A capitalised name is a user type by convention; the compiler enforces no case.",
+      "patterns": [
+        {
+          "name": "support.type.primitive.skuld",
+          "match": "\\b(int|float|bool|string|char|void|i8|i16|i32|i64|isize|u8|u16|u32|u64|usize)\\b"
+        },
+        {
+          "name": "support.type.builtin.skuld",
+          "match": "\\b(Option|Result)\\b"
+        },
+        {
+          "name": "entity.name.type.skuld",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "prelude": {
+      "comment": "The bindings the resolver puts in the root scope. Every one of them can be shadowed, so this is a hint and not a guarantee.",
+      "patterns": [
+        {
+          "name": "support.function.builtin.skuld",
+          "match": "\\b(print|ptr|bytes_to_string)\\b"
+        },
+        {
+          "comment": "The pointer builtins, which the checker refuses outside an `unsafe` block.",
+          "name": "support.function.unsafe.skuld",
+          "match": "\\b(load|store|volatile_load|volatile_store|offset|addr|ptr_from|size_of|offset_of)\\b"
+        },
+        {
+          "comment": "A conversion carries its width on the resolved symbol, not in the spelling, so each width is a binding of its own.",
+          "name": "support.function.conversion.skuld",
+          "match": "(?<![.A-Za-z0-9_])(int|float|char|i8|i16|i32|i64|isize|u8|u16|u32|u64|usize)\\s*(?=\\()"
+        },
+        {
+          "name": "constant.language.skuld",
+          "match": "\\b(Some|None|null|Ok|Err)\\b"
+        }
+      ]
+    },
+    "methods": {
+      "comment": "The methods the type checker knows on arrays, strings, Result and weak references.",
+      "patterns": [
+        {
+          "match": "(\\.)(len|push|insert|pop|remove|sort|to_sorted|bytes|is_ok|is_err|upgrade|alive|get)\\b",
+          "captures": {
+            "1": { "name": "punctuation.accessor.skuld" },
+            "2": { "name": "support.function.method.builtin.skuld" }
+          }
+        }
+      ]
+    },
+    "calls": {
+      "patterns": [
+        {
+          "comment": "A name immediately before `(` is being called.",
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "name": "entity.name.function.call.skuld"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "comment": "`->` is a return type and `=>` an expression lambda.",
+          "name": "keyword.operator.arrow.skuld",
+          "match": "->|=>"
+        },
+        {
+          "name": "keyword.operator.assignment.skuld",
+          "match": "(\\+|-|\\*|/|%|&|\\||\\^|<<|>>)?="
+        },
+        {
+          "name": "keyword.operator.comparison.skuld",
+          "match": "==|!=|<=|>=|<|>"
+        },
+        {
+          "name": "keyword.operator.logical.skuld",
+          "match": "&&|\\|\\||!"
+        },
+        {
+          "comment": "A half-open range, and the inclusive form a match arm may use.",
+          "name": "keyword.operator.range.skuld",
+          "match": "\\.\\.=?"
+        },
+        {
+          "name": "keyword.operator.bitwise.skuld",
+          "match": "&|\\||\\^|~|<<|>>"
+        },
+        {
+          "name": "keyword.operator.arithmetic.skuld",
+          "match": "\\+|-|\\*|/|%"
+        },
+        {
+          "comment": "Postfix `?` propagates an error unchanged.",
+          "name": "keyword.operator.propagate.skuld",
+          "match": "\\?"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        { "name": "punctuation.accessor.skuld", "match": "\\." },
+        { "name": "punctuation.separator.skuld", "match": "[,:]" },
+        { "name": "punctuation.section.braces.skuld", "match": "[{}]" },
+        { "name": "punctuation.section.brackets.skuld", "match": "[\\[\\]]" },
+        { "name": "punctuation.section.parens.skuld", "match": "[()]" }
+      ]
+    }
+  }
+}
