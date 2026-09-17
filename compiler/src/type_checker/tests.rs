@@ -1524,3 +1524,39 @@ fn a_deferred_statement_may_not_leave_its_block() {
         DiagnosticCode::UnknownName,
     );
 }
+
+#[test]
+fn a_static_is_storage_that_outlives_every_call() {
+    valid(
+        "static counter: int = 0\n\nfunc bump() -> int {\n    counter = counter + 1\n    return counter\n}\n\nfunc main() {\n    print(bump())\n}",
+    );
+    // A fixed array of scalars, which is the storage a program with no heap
+    // has: it starts at zero and is filled while the program runs.
+    valid(
+        "static bytes: [4]u8 = [0; 4]\n\nfunc main() {\n    bytes[0] = u8(1)\n    print(int(bytes[0]))\n}",
+    );
+    // Nothing would retain or release a managed value that outlives every
+    // call, so there is none.
+    fails(
+        "static name: string = \"hello\"\n\nfunc main() {}",
+        DiagnosticCode::InvalidValueType,
+    );
+    // The initialiser runs at compile time, because there is no moment before
+    // the program starts at which it could run.
+    fails(
+        "func compute() -> int {\n    return 1\n}\n\nstatic value: int = compute()\n\nfunc main() {}",
+        DiagnosticCode::UnsupportedFeature,
+    );
+    fails(
+        "static bytes: [4]u8 = [1; 4]\n\nfunc main() {}",
+        DiagnosticCode::UnsupportedSyntax,
+    );
+    fails(
+        "static flag: bool = 1\n\nfunc main() {}",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "static level: u8 = 300\n\nfunc main() {}",
+        DiagnosticCode::IntegerRange,
+    );
+}

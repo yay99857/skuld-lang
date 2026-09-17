@@ -9,6 +9,10 @@ pub struct Program {
     pub structs: Vec<StructDecl>,
     pub enums: Vec<EnumDecl>,
     pub constants: Vec<ConstantDecl>,
+    /// `static name: Type = expression`. Storage that outlives every call,
+    /// which a program with no heap needs and a freestanding one has nothing
+    /// else to use.
+    pub statics: Vec<StaticDecl>,
     pub functions: Vec<FunctionDecl>,
     /// Foreign declarations, which have signatures but no bodies.
     pub externs: Vec<ExternBlock>,
@@ -252,6 +256,21 @@ impl TypeRef {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConstantDecl {
+    pub visibility: Visibility,
+    pub name: Name,
+    pub type_ref: Option<TypeRef>,
+    pub value: Expr,
+    pub span: Span,
+}
+
+/// `static counter: int = 0`.
+///
+/// It is written like a constant and behaves like a variable: the initializer
+/// is evaluated at compile time, because there is no moment before `main` at
+/// which a program could run one, and the storage is then writable for the
+/// rest of the program's life.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StaticDecl {
     pub visibility: Visibility,
     pub name: Name,
     pub type_ref: Option<TypeRef>,

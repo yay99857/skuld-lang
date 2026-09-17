@@ -321,6 +321,7 @@ impl Parser<'_> {
         let mut structs = Vec::new();
         let mut enums = Vec::new();
         let mut constants = Vec::new();
+        let mut statics = Vec::new();
         let mut externs = Vec::new();
         // Imports come first, so that reading the top of a file is enough to
         // know every module it depends on.
@@ -405,6 +406,16 @@ impl Parser<'_> {
                 }
                 continue;
             }
+            if self.at(&TokenKind::Static) {
+                match self.static_declaration(visibility) {
+                    Ok(declaration) => statics.push(declaration),
+                    Err(diagnostic) => {
+                        self.diagnostics.push(diagnostic);
+                        self.recover_declaration(start);
+                    }
+                }
+                continue;
+            }
             if self.at(&TokenKind::Struct) || self.at(&TokenKind::Class) {
                 match self.struct_declaration(visibility) {
                     Ok(declaration) => structs.push(declaration),
@@ -454,6 +465,7 @@ impl Parser<'_> {
             structs,
             enums,
             constants,
+            statics,
             functions,
             externs,
             span: Span::new(0, self.source.len()),
@@ -615,6 +627,27 @@ impl Parser<'_> {
         let value = self.expression()?;
         let end = value.span.end;
         Ok(ConstantDecl {
+            visibility,
+            name,
+            type_ref,
+            value,
+            span: Span::new(start, end),
+        })
+    }
+    /// `static counter: int = 0`. The same shape as a constant, and a
+    /// different meaning: this one can be written to.
+    fn static_declaration(&mut self, visibility: Visibility) -> Parsed<StaticDecl> {
+        let start = self.expect(&TokenKind::Static, "`static`")?.span.start;
+        let name = self.name("a static name")?;
+        let type_ref = if self.take(&TokenKind::Colon).is_some() {
+            Some(self.type_ref()?)
+        } else {
+            None
+        };
+        self.expect(&TokenKind::Equal, "`=` before the initial value")?;
+        let value = self.expression()?;
+        let end = value.span.end;
+        Ok(StaticDecl {
             visibility,
             name,
             type_ref,

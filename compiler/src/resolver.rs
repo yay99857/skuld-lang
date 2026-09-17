@@ -227,6 +227,16 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
                     declaration.visibility,
                 );
             }
+            // A static is a variable that outlives every call, so it resolves
+            // like one: assignment finds it through the same table a local
+            // goes through.
+            for declaration in &syntax.statics {
+                resolver.declare(
+                    &declaration.name,
+                    SymbolKind::Variable(Mutability::Mutable),
+                    declaration.visibility,
+                );
+            }
             // Foreign functions are ordinary value names: only the backend
             // knows they are calls into another object file. Their parameter
             // names are documentation, so they get no symbols of their own.
@@ -357,6 +367,13 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
                 resolver.type_ref(t);
             }
             resolver.expression(&constant.value);
+        }
+        for declaration in &syntax.statics {
+            resolver.current = file_scope;
+            if let Some(t) = &declaration.type_ref {
+                resolver.type_ref(t);
+            }
+            resolver.expression(&declaration.value);
         }
     }
     ResolveOutput {

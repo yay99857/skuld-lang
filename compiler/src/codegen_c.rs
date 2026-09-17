@@ -25,6 +25,7 @@ pub fn emit_c(program: &Program) -> String {
             .iter()
             .map(|lambda| lambda.captures.iter().map(|c| c.id).collect())
             .collect(),
+        statics: program.statics.iter().map(|(id, _)| *id).collect(),
         defers: Vec::new(),
     };
     // An interface value is a pair: the object, and the table of methods to
@@ -228,6 +229,26 @@ pub fn emit_c(program: &Program) -> String {
         } else {
             emitter.line(&format!("}} skuld_s{index};"));
         }
+    }
+    // Module-level storage. It is emitted after the types it may be shaped by
+    // and before any function that reads it, and it is `static` in the C sense
+    // too: a program is one translation unit, so nothing outside it has a name
+    // to reach these by.
+    if !program.statics.is_empty() {
+        emitter.line("");
+    }
+    for (id, info) in &program.statics {
+        let start = match &info.start {
+            Some(value) => format!(" = {}", constant_literal(value)),
+            // A fixed array starts at zero, which is what `{0}` means in C
+            // however long it is.
+            None => " = {0}".to_owned(),
+        };
+        emitter.line(&format!(
+            "static {} skuld_g{}{start};",
+            emitter.c_type(info.ty),
+            id.0
+        ));
     }
     // Foreign declarations come after the aggregates rather than first: a
     // signature may name an `extern struct`, which has to be complete before
@@ -683,6 +704,10 @@ struct Emitter<'a> {
     /// What each lambda captures, by index, so that building one can fill its
     /// environment without reaching back into the HIR.
     lambda_captures: Vec<Vec<crate::resolver::SymbolId>>,
+    /// Module-level storage, by symbol. A read or a write of one of these
+    /// names is an ordinary read or write of a file-scope variable, which is
+    /// why it only has to be known here.
+    statics: std::collections::BTreeSet<crate::resolver::SymbolId>,
     /// One frame per block being emitted, holding that block's `defer`red
     /// statements in the order they were registered.
     ///
@@ -700,6 +725,27 @@ struct DeferScope<'a> {
     statements: Vec<&'a Statement>,
     loop_body: bool,
 }
+/// The C spelling of a value a static starts at. It is a constant expression
+/// in C too, since a static is initialised before anything runs.
+fn constant_literal(value: &crate::types::ConstValue) -> String {
+    match value {
+        crate::types::ConstValue::Int(written, kind) if !kind.signed() => {
+            format!("UINT64_C({})", *written as u64)
+        }
+        crate::types::ConstValue::Int(written, _) if *written < 0 => {
+            format!("(-INT64_C({}))", written.unsigned_abs())
+        }
+        crate::types::ConstValue::Int(written, _) => format!("INT64_C({written})"),
+        crate::types::ConstValue::Float(written) => format!("{written:.17e}"),
+        crate::types::ConstValue::Bool(written) => written.to_string(),
+        crate::types::ConstValue::Char(written) => format!("((uint32_t){})", *written as u32),
+        // A string is managed, so the checker never lets one reach here.
+        crate::types::ConstValue::String(_) => {
+            unreachable!("internal compiler bug: a static holding a string")
+        }
+    }
+}
+
 fn type_name(structs: &[StructInfo], ty: Type) -> String {
     match ty {
         Type::Int(kind) => kind.c_type().into(),
@@ -1269,6 +1315,9 @@ impl<'a> Emitter<'a> {
     /// Where a name lives: a local of its own, or a field of the environment
     /// the enclosing lambda was handed.
     fn local_name(&self, id: crate::resolver::SymbolId) -> String {
+        if self.statics.contains(&id) {
+            return format!("skuld_g{}", id.0);
+        }
         if self.captures.contains(&id) {
             format!("skuld_env->skuld_v{}", id.0)
         } else {

@@ -61,6 +61,10 @@ pub struct TypedProgram {
     pub(crate) layout_queries: BTreeMap<(FileId, usize, usize), (StructId, Option<usize>)>,
     pub(crate) function_signatures: Vec<FunctionTypeInfo>,
     pub(crate) constants: BTreeMap<SymbolId, ConstValue>,
+    /// Module-level storage: its type, and the value it starts at. A static is
+    /// initialised at compile time because there is no moment before the
+    /// program runs at which an initialiser could.
+    pub(crate) statics: BTreeMap<SymbolId, StaticInfo>,
 }
 impl TypedProgram {
     pub fn constants(&self) -> &BTreeMap<SymbolId, ConstValue> {
@@ -184,6 +188,7 @@ pub(crate) fn type_check(
         expected_context: None,
         implicit_wraps: BTreeMap::new(),
         constants: BTreeMap::new(),
+        statics: BTreeMap::new(),
         evaluating_constants: Vec::new(),
         constant_decls: BTreeMap::new(),
         defer_depth: 0,
@@ -779,6 +784,14 @@ pub(crate) fn type_check(
             checker.ensure_constant_evaluated(sym_id);
         }
     }
+    // Statics, once the constants they may be initialised from are known.
+    for (file_idx, file) in program.files.iter().enumerate() {
+        checker.file = FileId(file_idx);
+        checker.module = file.module;
+        for declaration in &file.program.statics {
+            checker.check_static(declaration);
+        }
+    }
     // Field defaults, now that every signature exists and before any body:
     // the expression is checked once, where it is written, and evaluated at
     // every construction.
@@ -851,6 +864,7 @@ pub(crate) fn type_check(
         slice_coercions,
         layout_queries,
         constants,
+        statics,
         ..
     } = checker;
     // A missing entry is a diagnostic above unless the caller allowed one, and
@@ -878,6 +892,7 @@ pub(crate) fn type_check(
         function_signatures,
         entry,
         constants,
+        statics,
     })
 }
 
@@ -936,6 +951,7 @@ struct Checker<'a> {
     expected_context: Option<Type>,
     implicit_wraps: BTreeMap<(FileId, usize, usize), Type>,
     constants: BTreeMap<SymbolId, ConstValue>,
+    statics: BTreeMap<SymbolId, StaticInfo>,
     evaluating_constants: Vec<SymbolId>,
     constant_decls: BTreeMap<SymbolId, (FileId, ConstantDecl)>,
     /// How many `defer` statements enclose what is being checked. Leaving a
@@ -4756,6 +4772,126 @@ impl Checker<'_> {
         Some(final_val)
     }
 
+    /// `static name: Type = value`.
+    ///
+    /// The initialiser is evaluated here, at compile time, because a program
+    /// has no moment before it starts at which one could run: in a hosted
+    /// program that moment would have to be invented, and in a freestanding
+    /// one there is nothing to invent it with. What a static may hold follows
+    /// from the same place — a scalar, or a fixed array of scalars that starts
+    /// at zero. A managed value is refused outright: nothing would retain it,
+    /// and nothing would ever release it.
+    fn check_static(&mut self, declaration: &crate::ast::StaticDecl) {
+        let id = self.declaration(&declaration.name);
+        let annotated = declaration
+            .type_ref
+            .as_ref()
+            .map(|reference| self.type_ref(reference, false));
+        // A fixed array of scalars, which is the storage a program with no
+        // heap actually needs: a buffer, a bitmap, a table.
+        if let Some(Type::FixedArray(array)) = annotated {
+            let element = self.fixed_arrays[array.0].element;
+            let scalar = matches!(
+                element,
+                Type::Int(_) | Type::Float | Type::Bool | Type::Char
+            );
+            let zeroed = match &declaration.value.kind {
+                ExprKind::ArrayRepeat { element, .. } => {
+                    matches!(
+                        self.eval_constant_expr(element, Some(self.fixed_arrays[array.0].element)),
+                        Some(ConstValue::Int(0, _))
+                    )
+                }
+                _ => false,
+            };
+            if !scalar {
+                let rendered = self.type_name(element);
+                self.error(
+                    DiagnosticCode::InvalidValueType,
+                    declaration.span,
+                    format!("a static array holds scalars, not `{rendered}`"),
+                );
+                self.symbol_types[id.0] = Type::Error;
+                return;
+            }
+            if !zeroed {
+                self.error(
+                    DiagnosticCode::UnsupportedSyntax,
+                    declaration.value.span,
+                    "a static array starts at zero, written `[0; N]`; fill it with anything else while the program runs",
+                );
+                self.symbol_types[id.0] = Type::Error;
+                return;
+            }
+            self.record(&declaration.value, annotated.expect("annotated array"));
+            self.symbol_types[id.0] = annotated.expect("annotated array");
+            self.statics.insert(
+                id,
+                StaticInfo {
+                    ty: annotated.expect("annotated array"),
+                    start: None,
+                },
+            );
+            return;
+        }
+        let Some(value) = self.eval_constant_expr(&declaration.value, annotated) else {
+            self.symbol_types[id.0] = Type::Error;
+            return;
+        };
+        let ty = match (annotated, &value) {
+            (Some(Type::Int(width)), ConstValue::Int(written, _)) => {
+                if !fits_int_type(*written, width) {
+                    self.error(
+                        DiagnosticCode::IntegerRange,
+                        declaration.value.span,
+                        format!("value `{written}` does not fit in `{}`", width.name()),
+                    );
+                    self.symbol_types[id.0] = Type::Error;
+                    return;
+                }
+                Type::Int(width)
+            }
+            (Some(expected), found) if expected != found.ty() => {
+                let rendered = self.type_name(expected);
+                let actual = self.type_name(found.ty());
+                self.error(
+                    DiagnosticCode::TypeMismatch,
+                    declaration.value.span,
+                    format!("this static holds `{rendered}`, and the value is `{actual}`"),
+                );
+                self.symbol_types[id.0] = Type::Error;
+                return;
+            }
+            (Some(expected), _) => expected,
+            (None, found) => found.ty(),
+        };
+        if !matches!(ty, Type::Int(_) | Type::Float | Type::Bool | Type::Char) {
+            let rendered = self.type_name(ty);
+            self.error(
+                DiagnosticCode::InvalidValueType,
+                declaration.span,
+                format!(
+                    "a static holds a scalar or a fixed array of scalars, not `{rendered}`; nothing would retain or release a managed value that outlives every call"
+                ),
+            );
+            self.symbol_types[id.0] = Type::Error;
+            return;
+        }
+        let start = match (ty, value) {
+            (Type::Int(width), ConstValue::Int(written, _)) => ConstValue::Int(written, width),
+            (_, other) => other,
+        };
+        self.record(&declaration.value, ty);
+        self.symbol_types[id.0] = ty;
+        self.statics.insert(
+            id,
+            StaticInfo {
+                ty,
+                start: Some(start),
+            },
+        );
+    }
+
     fn eval_constant_expr(&mut self, expr: &Expr, expected: Option<Type>) -> Option<ConstValue> {
         match &expr.kind {
             ExprKind::Literal(literal) => match literal {
@@ -5589,6 +5725,17 @@ impl Checker<'_> {
             }
         }
     }
+}
+
+/// One module-level storage slot: what it holds, and what it starts at.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StaticInfo {
+    pub ty: Type,
+    /// The scalar it starts at, or `None` for a fixed array, which starts at
+    /// all zero — the only array initialiser a static accepts, since C has no
+    /// repeated initialiser and writing one out is not an initialiser a reader
+    /// would want to read.
+    pub start: Option<ConstValue>,
 }
 
 /// Whether an integer value is representable in a width. Both ends are read

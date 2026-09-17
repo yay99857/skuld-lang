@@ -1,0 +1,9 @@
+func compute() -> int {
+    return 1
+}
+
+static value: int = compute()
+
+func main() {
+    print(value)
+}

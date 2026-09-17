@@ -95,6 +95,7 @@ enum Decl<'a> {
     Struct(&'a StructDecl),
     Enum(&'a EnumDecl),
     Constant(&'a ConstantDecl),
+    Static(&'a StaticDecl),
     Function(&'a FunctionDecl),
     Extern(&'a ExternBlock),
 }
@@ -107,6 +108,7 @@ impl Decl<'_> {
             Decl::Struct(d) => d.span,
             Decl::Enum(d) => d.span,
             Decl::Constant(d) => d.span,
+            Decl::Static(d) => d.span,
             Decl::Function(d) => d.span,
             Decl::Extern(d) => d.span,
         }
@@ -274,6 +276,9 @@ impl<'a> Formatter<'a> {
         for c in &program.constants {
             decls.push(Decl::Constant(c));
         }
+        for declaration in &program.statics {
+            decls.push(Decl::Static(declaration));
+        }
         for func in &program.functions {
             decls.push(Decl::Function(func));
         }
@@ -308,6 +313,7 @@ impl<'a> Formatter<'a> {
                 Decl::Struct(s) => self.format_struct(s),
                 Decl::Enum(e) => self.format_enum(e),
                 Decl::Constant(c) => self.format_constant(c),
+                Decl::Static(declaration) => self.format_static(declaration),
                 Decl::Function(f) => self.format_top_function(f),
                 Decl::Extern(e) => self.format_extern(e),
             }
@@ -499,6 +505,19 @@ impl<'a> Formatter<'a> {
         self.push(" = ");
         self.format_expr(&c.value);
         self.emit_trailing_comment(c.span.end);
+    }
+
+    fn format_static(&mut self, declaration: &StaticDecl) {
+        self.format_visibility(declaration.visibility);
+        self.push("static ");
+        self.push(&declaration.name.text);
+        if let Some(ty) = &declaration.type_ref {
+            self.push(": ");
+            self.format_type(ty);
+        }
+        self.push(" = ");
+        self.format_expr(&declaration.value);
+        self.emit_trailing_comment(declaration.span.end);
     }
 
     /// A top-level function: has `func` prefix and its own visibility.

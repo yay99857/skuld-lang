@@ -1,0 +1,5 @@
+static flag: bool = 1
+
+func main() {
+    print(flag)
+}

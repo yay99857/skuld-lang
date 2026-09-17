@@ -28,8 +28,8 @@ Reserved-syntax fixtures are deliberate tripwires: when a milestone lands, the
 fixture stops failing and the suite goes red. That is the signal to promote it
 to `pass/` with a `.out`, not to delete it. Loops went through exactly that:
 `reserved_loops` became `pass/while_loop`, and classes similarly added `pass/class_reference_semantics`
-while `reserved_declaration` (`E1002`, covering `interface`), `reserved_iteration` (`E1003`)
-and `reserved_members` (`E0110`) hold reserved-syntax coverage until their own milestones.
+while `reserved_iteration` (`E1003`) and `reserved_members` (`E0110`) hold
+reserved-syntax coverage until their own milestones.
 
 A promoted fixture must terminate. `loop` with no `break` never returns, so it
 belongs in `fail/` or must carry an exit; never park an unbounded loop in
@@ -141,8 +141,9 @@ dispatch, a class implementing two interfaces, interface values in an array, a
 field and an Option payload, a registry that outlives the call that filled it,
 and each refusal — a struct, a missing method, a differing signature, a class
 that never declared conformance, and a method the interface does not name.
-`reserved_declaration` kept its name and lost `interface` to `pass/interfaces`;
-`static` stays behind, which is what a promoted tripwire should look like.
+`reserved_declaration` lost `interface` to `pass/interfaces` and then `static`
+to `pass/statics`, which emptied it: the fixture is gone, which is what the end
+of a tripwire's life looks like.
 
 `pass/pointers` is M23's closing marker: a bump allocator and an intrusive
 linked list written in Skuld over `malloc`ed memory. It is a fixture precisely
@@ -195,3 +196,10 @@ the way out — which is what makes the sanitizer run worth having on it. The
 `defer_*` fixtures in `fail/` cover the refusals: `return`, `break` and `?`
 leaving a deferred statement, and a declaration deferred to a moment where
 nothing can read it.
+
+`pass/statics` covers module-level storage: a counter written across calls, a
+fixed array filled while the program runs, an initialiser built from a `const`,
+and a local that shadows a static without touching it. The `static_*` fixtures
+in `fail/` cover the refusals — a managed type, an initialiser that is a call,
+an array that starts at something other than zero, a value of the wrong type,
+and one that does not fit its width.

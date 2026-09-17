@@ -33,6 +33,10 @@ pub struct Program {
     pub(crate) sorts: Vec<(crate::types::ArrayId, crate::types::FunctionTypeId)>,
     /// Foreign functions: a signature and a linker name, with no body.
     pub(crate) externs: Vec<ExternFunction>,
+    /// Module-level storage, by symbol: the backend gives each one a name of
+    /// its own at file scope, and a read or a write of it is an ordinary read
+    /// or write of that name.
+    pub(crate) statics: Vec<(SymbolId, crate::type_checker::StaticInfo)>,
     pub(crate) entry: SymbolId,
     pub(crate) span: Span,
 }

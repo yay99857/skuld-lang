@@ -1017,6 +1017,30 @@ is how `std/fs`, `std/net` and `std/os` are written. Two modules of one program
 may declare the same C function, as `std/fs` and `std/os` both declare `read`,
 as long as they declare it identically.
 
+## `static` — Implemented
+
+`static` is storage that outlives every call:
+
+```skuld
+static counter: int = 0
+pub static histogram: [16]int = [0; 16]
+```
+
+- It is written like a constant and behaves like a variable: readable and
+  writable from any function in the module, and `pub` to export it.
+- **The initialiser is evaluated at compile time.** There is no moment before a
+  program starts at which one could run, so a static starts at a constant
+  expression — a literal, a `const`, arithmetic over them — and never at the
+  result of a call.
+- What it may hold is a scalar, or a fixed array of scalars that starts at
+  zero. A `string`, an array, a class or an `Option` holding one is refused:
+  nothing would retain a managed value that outlives every call, and nothing
+  would ever release it. A fixed array starts at zero because C has no repeated
+  initialiser, and a written-out one is not an initialiser a reader wants to
+  read; fill it with anything else while the program runs.
+- A local of the same name shadows it, as a local shadows any module name.
+- There are no threads in Skuld, so a static needs no atomics and gets none.
+
 ## `defer` — Implemented
 
 `defer statement` runs the statement when the block it was written in is left,
@@ -1779,7 +1803,7 @@ foreign `extern "C"` declarations with raw pointers, modules with `import` and
 function values, expression lambdas, stable sorting and `to_sorted`, interfaces, `let ... else`,
 bitwise operators, integer literal prefixes, digit separators,
 fixed-size arrays, `unsafe` blocks with pointer loads and stores, `defer`,
-and reference-counted runtime behavior are **Implemented**. The future
+`static` storage, and reference-counted runtime behavior are **Implemented**. The future
 capabilities listed in the roadmap are **Planned**. No generics, macros, async/await, threads, channels,
 reflection, decorators, annotations, package registry, compiler plugins,
 compile-time execution, operator overloading or user-defined conversions will

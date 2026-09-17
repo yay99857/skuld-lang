@@ -291,3 +291,9 @@ fn a_defer_keeps_its_statement_on_the_same_line() {
     let input = "func main() {\n    defer print(1)\n\n    defer {\n        print(2)\n    }\n}\n";
     assert_eq!(fmt(input), input);
 }
+
+#[test]
+fn a_static_reads_like_the_constant_it_is_not() {
+    let input = "static counter: int = 0\n\npub static bytes: [4]u8 = [0; 4]\n\nfunc main() {\n    counter = counter + 1\n}\n";
+    assert_eq!(fmt(input), input);
+}

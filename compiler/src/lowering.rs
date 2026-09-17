@@ -160,6 +160,11 @@ pub fn lower(typed: TypedProgram) -> h::Program {
     vtables.sort();
     vtables.dedup();
     h::Program {
+        statics: typed
+            .statics
+            .iter()
+            .map(|(id, info)| (*id, info.clone()))
+            .collect(),
         externs,
         lambdas,
         function_types: typed.function_signatures.clone(),

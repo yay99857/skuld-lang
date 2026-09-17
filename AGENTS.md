@@ -371,8 +371,19 @@ accurate; documenting a future feature is not a request to implement it.
   and now releases each once, `std/net`'s `open` does the same, and both
   suites — including the expired, wrong-name and untrusted certificate cases —
   stay green and sanitizer-clean.
-  The systems sequence `ROADMAP.md` proposes continues with M26: a
-  freestanding mode with no runtime and no libc.
+  M26 (freestanding Skuld) is under way. Its first piece is `static`: module
+  level storage, written like a constant and behaving like a variable, whose
+  initialiser is evaluated at compile time because there is no moment before a
+  program starts at which one could run. A static holds a scalar or a fixed
+  array of scalars starting at zero; a managed value is refused, since nothing
+  would retain what outlives every call and nothing would release it. An array
+  starts at zero because C has no repeated initialiser and a written-out one is
+  not an initialiser a reader wants. It is available in both build modes — a
+  hosted program has the same need — and `tests/fail/reserved_declaration` was
+  promoted to `tests/pass/statics`, which emptied that tripwire.
+  The rest of M26 — a build mode with no runtime and no libc, the subset the
+  checker enforces there, a user-supplied entry point and an object-file
+  build — is not implemented yet.
   Every one of them is Planned and none is authorized; each still needs an
   explicit decision recorded here. One decision
   is taken there and should not be reopened by accident: M20's `const` does

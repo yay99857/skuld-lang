@@ -1,0 +1,58 @@
+// `static` is storage that outlives every call: the only state a program with
+// no heap has, and the only state a freestanding one could have.
+
+static counter: int = 0
+
+static enabled: bool = true
+
+static level: u8 = 200
+
+// A fixed array starts at zero and is filled while the program runs.
+static histogram: [4]int = [0; 4]
+
+const BASE: int = 10
+
+// The initialiser is a constant expression, so it may be built from constants.
+static derived: int = BASE * 2 + 1
+
+func bump() -> int {
+    counter = counter + 1
+    return counter
+}
+
+func record(slot: int) {
+    histogram[slot] = histogram[slot] + 1
+}
+
+// A local of the same name shadows the static, which then keeps its own value.
+func shadowed() -> int {
+    let counter = 100
+    return counter
+}
+
+func main() {
+    print(bump())
+    print(bump())
+    print(bump())
+    print(counter)
+
+    print(enabled)
+    enabled = false
+    print(enabled)
+
+    print(int(level))
+    level = u8(1)
+    print(int(level))
+
+    print(derived)
+
+    record(0)
+    record(2)
+    record(2)
+    for count in histogram {
+        print(count)
+    }
+
+    print(shadowed())
+    print(counter)
+}
