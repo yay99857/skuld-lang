@@ -126,30 +126,76 @@ fn certificates(
     let extensions = scratch.path("ext.cnf");
     fs::write(&extensions, "subjectAltName=DNS:localhost\n").expect("extensions");
     let certificate = scratch.path(&format!("{name}.pem"));
-    let mut arguments = vec![
-        "x509".to_string(),
-        "-req".to_string(),
-        "-in".to_string(),
-        request.to_str().unwrap().to_string(),
-        "-CA".to_string(),
-        ca.to_str().unwrap().to_string(),
-        "-CAkey".to_string(),
-        ca_key.to_str().unwrap().to_string(),
-        "-CAcreateserial".to_string(),
-        "-out".to_string(),
-        certificate.to_str().unwrap().to_string(),
-        "-extfile".to_string(),
-        extensions.to_str().unwrap().to_string(),
-    ];
     match validity {
+        // `x509 -not_before/-not_after` says this in one option each, but both
+        // are recent enough that the openssl on the CI runner rejects them, so
+        // this file had never once passed there. `ca` has taken `-startdate`
+        // and `-enddate` for far longer, and the price is the small database
+        // it insists on keeping, written here beside the certificate itself.
         Some((from, to)) => {
-            arguments.extend(["-not_before".to_string(), from.to_string()]);
-            arguments.extend(["-not_after".to_string(), to.to_string()]);
+            let database = scratch.path("index.txt");
+            let serial = scratch.path("serial");
+            let configuration = scratch.path("ca.cnf");
+            fs::write(&database, "").expect("certificate database");
+            fs::write(&serial, "01\n").expect("serial");
+            // The config parser reads a backslash as an escape, so a path goes
+            // in with forward slashes. Everywhere but Windows that is what it
+            // already had.
+            let readable = |path: &Path| path.display().to_string().replace('\\', "/");
+            fs::write(
+                &configuration,
+                format!(
+                    "[ca]\ndefault_ca = CA_default\n\
+                     [CA_default]\ndatabase = {}\nserial = {}\nnew_certs_dir = {}\n\
+                     default_md = sha256\npolicy = policy_any\n\
+                     email_in_dn = no\nrand_serial = no\nunique_subject = no\n\
+                     [policy_any]\ncommonName = supplied\n",
+                    readable(&database),
+                    readable(&serial),
+                    readable(&scratch.directory),
+                ),
+            )
+            .expect("ca configuration");
+            openssl(&[
+                "ca",
+                "-batch",
+                "-notext",
+                "-config",
+                configuration.to_str().unwrap(),
+                "-cert",
+                ca.to_str().unwrap(),
+                "-keyfile",
+                ca_key.to_str().unwrap(),
+                "-in",
+                request.to_str().unwrap(),
+                "-out",
+                certificate.to_str().unwrap(),
+                "-extfile",
+                extensions.to_str().unwrap(),
+                "-startdate",
+                from,
+                "-enddate",
+                to,
+            ]);
         }
-        None => arguments.extend(["-days".to_string(), "2".to_string()]),
+        None => openssl(&[
+            "x509",
+            "-req",
+            "-in",
+            request.to_str().unwrap(),
+            "-CA",
+            ca.to_str().unwrap(),
+            "-CAkey",
+            ca_key.to_str().unwrap(),
+            "-CAcreateserial",
+            "-out",
+            certificate.to_str().unwrap(),
+            "-extfile",
+            extensions.to_str().unwrap(),
+            "-days",
+            "2",
+        ]),
     }
-    let borrowed: Vec<&str> = arguments.iter().map(String::as_str).collect();
-    openssl(&borrowed);
     (ca, certificate)
 }
 
