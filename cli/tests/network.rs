@@ -6,16 +6,48 @@
 //! touches the network and never depends on a port being free.
 use std::{
     env, fs,
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::TcpListener,
     process::Command,
     thread,
+    time::{Duration, Instant},
 };
+
+/// How long the fixture waits for the program under test to show up. A client
+/// that never connects is a failure of the test, and it has to be reported as
+/// one: `accept` on its own would wait for ever, and a hung test tells the
+/// reader nothing and stops every package behind it from running at all.
+const PATIENCE: Duration = Duration::from_secs(30);
 
 /// A canned HTTP/1.1 response, and the request the client sent, once.
 fn serve_once(listener: TcpListener, response: &'static [u8]) -> thread::JoinHandle<Vec<u8>> {
     thread::spawn(move || {
-        let (mut stream, _) = listener.accept().expect("one connection");
+        listener
+            .set_nonblocking(true)
+            .expect("a listener that can time out");
+        let deadline = Instant::now() + PATIENCE;
+        let (mut stream, _) = loop {
+            match listener.accept() {
+                Ok(accepted) => break accepted,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    assert!(
+                        Instant::now() < deadline,
+                        "no client connected within {PATIENCE:?}: the program under \
+                         test never reached the server"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept: {error}"),
+            }
+        };
+        // The accepted stream inherits the listener's non-blocking mode on some
+        // platforms and not on others; say which one this wants either way.
+        stream
+            .set_nonblocking(false)
+            .expect("a blocking accepted stream");
+        stream
+            .set_read_timeout(Some(PATIENCE))
+            .expect("a read that can time out");
         // The client sends `Connection: close` and a request with no body, so
         // the head is everything there is to read.
         let mut request = Vec::new();
