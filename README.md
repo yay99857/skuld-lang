@@ -451,3 +451,9 @@ implies no production readiness. Performance is measured in
 [BENCHMARKS.md](BENCHMARKS.md): between 1.3x and 2.2x the faster of Rust and Go
 across five workloads on one machine, which is evidence for the range the
 project aimed at and not a promised ratio.
+
+## License
+
+MIT, as the workspace metadata already declared — see [LICENSE](LICENSE). The
+text is the standard one, copied from a published `LICENSE` rather than
+retyped, with only the copyright line changed.
