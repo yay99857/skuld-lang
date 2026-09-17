@@ -22,6 +22,9 @@ impl TempDir {
             let serial = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
             let path =
                 std::env::temp_dir().join(format!("skuld-{}-{stamp}-{serial}", std::process::id()));
+            // Only the `cfg(unix)` arm below mutates the builder, so anywhere
+            // else the `mut` is dead and `-D warnings` rejects it.
+            #[cfg_attr(not(unix), allow(unused_mut))]
             let mut builder = fs::DirBuilder::new();
             #[cfg(unix)]
             {

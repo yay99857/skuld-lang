@@ -40,10 +40,23 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-      # The README tells readers these commands work; keep that honest.
+      # The README tells readers these commands work; keep that honest. Two
+      # examples are not plain demonstrations, and the loop says which:
+      # `*_tests.skuld` holds `test_` functions and no entrypoint, so it is
+      # `skuld test`'s to run, and `jsontool.skuld` is an application that
+      # exits 2 when handed no file to read. A `run:` block executes under
+      # `bash -e`, so either one ends the step and the job with it.
       - name: Run the documented examples
         run: |
           for example in examples/*.skuld; do
             echo "== $example"
-            cargo run --quiet -p skuld-cli -- run "$example"
+            case "$example" in
+              *_tests.skuld)
+                cargo run --quiet -p skuld-cli -- test "$example" ;;
+              */jsontool.skuld)
+                cargo run --quiet -p skuld-cli -- run "$example" \
+                  --args tests/bench/data/records.json --keys ;;
+              *)
+                cargo run --quiet -p skuld-cli -- run "$example" ;;
+            esac
           done
