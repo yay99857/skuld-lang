@@ -1,0 +1,17 @@
+func inner() -> Result<int, string> {
+    return Ok(1)
+}
+
+func run() -> Result<int, string> {
+    defer {
+        let value = inner()?
+    }
+    return Ok(0)
+}
+
+func main() {
+    match run() {
+        Ok(value): print(value)
+        Err(problem): print(problem)
+    }
+}

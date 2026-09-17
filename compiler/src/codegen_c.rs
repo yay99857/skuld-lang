@@ -25,6 +25,7 @@ pub fn emit_c(program: &Program) -> String {
             .iter()
             .map(|lambda| lambda.captures.iter().map(|c| c.id).collect())
             .collect(),
+        defers: Vec::new(),
     };
     // An interface value is a pair: the object, and the table of methods to
     // call on it. The pair is declared before the aggregates, because an array
@@ -659,7 +660,7 @@ fn signature_of(structs: &[StructInfo], function: &Function) -> String {
         function.id.0
     )
 }
-struct Emitter {
+struct Emitter<'a> {
     output: String,
     indent: usize,
     next_temp: usize,
@@ -682,6 +683,22 @@ struct Emitter {
     /// What each lambda captures, by index, so that building one can fill its
     /// environment without reaching back into the HIR.
     lambda_captures: Vec<Vec<crate::resolver::SymbolId>>,
+    /// One frame per block being emitted, holding that block's `defer`red
+    /// statements in the order they were registered.
+    ///
+    /// A block emits its own frame in reverse as it ends; a `return` emits
+    /// every frame, innermost first; a `break` or `continue` emits the frames
+    /// down to the loop it leaves. The statements are emitted again at each
+    /// exit rather than jumped to, which is what keeps them able to read the
+    /// locals they were written next to.
+    defers: Vec<DeferScope<'a>>,
+}
+
+/// The `defer`red statements of one block, and whether leaving that block is
+/// what `break` and `continue` do.
+struct DeferScope<'a> {
+    statements: Vec<&'a Statement>,
+    loop_body: bool,
 }
 fn type_name(structs: &[StructInfo], ty: Type) -> String {
     match ty {
@@ -707,7 +724,7 @@ fn type_name(structs: &[StructInfo], ty: Type) -> String {
         Type::Error => unreachable!("internal compiler bug: error type in HIR"),
     }
 }
-impl Emitter {
+impl<'a> Emitter<'a> {
     fn option_helpers(&mut self, id: crate::types::OptionId) {
         let name = format!("skuld_o{}", id.0);
         let element = self.options[id.0].element;
@@ -1367,23 +1384,92 @@ impl Emitter {
     fn temporary(&mut self, ty: Type, value: &str) -> String {
         self.store(ty, value, false)
     }
-    fn block_contents(&mut self, block: &Block) {
+    /// The value a `return` is about to hand over, settled into a local of its
+    /// own before the deferred statements run.
+    ///
+    /// It carries no cleanup attribute on purpose: the reference in it belongs
+    /// to the caller from here on, and releasing it as this frame ends would
+    /// be releasing what was just returned.
+    fn settled_return(&mut self, ty: Type, value: &str) -> String {
+        let name = format!("skuld_t{}", self.next_temp);
+        self.next_temp += 1;
+        self.line(&format!("{} {name} = {value};", self.c_type(ty)));
+        name
+    }
+    fn block_contents(&mut self, block: &'a Block) {
+        self.block_contents_in(block, false)
+    }
+    /// A block, with its own frame of deferred statements. `loop_body` marks
+    /// the frame `break` and `continue` unwind to.
+    fn block_contents_in(&mut self, block: &'a Block, loop_body: bool) {
         self.line(&format!(
             "/* block bytes {}..{} */",
             block.span.start, block.span.end
         ));
+        self.defers.push(DeferScope {
+            statements: Vec::new(),
+            loop_body,
+        });
+        let mut left = false;
         for statement in &block.statements {
             self.statement(statement);
+            // Everything after a jump is unreachable, and emitting the
+            // deferred statements after it would be unreachable too.
+            if matches!(
+                statement.kind,
+                StatementKind::Return(_) | StatementKind::Break | StatementKind::Continue
+            ) {
+                left = true;
+                break;
+            }
+        }
+        let frame = self.defers.pop().expect("a frame per block");
+        if !left {
+            self.emit_defers(&frame);
         }
     }
-    fn block(&mut self, block: &Block) {
+    /// One frame's deferred statements, in reverse: the last one written is
+    /// the first one run.
+    fn emit_defers(&mut self, frame: &DeferScope<'a>) {
+        for deferred in frame.statements.iter().rev() {
+            self.line(&format!(
+                "/* defer bytes {}..{} */",
+                deferred.span.start, deferred.span.end
+            ));
+            self.statement(deferred);
+        }
+    }
+    /// Every frame a jump passes through, innermost first. A `return` unwinds
+    /// the whole function; a `break` or `continue` stops at the loop body.
+    fn emit_defers_through(&mut self, to_loop: bool) {
+        let frames: Vec<Vec<&'a Statement>> = {
+            let mut collected = Vec::new();
+            for frame in self.defers.iter().rev() {
+                collected.push(frame.statements.clone());
+                if to_loop && frame.loop_body {
+                    break;
+                }
+            }
+            collected
+        };
+        for statements in frames {
+            self.emit_defers(&DeferScope {
+                statements,
+                loop_body: false,
+            });
+        }
+    }
+    fn block(&mut self, block: &'a Block) {
+        self.block_in(block, false)
+    }
+    fn block_in(&mut self, block: &'a Block, loop_body: bool) {
         self.line("{");
         self.indent += 1;
-        self.block_contents(block);
+        self.block_contents_in(block, loop_body);
         self.indent -= 1;
         self.line("}");
     }
-    fn statement(&mut self, statement: &Statement) {
+    fn statement(&mut self, statement: &'a Statement) {
         self.line(&format!(
             "/* statement bytes {}..{} */",
             statement.span.start, statement.span.end
@@ -1458,18 +1544,34 @@ impl Emitter {
                 }
             }
             StatementKind::Return(value) => {
+                // The returned value is computed first and the deferred
+                // statements run after it, so a `defer` never changes what is
+                // being returned — it only runs before the caller sees it.
                 let rendered = match value {
                     // The caller receives a reference of its own, because every
                     // local here is released as this function returns.
                     Some(expr) => {
                         let value = self.expression(expr);
-                        self.retained(expr.ty, &value)
+                        let retained = self.retained(expr.ty, &value);
+                        if self.defers.iter().any(|frame| !frame.statements.is_empty()) {
+                            self.settled_return(expr.ty, &retained)
+                        } else {
+                            retained
+                        }
                     }
                     None => String::new(),
                 };
+                self.emit_defers_through(false);
                 self.line(&format!("return {rendered};"));
             }
             StatementKind::Block(block) => self.block(block),
+            StatementKind::Defer(deferred) => {
+                self.defers
+                    .last_mut()
+                    .expect("a frame per block")
+                    .statements
+                    .push(deferred);
+            }
             StatementKind::If {
                 condition,
                 then_block,
@@ -1547,21 +1649,27 @@ impl Emitter {
                 self.indent += 1;
                 let condition = self.expression(condition);
                 self.line(&format!("if (!({condition})) break;"));
-                self.block_contents(body);
+                self.block_contents_in(body, true);
                 self.indent -= 1;
                 self.line("}");
             }
             StatementKind::Loop { body } => {
                 self.line("for (;;) {");
                 self.indent += 1;
-                self.block_contents(body);
+                self.block_contents_in(body, true);
                 self.indent -= 1;
                 self.line("}");
             }
             // C binds these to the innermost enclosing loop, which is exactly
             // how they are checked. In a while, `continue` reaches the emitted
-            StatementKind::Break => self.line("break;"),
-            StatementKind::Continue => self.line("continue;"),
+            StatementKind::Break => {
+                self.emit_defers_through(true);
+                self.line("break;");
+            }
+            StatementKind::Continue => {
+                self.emit_defers_through(true);
+                self.line("continue;");
+            }
             StatementKind::Match { value, arms } => {
                 // Enums and `Result` share the tag-plus-payload layout, so the
                 let is_scalar_match = !matches!(value.ty, Type::Enum(_) | Type::Result(_));
@@ -1732,7 +1840,7 @@ impl Emitter {
                         ));
                         self.indent += 1;
                         self.line(&format!("(void)skuld_v{};", variable.0));
-                        self.block_contents(body);
+                        self.block_contents_in(body, true);
                         self.indent -= 1;
                         self.line("}");
                     }
@@ -1763,7 +1871,7 @@ impl Emitter {
                             variable.0
                         ));
                         self.line(&format!("(void)skuld_v{};", variable.0));
-                        self.block_contents(body);
+                        self.block_contents_in(body, true);
                         self.indent -= 1;
                         self.line("}");
                     }
@@ -1794,7 +1902,7 @@ impl Emitter {
                             variable.0
                         ));
                         self.line(&format!("(void)skuld_v{};", variable.0));
-                        self.block_contents(body);
+                        self.block_contents_in(body, true);
                         self.indent -= 1;
                         self.line("}");
                     }
@@ -1816,7 +1924,7 @@ impl Emitter {
                             variable.0
                         ));
                         self.line(&format!("(void)skuld_v{};", variable.0));
-                        self.block_contents(body);
+                        self.block_contents_in(body, true);
                         self.indent -= 1;
                         self.line("}");
                     }
@@ -2453,9 +2561,18 @@ impl Emitter {
                 let payload = self.retained(err, &format!("{slot}.payload.v{error}"));
                 self.line(&format!("if ({slot}.tag == {error}) {{"));
                 self.indent += 1;
-                self.line(&format!(
-                    "return ({returned}){{.tag = {error}, .payload = {{.v{error} = {payload}}}}};"
-                ));
+                // `?` is a return, so every deferred statement runs here too.
+                // The error is settled first, for the same reason a returned
+                // value is: what leaves must not depend on what runs on the
+                // way out.
+                let escaping = self.settled_return(
+                    self.current_return,
+                    &format!(
+                        "({returned}){{.tag = {error}, .payload = {{.v{error} = {payload}}}}}"
+                    ),
+                );
+                self.emit_defers_through(false);
+                self.line(&format!("return {escaping};"));
                 self.indent -= 1;
                 self.line("}");
                 let success = crate::types::ResultInfo::OK;

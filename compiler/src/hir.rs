@@ -86,6 +86,9 @@ pub(crate) enum StatementKind {
     Expression(Expr),
     Return(Option<Expr>),
     Block(Block),
+    /// `defer statement`. The backend emits it at every way out of the block
+    /// it was written in, in reverse order of registration.
+    Defer(Box<Statement>),
     If {
         condition: Expr,
         then_block: Block,

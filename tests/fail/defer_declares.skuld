@@ -1,0 +1,4 @@
+func main() {
+    defer let value = 1
+    print(2)
+}

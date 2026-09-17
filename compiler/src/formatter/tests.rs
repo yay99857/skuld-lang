@@ -285,3 +285,9 @@ fn an_extern_struct_keeps_its_layout() {
     let input = "extern struct Header packed align 8 {\n    magic: u32\n    kind: u8\n}\n\nfunc main() {\n    print(int(size_of(Header)))\n}\n";
     assert_eq!(fmt(input), input);
 }
+
+#[test]
+fn a_defer_keeps_its_statement_on_the_same_line() {
+    let input = "func main() {\n    defer print(1)\n\n    defer {\n        print(2)\n    }\n}\n";
+    assert_eq!(fmt(input), input);
+}

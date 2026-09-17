@@ -184,11 +184,19 @@ pub func open(address: string, port: int) -> Result<Connection, NetError> {
     if handle < 0 {
         return Err(NetError.OpenFailed(os.failure("a socket")))
     }
+    // The handle belongs to this function until the connection is built from
+    // it. A `defer` says that once, instead of the close being repeated on
+    // every way out that is added later.
+    var handed_over = false
+    defer {
+        if !handed_over {
+            let ignored = close(i32(handle))
+        }
+    }
     let sockaddr = SockaddrIn { family: u16(AF_INET), port: htons(u16(port)), address: htonl(packed_address(octets)), zero: [0; 8] }
     if connect(i32(handle), ptr(sockaddr), u32(size_of(SockaddrIn))) < 0 {
-        let problem = os.failure("${address}:${port}")
-        let ignored = close(i32(handle))
-        return Err(NetError.ConnectFailed(problem))
+        return Err(NetError.ConnectFailed(os.failure("${address}:${port}")))
     }
+    handed_over = true
     return Ok(new Connection(handle: int(handle), peer: "${address}:${port}"))
 }

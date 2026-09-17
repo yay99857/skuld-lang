@@ -1017,6 +1017,59 @@ is how `std/fs`, `std/net` and `std/os` are written. Two modules of one program
 may declare the same C function, as `std/fs` and `std/os` both declare `read`,
 as long as they declare it identically.
 
+## `defer` — Implemented
+
+`defer statement` runs the statement when the block it was written in is left,
+however it is left:
+
+```skuld
+let handle = open_file(path)?
+defer close(handle)
+```
+
+- Deferred statements run in **reverse** order of registration: the last one
+  written is the first one run.
+- They run on every way out — falling off the end, `return`, `break`,
+  `continue`, a `?` that propagates, and the escape block of a `let ... else`.
+  They do not run on a trap: a trap ends the process, and there is no
+  recoverable panic to unwind.
+- A `defer` in a loop body belongs to that iteration, so it runs at the end of
+  each one rather than at the end of the loop.
+- It is a statement that is **run at the exit**, not a call recorded at the
+  `defer`. It reads what its names are worth when the block ends, so a `defer`
+  written next to a counter reports the counter's final value. (Go records the
+  arguments instead; this follows Zig, which is the behaviour that matches what
+  the line looks like.)
+- The value a `return` hands over is computed before the deferred statements
+  run, so a `defer` can never change what the caller receives.
+- `return`, `break`, `continue` and `?` are **refused** inside a deferred
+  statement: it runs while the block is already being left, so leaving again
+  would have to decide what happens to the exit already under way. A deferred
+  declaration is refused too — it would bind a name at the moment the block
+  ends, where nothing can read it.
+- There is no `errdefer`. `Result` already makes the failure path visible at
+  the call site, and where a resource is released on failure but handed over on
+  success, a flag says which happened:
+
+```skuld
+var handed_over = false
+defer {
+    if !handed_over {
+        socket.close()
+    }
+}
+// ... every failure path just returns ...
+handed_over = true
+return Ok(connection)
+```
+
+`std/net` and `std/tls` are written that way: opening a TLS connection acquires
+a socket, a context and a connection, each of which had to be released on every
+later failure, and now is released once.
+
+Out of scope: destructors a user can write, cleanup attached to a type rather
+than to a scope, and `Drop`-style traits.
+
 ## Layout and the ABI — Implemented
 
 An ordinary `struct` is laid out by the compiler, and that layout is
@@ -1725,7 +1778,7 @@ foreign `extern "C"` declarations with raw pointers, modules with `import` and
 `pub`, the embedded standard library,
 function values, expression lambdas, stable sorting and `to_sorted`, interfaces, `let ... else`,
 bitwise operators, integer literal prefixes, digit separators,
-fixed-size arrays, `unsafe` blocks with pointer loads and stores,
+fixed-size arrays, `unsafe` blocks with pointer loads and stores, `defer`,
 and reference-counted runtime behavior are **Implemented**. The future
 capabilities listed in the roadmap are **Planned**. No generics, macros, async/await, threads, channels,
 reflection, decorators, annotations, package registry, compiler plugins,

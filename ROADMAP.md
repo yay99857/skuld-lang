@@ -1,7 +1,7 @@
 # Skuld roadmap
 
 This document records completed milestones and a **proposed** next sequence.
-M1–M24 are implemented. M25–M26 propose the continuation of the systems sequence,
+M1–M25 are implemented. M26 proposes the continuation of the systems sequence,
 towards the language a system could be written in; every one of them is **Planned**,
 which means proposed and not authorized. Starting one still
 needs an explicit decision recorded in `AGENTS.md`. See `LANGUAGE.md` for
@@ -1199,7 +1199,7 @@ structure, a file header, a C library's struct.
 - **Out:** bitfields with C's allocation rules, `#[repr(Rust)]`-style
   guarantees, and layout that varies by target in the same source.
 
-## M25 — `defer` and deterministic cleanup — Planned
+## M25 — `defer` and deterministic cleanup — Implemented
 
 Reference counting releases what it owns, and M23 introduces things it does
 not own.
@@ -1208,12 +1208,25 @@ not own.
   on every early return and on a trap-free `break` or `continue`; an
   interaction with `?` and `let ... else` that is specified rather than
   discovered.
-- **Open decision — is there an `errdefer`?** Go has one path, Zig has two.
-  The narrow answer is one, since `Result` already makes the failure path
-  explicit at the call site.
-- **Closing marker:** `std/tls` and `std/net` release their handles through
-  `defer` instead of repeating the cleanup on every failure path, and the
-  sanitizers stay clean.
+- **Decision taken — there is no `errdefer`.** One kind of deferred statement
+  is easier to reason about than two, and `Result` already makes the failure
+  path visible at the call site. Where a resource is released on failure but
+  handed over on success, a flag the `defer` reads says which happened — which
+  is what `std/tls` does.
+- **Decision taken — a deferred statement is run at the exit, not recorded at
+  the `defer`.** It reads what its names are worth when the block ends, which
+  is what the line looks like it does. Go evaluates the arguments at the
+  `defer` instead; this follows Zig.
+- **Decision taken — nothing leaves a deferred statement.** `return`, `break`,
+  `continue` and `?` are refused inside one: it runs while the block is already
+  being left, so leaving again would have to decide what happens to the exit
+  already under way.
+- **Closing marker:** met. `std/tls`'s `connect` acquired a socket, a context
+  and a connection and released all three on each of six failure paths; each is
+  now released once, by a `defer` that reads a flag. `std/net`'s `open` does
+  the same with its handle. The TLS suite covers the failure paths it matters
+  on — an expired certificate, a wrong name, an untrusted issuer — and every
+  fixture still runs sanitizer-clean.
 - **Out:** destructors a user can write, `Drop`-style traits, and cleanup
   attached to a type rather than to a scope.
 

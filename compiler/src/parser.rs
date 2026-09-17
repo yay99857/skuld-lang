@@ -1170,6 +1170,14 @@ impl Parser<'_> {
                     span: Span::new(start, self.previous_end()),
                 });
             }
+            Defer => {
+                let start = self.bump().span.start;
+                let deferred = self.nested(|parser| parser.statement())?;
+                return Ok(Statement {
+                    kind: StatementKind::Defer(Box::new(deferred)),
+                    span: Span::new(start, self.previous_end()),
+                });
+            }
             If => return self.if_statement(),
             While => return self.while_statement(),
             Loop => {

@@ -183,40 +183,51 @@ pub func connect(address: string, port: int, host: string) -> Result<TlsConnecti
     let socket = net.open(address, port) else problem {
         return Err(TlsError.Network(problem))
     }
+    // Everything below can fail, and until the last line each resource belongs
+    // to this function. `handed_over` is what says the last line was reached:
+    // a `defer` runs on every way out, so the flag is the difference between
+    // an error path, which must release, and the success path, which must not.
+    // There is no `errdefer` in Skuld — `Result` already makes the failure
+    // path visible at the call site, and one kind of deferred statement is
+    // easier to reason about than two.
+    var handed_over = false
+    defer {
+        if !handed_over {
+            socket.close()
+        }
+    }
     let method = TLS_client_method()
     if ffi.is_null(method) {
-        socket.close()
         return Err(TlsError.Setup("no client method"))
     }
     let context = SSL_CTX_new(method)
     if ffi.is_null(context) {
-        socket.close()
         return Err(TlsError.Setup("no context"))
     }
+    defer {
+        if !handed_over {
+            SSL_CTX_free(context)
+        }
+    }
     if SSL_CTX_set_default_verify_paths(context) != 1 {
-        SSL_CTX_free(context)
-        socket.close()
         return Err(TlsError.Setup("the trust store could not be loaded"))
     }
     let connection = SSL_new(context)
     if ffi.is_null(connection) {
-        SSL_CTX_free(context)
-        socket.close()
         return Err(TlsError.Setup("no connection"))
     }
+    defer {
+        if !handed_over {
+            SSL_free(connection)
+        }
+    }
     if SSL_set_fd(connection, i32(socket.handle)) != 1 {
-        SSL_free(connection)
-        SSL_CTX_free(context)
-        socket.close()
         return Err(TlsError.Setup("the socket could not be attached"))
     }
     // The name is checked twice over: `SSL_set1_host` makes the certificate's
     // names part of verification, and the SNI extension tells the server which
     // certificate to send in the first place.
     if SSL_set1_host(connection, ptr(name)) != 1 {
-        SSL_free(connection)
-        SSL_CTX_free(context)
-        socket.close()
         return Err(TlsError.Name(host))
     }
     let sni = SSL_ctrl(connection, 55, 0, ptr(name))
@@ -225,9 +236,6 @@ pub func connect(address: string, port: int, host: string) -> Result<TlsConnecti
     if result != 1 {
         let code = int(SSL_get_error(connection, result))
         let verification = int(SSL_get_verify_result(connection))
-        SSL_free(connection)
-        SSL_CTX_free(context)
-        socket.close()
         // A handshake that failed on the certificate has more to say than
         // "SSL_ERROR_SSL", so the verification result wins when there is one.
         if verification != 0 {
@@ -238,10 +246,8 @@ pub func connect(address: string, port: int, host: string) -> Result<TlsConnecti
     let verification = int(SSL_get_verify_result(connection))
     if verification != 0 {
         let ignored = SSL_shutdown(connection)
-        SSL_free(connection)
-        SSL_CTX_free(context)
-        socket.close()
         return Err(TlsError.Certificate(verification))
     }
+    handed_over = true
     return Ok(new TlsConnection(socket: socket, context: context, connection: connection, host: host))
 }

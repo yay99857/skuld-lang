@@ -186,3 +186,12 @@ which is a property of the machine and not of the language. The test uses
 `echo` and `false`, checks that a missing program answers 127, and checks that
 an asterisk stays an asterisk — there is no shell in `run`, and that is the
 part most worth pinning down.
+
+`pass/defer` covers M25: the reverse order, a nested block, an early return
+whose value is settled before the deferred statements run, a loop where each
+iteration has its own, `break` and `continue`, a `?` that propagates, a
+`let ... else` escape, and managed values that the deferred statement reads on
+the way out — which is what makes the sanitizer run worth having on it. The
+`defer_*` fixtures in `fail/` cover the refusals: `return`, `break` and `?`
+leaving a deferred statement, and a declaration deferred to a moment where
+nothing can read it.

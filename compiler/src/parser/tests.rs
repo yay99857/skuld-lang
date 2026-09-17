@@ -1110,3 +1110,15 @@ fn an_extern_struct_carries_its_layout_and_leaves_the_words_ordinary() {
     let names = program("func main() {\n    let packed = 1\n    let align = packed + 1\n}");
     assert_eq!(names.functions[0].body.statements.len(), 2);
 }
+
+#[test]
+fn a_defer_carries_the_statement_it_defers() {
+    let parsed =
+        program("func main() {\n    defer print(1)\n    defer {\n        print(2)\n    }\n}");
+    let statements = &parsed.functions[0].body.statements;
+    assert!(matches!(statements[0].kind, StatementKind::Defer(_)));
+    let StatementKind::Defer(block) = &statements[1].kind else {
+        panic!("a deferred block is a deferred statement");
+    };
+    assert!(matches!(block.kind, StatementKind::Block(_)));
+}

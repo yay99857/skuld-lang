@@ -1,0 +1,6 @@
+func main() {
+    while true {
+        defer break
+        print(1)
+    }
+}

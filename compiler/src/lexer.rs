@@ -281,6 +281,7 @@ impl Lexer<'_> {
             "static" => Static,
             "extern" => Extern,
             "unsafe" => Unsafe,
+            "defer" => Defer,
             "true" => Boolean(true),
             "false" => Boolean(false),
             _ => Identifier(text.into()),

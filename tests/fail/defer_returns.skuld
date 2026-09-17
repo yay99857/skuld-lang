@@ -1,0 +1,6 @@
+func main() {
+    defer {
+        return
+    }
+    print(1)
+}

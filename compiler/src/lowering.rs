@@ -281,6 +281,9 @@ fn statement(source: &ast::Statement, cx: &Lowering<'_>) -> h::Statement {
         ast::StatementKind::Block(source) | ast::StatementKind::Unsafe(source) => {
             h::StatementKind::Block(block(source, cx))
         }
+        ast::StatementKind::Defer(deferred) => {
+            h::StatementKind::Defer(Box::new(statement(deferred, cx)))
+        }
         ast::StatementKind::If {
             condition,
             then_block,

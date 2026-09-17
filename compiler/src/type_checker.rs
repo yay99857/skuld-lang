@@ -186,6 +186,7 @@ pub(crate) fn type_check(
         constants: BTreeMap::new(),
         evaluating_constants: Vec::new(),
         constant_decls: BTreeMap::new(),
+        defer_depth: 0,
         place_writes: 0,
         layout_queries: BTreeMap::new(),
         unsafe_depth: 0,
@@ -937,6 +938,10 @@ struct Checker<'a> {
     constants: BTreeMap<SymbolId, ConstValue>,
     evaluating_constants: Vec<SymbolId>,
     constant_decls: BTreeMap<SymbolId, (FileId, ConstantDecl)>,
+    /// How many `defer` statements enclose what is being checked. Leaving a
+    /// block from inside one is refused, which is the rule that keeps the
+    /// order deferred statements run in worth writing down.
+    defer_depth: usize,
     /// Whether the expression being checked is the target of a plain
     /// assignment, where a union member is being written rather than read.
     place_writes: usize,
@@ -1785,6 +1790,7 @@ impl Checker<'_> {
                 false
             }
             StatementKind::Return(value) => {
+                self.reject_jump_from_defer("return", statement.span);
                 let previous_expected = self.expected_context;
                 self.expected_context = Some(self.return_type);
                 let found = value
@@ -1805,6 +1811,30 @@ impl Checker<'_> {
                 true
             }
             StatementKind::Block(block) => self.block(block),
+            // A deferred statement runs on the way out of the block, so it may
+            // not itself leave: a `return` inside one would have to decide what
+            // happens to the return already under way, and a `break` would have
+            // to decide which loop it means. Every language with `defer` that
+            // allowed it regrets it.
+            StatementKind::Defer(deferred) => {
+                self.defer_depth += 1;
+                let returns = self.statement(deferred);
+                self.defer_depth -= 1;
+                if matches!(
+                    deferred.kind,
+                    StatementKind::Variable(_) | StatementKind::Constant(_)
+                ) {
+                    self.error(
+                        DiagnosticCode::UnsupportedSyntax,
+                        deferred.span,
+                        "a deferred declaration would bind a name at the moment the block ends, where nothing can read it",
+                    );
+                }
+                // Whatever the deferred statement does, control still falls
+                // through the `defer` itself.
+                let _ = returns;
+                false
+            }
             StatementKind::Unsafe(block) => {
                 self.unsafe_depth += 1;
                 let returns = self.block(block);
@@ -1898,6 +1928,7 @@ impl Checker<'_> {
                 } else {
                     "continue"
                 };
+                self.reject_jump_from_defer(keyword, statement.span);
                 match self.loops.last_mut() {
                     Some(escapes) => {
                         if keyword == "break" {
@@ -2729,6 +2760,9 @@ impl Checker<'_> {
                 self.expression(inner)
             }
             ExprKind::Try(inner) => {
+                // `?` is a return, and a return may not leave a deferred
+                // statement.
+                self.reject_jump_from_defer("?", expr.span);
                 let ty = self.expression(inner);
                 match (ty, self.return_type) {
                     (Type::Error, _) => Type::Error,
@@ -4513,6 +4547,29 @@ impl Checker<'_> {
         }
     }
 
+    /// A `defer` runs while the block it belongs to is already being left, so
+    /// leaving again from inside one has nothing sensible to mean: a `return`
+    /// would have to replace a return already under way, and a `break` would
+    /// have to pick a loop that may not be running any more.
+    fn reject_jump_from_defer(&mut self, keyword: &str, span: Span) {
+        if self.defer_depth == 0 {
+            return;
+        }
+        let diagnostic = Diagnostic {
+            code: DiagnosticCode::UnsupportedSyntax,
+            span,
+            message: format!("`{keyword}` cannot leave a deferred statement"),
+            help: Some(
+                "a `defer` runs while its block is already being left; finish the work there instead of leaving again"
+                    .to_owned(),
+            ),
+            fix: None,
+        };
+        self.diagnostics.push(FileDiagnostic {
+            file: self.file,
+            diagnostic,
+        });
+    }
     /// Refuse an operation that only an `unsafe` block allows, once, with the
     /// reason that operation is refused.
     fn require_unsafe_claim(&mut self, what: &str, span: Span, why: &str) -> bool {

@@ -635,6 +635,10 @@ impl<'a> Formatter<'a> {
                 self.push("unsafe ");
                 self.format_block_inline(b);
             }
+            StatementKind::Defer(deferred) => {
+                self.push("defer ");
+                self.format_statement(deferred);
+            }
             StatementKind::If {
                 condition,
                 then_block,

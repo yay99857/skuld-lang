@@ -319,6 +319,10 @@ pub enum StatementKind {
     /// the guarantees the compiler makes everywhere else are suspended inside
     /// it. It is the only place a pointer may be read or written.
     Unsafe(Block),
+    /// `defer statement`. The statement runs when the enclosing block is left,
+    /// however it is left, and deferred statements run in reverse order of the
+    /// order they were written.
+    Defer(Box<Statement>),
     If {
         condition: Expr,
         then_block: Block,

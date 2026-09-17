@@ -695,6 +695,9 @@ impl Resolver {
                 }
             }
             StatementKind::Block(block) | StatementKind::Unsafe(block) => self.block(block),
+            // A deferred statement reads the scope it was written in; it just
+            // runs later.
+            StatementKind::Defer(deferred) => self.statement(deferred),
             StatementKind::If {
                 condition,
                 then_block,

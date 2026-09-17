@@ -1493,3 +1493,34 @@ fn any_pointer_is_also_an_opaque_one() {
         DiagnosticCode::TypeMismatch,
     );
 }
+
+#[test]
+fn a_deferred_statement_may_not_leave_its_block() {
+    valid(
+        "func main() {\n    defer print(1)\n    defer {\n        print(2)\n    }\n    print(3)\n}",
+    );
+    // A `defer` runs while the block is already being left, so leaving again
+    // has nothing to mean.
+    fails(
+        "func main() {\n    defer {\n        return\n    }\n}",
+        DiagnosticCode::UnsupportedSyntax,
+    );
+    fails(
+        "func main() {\n    while true {\n        defer break\n    }\n}",
+        DiagnosticCode::UnsupportedSyntax,
+    );
+    fails(
+        "func inner() -> Result<int, string> {\n    return Ok(1)\n}\nfunc run() -> Result<int, string> {\n    defer {\n        let value = inner()?\n    }\n    return Ok(0)\n}\nfunc main() {}",
+        DiagnosticCode::UnsupportedSyntax,
+    );
+    // A deferred declaration binds a name nothing can read.
+    fails(
+        "func main() {\n    defer let value = 1\n}",
+        DiagnosticCode::UnsupportedSyntax,
+    );
+    // The deferred statement is checked like any other.
+    fails(
+        "func main() {\n    defer print(missing)\n}",
+        DiagnosticCode::UnknownName,
+    );
+}

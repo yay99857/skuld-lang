@@ -1,0 +1,115 @@
+// `defer statement` runs when the block it was written in is left, however it
+// is left, and deferred statements run in reverse order of the order they were
+// written.
+
+func order() {
+    print("a")
+    defer print("d")
+    defer print("c")
+    print("b")
+}
+
+// A block is a block: the inner one ends before the outer one does.
+func nesting() {
+    defer print("outer")
+    {
+        defer print("inner")
+        print("middle")
+    }
+    print("after the inner block")
+}
+
+// The returned value is computed before the deferred statements run, so a
+// `defer` never changes what a caller receives.
+func early(flag: bool) -> int {
+    var answer = 1
+    defer answer = 99
+    if flag {
+        return answer
+    }
+    return answer + 1
+}
+
+// A deferred statement is run at the exit, not recorded at the `defer`: it
+// reads what its names are worth when the block ends.
+func reads_at_exit() {
+    var count = 0
+    defer print("count was ${count}")
+    count = 7
+}
+
+func loops() {
+    var index = 0
+    while index < 3 {
+        defer print("while ${index}")
+        index += 1
+        if index == 2 {
+            continue
+        }
+    }
+    for value in 0..3 {
+        defer print("for ${value}")
+        if value == 1 {
+            break
+        }
+    }
+    loop {
+        defer print("loop")
+        break
+    }
+}
+
+func fails(flag: bool) -> Result<int, string> {
+    if flag {
+        return Err("no")
+    }
+    return Ok(41)
+}
+
+// `?` is a return, so it runs the deferred statements on the way out.
+func propagates(flag: bool) -> Result<int, string> {
+    defer print("propagates left")
+    let value = fails(flag)?
+    return Ok(value + 1)
+}
+
+// Managed values are released as usual: a deferred statement runs before the
+// locals it reads are let go, which is what makes it able to read them.
+func managed() -> string {
+    let name = "world"
+    var greeting = "hello, " + name
+    let letters = [1, 2, 3]
+    defer print("released ${greeting} with ${letters.len()} letters")
+    greeting = greeting + "!"
+    return greeting
+}
+
+// A declaration that unwraps leaves through its escape block, which is an
+// ordinary way out.
+func unwraps(flag: bool) -> int {
+    defer print("unwraps left")
+    let value = fails(flag) else problem {
+        return -1
+    }
+    return value
+}
+
+func main() {
+    order()
+    nesting()
+    print(early(true))
+    print(early(false))
+    reads_at_exit()
+    loops()
+    match propagates(false) {
+        Ok(value): print(value)
+        Err(problem): print(problem)
+    }
+    match propagates(true) {
+        Ok(value): print(value)
+        Err(problem): print(problem)
+    }
+    print(managed())
+    print(unwraps(false))
+    print(unwraps(true))
+}

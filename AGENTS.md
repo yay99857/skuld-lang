@@ -347,8 +347,32 @@ accurate; documenting a future feature is not a request to implement it.
   i686, where `timeval` really is eight bytes. `cli/tests/abi.rs` compiles a C
   object and links it, which is the only way to observe a struct passed by
   value actually arriving.
-  The systems sequence `ROADMAP.md` proposes continues with M25–M26:
-  `defer`, and a freestanding mode with no runtime and no libc.
+  M25 (`defer` and deterministic cleanup) is complete. `defer statement` runs
+  the statement when the block it was written in is left, in reverse order of
+  registration, on every way out: falling off the end, `return`, `break`,
+  `continue`, a `?` that propagates and a `let ... else` escape. It does not
+  run on a trap, since a trap ends the process and there is nothing to unwind.
+  Three decisions are taken and should not be reopened by accident. There is
+  **no `errdefer`** — one kind of deferred statement is easier to reason about
+  than two, and where a resource is released on failure but handed over on
+  success a flag the `defer` reads says which happened, which is what
+  `std/tls` now does. A deferred statement is **run at the exit, not recorded
+  at the `defer`**: it reads what its names are worth when the block ends,
+  which is what the line looks like it does (Go records the arguments instead;
+  this follows Zig). And **nothing leaves a deferred statement** — `return`,
+  `break`, `continue` and `?` are refused inside one, as is a declaration,
+  which would bind a name where nothing can read it. The value a `return`
+  hands over is settled before the deferred statements run, so a `defer` never
+  changes what the caller receives. The backend emits the statements again at
+  each exit rather than jumping to them, which is what lets them read the
+  locals they were written next to; a loop body is the frame `break` and
+  `continue` unwind to. The closing marker is met: `std/tls`'s `connect`
+  released a socket, a context and a connection on each of six failure paths
+  and now releases each once, `std/net`'s `open` does the same, and both
+  suites — including the expired, wrong-name and untrusted certificate cases —
+  stay green and sanitizer-clean.
+  The systems sequence `ROADMAP.md` proposes continues with M26: a
+  freestanding mode with no runtime and no libc.
   Every one of them is Planned and none is authorized; each still needs an
   explicit decision recorded here. One decision
   is taken there and should not be reopened by accident: M20's `const` does
