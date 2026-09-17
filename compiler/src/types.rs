@@ -100,6 +100,10 @@ pub struct EnumInfo {
     /// The module that declares it, and whether it leaves that module.
     pub module: crate::module::ModuleId,
     pub visibility: crate::ast::Visibility,
+    /// `enum Protocol: u8`. Present when the declaration names an integer type
+    /// the variants are worth, which is what makes the values below meaningful
+    /// outside the program.
+    pub underlying: Option<IntType>,
     pub variants: Vec<VariantInfo>,
 }
 
@@ -113,6 +117,10 @@ impl EnumInfo {
 pub struct VariantInfo {
     pub name: String,
     pub payload: Option<Type>,
+    /// What this variant is worth as an integer. Meaningful only when the enum
+    /// names an underlying type; otherwise it is the variant's own position,
+    /// which is also what the backend stores as the tag.
+    pub value: i128,
 }
 
 /// A machine integer width and signedness. `int` is a spelling of `I64`, so

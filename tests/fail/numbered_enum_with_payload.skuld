@@ -1,0 +1,6 @@
+enum Mixed: u8 {
+    Plain = 1,
+    Carrying(int) = 2,
+}
+
+func main() {}

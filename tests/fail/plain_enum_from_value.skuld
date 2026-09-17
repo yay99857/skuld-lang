@@ -1,0 +1,9 @@
+enum Status {
+    On,
+    Off,
+}
+
+func main() {
+    let s = Status(1)
+    print(0)
+}

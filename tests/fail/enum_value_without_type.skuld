@@ -1,0 +1,5 @@
+enum Protocol {
+    Tcp = 6,
+}
+
+func main() {}

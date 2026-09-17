@@ -102,6 +102,9 @@ pub struct MethodSignature {
 pub struct EnumDecl {
     pub visibility: Visibility,
     pub name: Name,
+    /// `enum Protocol: u8`. An enum that names an integer type has a value per
+    /// variant that a program may depend on, and converts to and from it.
+    pub underlying: Option<TypeRef>,
     pub variants: Vec<VariantDecl>,
     pub span: Span,
 }
@@ -110,6 +113,9 @@ pub struct EnumDecl {
 pub struct VariantDecl {
     pub name: Name,
     pub payload: Option<TypeRef>,
+    /// `Tcp = 6`. Only an enum with an underlying integer type has these; one
+    /// left out continues from the variant before it.
+    pub value: Option<Expr>,
     pub span: Span,
 }
 
@@ -119,6 +125,11 @@ pub enum TypeDeclKind {
     Value,
     /// `class`: a reference to a shared, reference-counted object.
     Reference,
+    /// `extern union`: one piece of memory read as one of several types. It
+    /// exists only to describe memory somebody else defined, so it is always
+    /// a foreign layout, and reading one is the program's claim about which
+    /// member is live rather than the compiler's knowledge.
+    Union,
 }
 
 /// How a declared type is laid out in memory.

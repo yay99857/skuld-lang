@@ -186,6 +186,7 @@ pub(crate) fn type_check(
         constants: BTreeMap::new(),
         evaluating_constants: Vec::new(),
         constant_decls: BTreeMap::new(),
+        place_writes: 0,
         layout_queries: BTreeMap::new(),
         unsafe_depth: 0,
     };
@@ -203,6 +204,7 @@ pub(crate) fn type_check(
                 name: declaration.name.text.clone(),
                 module: file.module,
                 visibility: declaration.visibility,
+                underlying: None,
                 variants: Vec::new(),
             });
             enum_sites.push((FileId(index), position));
@@ -239,6 +241,7 @@ pub(crate) fn type_check(
                 module: file.module,
                 visibility: declaration.visibility,
                 reference: declaration.kind == TypeDeclKind::Reference,
+                union: declaration.kind == TypeDeclKind::Union,
                 layout: declaration.layout.clone(),
                 fields: Vec::new(),
                 methods: Vec::new(),
@@ -327,6 +330,10 @@ pub(crate) fn type_check(
                 .iter()
                 .map(|field| field.ty)
                 .collect();
+            let noun = match declaration.kind {
+                TypeDeclKind::Union => "an `extern union`",
+                _ => "an `extern struct`",
+            };
             for (field, ty) in declaration.fields.iter().zip(field_types) {
                 if !checker.foreign_layout_type(ty) {
                     let rendered = checker.type_name(ty);
@@ -334,7 +341,7 @@ pub(crate) fn type_check(
                         DiagnosticCode::InvalidValueType,
                         field.type_ref.span(),
                         format!(
-                            "`{rendered}` cannot be a field of an `extern struct`; its layout is the C compiler's, so every field must be one C can describe"
+                            "`{rendered}` cannot be a member of {noun}; its layout is the C compiler's, so every member must be one C can describe"
                         ),
                     );
                 }
@@ -381,6 +388,28 @@ pub(crate) fn type_check(
         checker.file = file;
         checker.module = program.files[file.0].module;
         let declaration = &program.files[file.0].program.enums[position];
+        // `enum Protocol: u8`. The values below are then worth something
+        // outside the program, which is the whole reason to write one.
+        let underlying = declaration.underlying.as_ref().and_then(|reference| {
+            let ty = checker.type_ref(reference, false);
+            match ty {
+                Type::Int(kind) => Some(kind),
+                Type::Error => None,
+                other => {
+                    let rendered = checker.type_name(other);
+                    checker.error(
+                        DiagnosticCode::InvalidValueType,
+                        reference.span(),
+                        format!("an enum is numbered by an integer type, not by `{rendered}`"),
+                    );
+                    None
+                }
+            }
+        });
+        checker.enums[index].underlying = underlying;
+        // Where a variant writes no value it continues from the one before,
+        // starting at zero, the way C numbers an enumeration.
+        let mut next_value: i128 = 0;
         let mut variants: Vec<VariantInfo> = Vec::new();
         for variant in &declaration.variants {
             let payload = variant.payload.as_ref().map(|ty| {
@@ -388,6 +417,72 @@ pub(crate) fn type_check(
                 checker.reject_stored_function(payload, ty.span(), "an enum payload");
                 payload
             });
+            let position_value = variants.len() as i128;
+            let value = match (&variant.value, underlying) {
+                (Some(expression), Some(kind)) => {
+                    match checker.eval_constant_expr(expression, Some(Type::Int(kind))) {
+                        Some(ConstValue::Int(value, _)) => value,
+                        Some(_) => {
+                            checker.error(
+                                DiagnosticCode::TypeMismatch,
+                                expression.span,
+                                "a variant's value is an integer",
+                            );
+                            next_value
+                        }
+                        None => next_value,
+                    }
+                }
+                (Some(expression), None) => {
+                    // An underlying type that was written but did not resolve
+                    // is already reported; saying it is missing too would be
+                    // the same mistake twice.
+                    if declaration.underlying.is_none() {
+                        checker.error(
+                            DiagnosticCode::UnsupportedSyntax,
+                            expression.span,
+                            format!(
+                                "`{}` gives its variants values, so it needs an integer type: `enum {}: i32`",
+                                declaration.name.text, declaration.name.text
+                            ),
+                        );
+                    }
+                    position_value
+                }
+                (None, Some(_)) => next_value,
+                (None, None) => position_value,
+            };
+            if underlying.is_some() {
+                if payload.is_some() {
+                    checker.error(
+                        DiagnosticCode::InvalidValueType,
+                        variant.span,
+                        "a variant with a payload has no integer value, so its enum cannot name one",
+                    );
+                }
+                if let Some(kind) = underlying
+                    && !fits_int_type(value, kind)
+                {
+                    checker.error(
+                        DiagnosticCode::IntegerRange,
+                        variant.span,
+                        format!("value `{value}` does not fit in `{}`", kind.name()),
+                    );
+                }
+                // Two variants worth the same integer would make the
+                // conversion back ambiguous and one of them unreachable.
+                if let Some(existing) = variants.iter().find(|other| other.value == value) {
+                    checker.error(
+                        DiagnosticCode::DuplicateDeclaration,
+                        variant.span,
+                        format!(
+                            "`{}` is already worth {value}, so `{}` would be unreachable",
+                            existing.name, variant.name.text
+                        ),
+                    );
+                }
+                next_value = value.saturating_add(1);
+            }
             if variants.iter().any(|v| v.name == variant.name.text) {
                 checker.error(
                     DiagnosticCode::DuplicateDeclaration,
@@ -402,6 +497,7 @@ pub(crate) fn type_check(
             variants.push(VariantInfo {
                 name: variant.name.text.clone(),
                 payload,
+                value,
             });
         }
         checker.enums[index].variants = variants;
@@ -841,6 +937,9 @@ struct Checker<'a> {
     constants: BTreeMap<SymbolId, ConstValue>,
     evaluating_constants: Vec<SymbolId>,
     constant_decls: BTreeMap<SymbolId, (FileId, ConstantDecl)>,
+    /// Whether the expression being checked is the target of a plain
+    /// assignment, where a union member is being written rather than read.
+    place_writes: usize,
     /// What `size_of` and `offset_of` were asked about, by call position, so
     /// lowering finds the type and field without re-reading the syntax.
     layout_queries: BTreeMap<(FileId, usize, usize), (StructId, Option<usize>)>,
@@ -873,6 +972,10 @@ pub struct StructInfo {
     pub visibility: Visibility,
     /// A class is a reference to a shared object; a struct is a value.
     pub reference: bool,
+    /// One piece of memory read as one of several types. Which member is live
+    /// is the program's claim, which is why reading one is written inside
+    /// `unsafe`.
+    pub union: bool,
     /// The compiler's own layout, or the platform C compiler's for a type that
     /// describes memory somebody else defined.
     pub layout: crate::ast::Layout,
@@ -1153,6 +1256,14 @@ impl Checker<'_> {
             }
         }
         Some(entry)
+    }
+    /// The enum a resolved symbol declares. The resolver records an enum name
+    /// as a symbol so that shadowing works on it; the type itself lives in the
+    /// checker's own namespace, which is what this crosses back to.
+    fn enum_of_symbol(&self, id: SymbolId) -> Option<EnumId> {
+        let symbol = &self.resolution.symbols[id.0];
+        let module = symbol.module.unwrap_or(self.module);
+        self.module_types[module.0].enums.get(&symbol.name).copied()
     }
     /// The enum named by the left of `Enum.Variant` or `module.Enum.Variant`.
     fn enum_prefix(&mut self, object: &Expr) -> Option<EnumId> {
@@ -2398,6 +2509,22 @@ impl Checker<'_> {
             }
             self.expect_type(declared.ty, found, field.value.span);
         }
+        // A union is one piece of memory, so exactly one member is written and
+        // that member is the one that is live.
+        if self.structs[id.0].union {
+            let written = initialized.iter().filter(|done| **done).count();
+            if written != 1 {
+                self.error(
+                    DiagnosticCode::MissingField,
+                    name.span,
+                    format!(
+                        "a union is written one member at a time; `{}` was given {written}",
+                        self.structs[id.0].name
+                    ),
+                );
+            }
+            return Type::Struct(id);
+        }
         // Every field without a default must be given a value: an object is
         // never partially initialized.
         let missing: Vec<_> = self.structs[id.0]
@@ -2690,7 +2817,13 @@ impl Checker<'_> {
                 value,
                 op_span,
             } => {
+                // Writing a union member is the program deciding which member
+                // is live, which needs no claim; only reading one does. A
+                // compound assignment reads first, so it is not a plain write.
+                let plain_write = *op == AssignmentOp::Assign;
+                self.place_writes += usize::from(plain_write);
                 let target_type = self.expression(target);
+                self.place_writes -= usize::from(plain_write);
                 if let ExprKind::Index { object, .. } = &strip_groups_ref(target).kind
                     && self.expression_type_of(object) == Some(Type::String)
                 {
@@ -2842,8 +2975,28 @@ impl Checker<'_> {
                 } else {
                     let object_type = self.expression(object);
                     match object_type {
-                        Type::Struct(id) => match self.structs[id.0].field(&member.text) {
-                            Some((_, field)) => field.ty,
+                        Type::Struct(id) => match self.structs[id.0]
+                            .field(&member.text)
+                            .map(|(_, field)| field.ty)
+                        {
+                            Some(field_type) => {
+                                // Which member of a union is live is the
+                                // program's claim and not the compiler's
+                                // knowledge, so reading one is written where a
+                                // reader can see the claim being made.
+                                if self.structs[id.0].union && self.place_writes == 0 {
+                                    let what = format!(
+                                        "reading `{}` of union `{}`",
+                                        member.text, self.structs[id.0].name
+                                    );
+                                    self.require_unsafe_claim(
+                                        &what,
+                                        member.span,
+                                        "a union says nothing about which member was last written, so reading one is a claim the program makes inside `unsafe { ... }`",
+                                    );
+                                }
+                                field_type
+                            }
                             None => {
                                 let is_method = self.structs[id.0]
                                     .methods
@@ -3576,6 +3729,51 @@ impl Checker<'_> {
                     self.option_type(element)
                 }
             }
+            // `Protocol(6)`: the conversion back from the integer, which is
+            // spelled the way `u8(...)` already spells a conversion. It traps
+            // on a value no variant is worth, since the enum's values are
+            // exactly the ones it declared.
+            Some((id, SymbolKind::Enum)) => {
+                let Some(enum_id) = self.enum_of_symbol(id) else {
+                    return Type::Error;
+                };
+                let Some(kind) = self.enums[enum_id.0].underlying else {
+                    for argument in arguments {
+                        self.expression(argument);
+                    }
+                    self.error(
+                        DiagnosticCode::UnsupportedFeature,
+                        span,
+                        format!(
+                            "`{}` is not numbered, so there is no integer to convert; declare it `enum {}: i32`",
+                            self.enums[enum_id.0].name, self.enums[enum_id.0].name
+                        ),
+                    );
+                    return Type::Error;
+                };
+                if arguments.len() != 1 {
+                    for argument in arguments {
+                        self.expression(argument);
+                    }
+                    self.error(
+                        DiagnosticCode::ArgumentCount,
+                        span,
+                        format!(
+                            "`{}` converts exactly one value",
+                            self.enums[enum_id.0].name
+                        ),
+                    );
+                    return Type::Error;
+                }
+                let previous = self.expected_context;
+                self.expected_context = Some(Type::Int(kind));
+                let found = self.expression(&arguments[0]);
+                self.expected_context = previous;
+                if found != Type::Error {
+                    self.expect_type(Type::Int(kind), found, arguments[0].span);
+                }
+                Type::Enum(enum_id)
+            }
             Some((_, SymbolKind::Builtin(builtin @ (Builtin::SizeOf | Builtin::OffsetOf)))) => {
                 self.layout_builtin(builtin, arguments, span)
             }
@@ -3715,6 +3913,25 @@ impl Checker<'_> {
                 self.expected_context = literal_int(&arguments[0]).then_some(Type::Int(kind));
                 let found = self.expression(&arguments[0]);
                 self.expected_context = previous;
+                // An enum that names an integer type converts to it: what
+                // travels is the variant's declared value, so the enum has to
+                // be one whose values mean something.
+                if let Type::Enum(id) = found {
+                    if self.enums[id.0].underlying.is_none() {
+                        self.error(
+                            DiagnosticCode::TypeMismatch,
+                            arguments[0].span,
+                            format!(
+                                "`{}` is not numbered, so it has no integer value; declare it `enum {}: {}`",
+                                self.enums[id.0].name,
+                                self.enums[id.0].name,
+                                kind.name()
+                            ),
+                        );
+                        return Type::Error;
+                    }
+                    return Type::Int(kind);
+                }
                 if found == Type::Error {
                     Type::Error
                 } else if found.int_type().is_none() && found != Type::Float && found != Type::Char
@@ -4285,6 +4502,25 @@ impl Checker<'_> {
         }
     }
 
+    /// Refuse an operation that only an `unsafe` block allows, once, with the
+    /// reason that operation is refused.
+    fn require_unsafe_claim(&mut self, what: &str, span: Span, why: &str) -> bool {
+        if self.unsafe_depth > 0 {
+            return true;
+        }
+        let diagnostic = Diagnostic {
+            code: DiagnosticCode::RequiresUnsafe,
+            span,
+            message: format!("{what} is only allowed inside an `unsafe` block"),
+            help: Some(why.to_owned()),
+            fix: None,
+        };
+        self.diagnostics.push(FileDiagnostic {
+            file: self.file,
+            diagnostic,
+        });
+        false
+    }
     /// Refuse an operation that only an `unsafe` block allows, once.
     fn require_unsafe(&mut self, name: &str, span: Span) -> bool {
         if self.unsafe_depth > 0 {
@@ -5287,6 +5523,14 @@ impl Checker<'_> {
     }
 }
 
+/// Whether an integer value is representable in a width. Both ends are read
+/// from the width itself, so a new one needs nothing here.
+fn fits_int_type(value: i128, kind: IntType) -> bool {
+    let low = -(kind.min_magnitude() as i128);
+    let high = kind.max_magnitude() as i128;
+    value >= low && value <= high
+}
+
 /// A `Result` seen as the two-variant enum it behaves like. `Ok` is variant 0
 /// and `Err` variant 1, the same order the backend gives its tag.
 fn result_as_enum(info: ResultInfo) -> EnumInfo {
@@ -5295,14 +5539,17 @@ fn result_as_enum(info: ResultInfo) -> EnumInfo {
         // A builtin belongs to no module and is visible everywhere.
         module: ROOT,
         visibility: Visibility::Public,
+        underlying: None,
         variants: vec![
             VariantInfo {
                 name: "Ok".into(),
                 payload: Some(info.ok),
+                value: ResultInfo::OK as i128,
             },
             VariantInfo {
                 name: "Err".into(),
                 payload: Some(info.err),
+                value: ResultInfo::ERR as i128,
             },
         ],
     }

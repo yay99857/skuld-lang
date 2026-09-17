@@ -1,0 +1,6 @@
+enum Protocol: u8 {
+    Tcp = 6,
+    Other = 6,
+}
+
+func main() {}

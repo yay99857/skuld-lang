@@ -1412,3 +1412,71 @@ fn a_declared_layout_is_what_crosses_the_boundary_and_what_can_be_measured() {
         DiagnosticCode::IntegerRange,
     );
 }
+
+#[test]
+fn a_numbered_enum_converts_to_its_integer_and_back() {
+    valid(
+        "enum Protocol: u8 {\n    Tcp = 6,\n    Udp = 17,\n}\n\nfunc main() {\n    print(int(u8(Protocol.Tcp)))\n    let back = Protocol(u8(17))\n    print(i32(back))\n}",
+    );
+    // A value continues from the one before it, so a plain list numbers itself.
+    valid(
+        "enum Level: i32 {\n    Low,\n    High,\n}\n\nfunc main() {\n    print(i32(Level.High))\n}",
+    );
+    // An enum without an underlying type has no value to convert either way.
+    fails(
+        "enum Status {\n    On,\n}\n\nfunc main() {\n    print(int(u8(Status.On)))\n}",
+        DiagnosticCode::TypeMismatch,
+    );
+    fails(
+        "enum Status {\n    On,\n}\n\nfunc main() {\n    let s = Status(0)\n}",
+        DiagnosticCode::UnsupportedFeature,
+    );
+    // Two variants worth the same number would make the conversion back
+    // ambiguous.
+    fails(
+        "enum Protocol: u8 {\n    Tcp = 6,\n    Other = 6,\n}\n\nfunc main() {}",
+        DiagnosticCode::DuplicateDeclaration,
+    );
+    // A payload has no integer value.
+    fails(
+        "enum Mixed: u8 {\n    Carrying(int) = 1,\n}\n\nfunc main() {}",
+        DiagnosticCode::InvalidValueType,
+    );
+    // The conversion back takes the underlying width, not any integer.
+    fails(
+        "enum Protocol: u8 {\n    Tcp = 6,\n}\n\nfunc main() {\n    let p = Protocol(6.5)\n}",
+        DiagnosticCode::TypeMismatch,
+    );
+}
+
+#[test]
+fn a_union_is_written_one_member_at_a_time_and_read_under_a_claim() {
+    valid(
+        "extern union Word {\n    whole: u32,\n    bytes: [4]u8,\n}\n\nfunc main() {\n    var w = Word { bytes: [0; 4] }\n    w.whole = u32(1)\n    unsafe {\n        print(int(w.bytes[0]))\n    }\n}",
+    );
+    // Reading a member is the claim, so it needs the block.
+    fails(
+        "extern union Word {\n    whole: u32,\n    bytes: [4]u8,\n}\n\nfunc main() {\n    let w = Word { whole: u32(1) }\n    print(int(w.whole))\n}",
+        DiagnosticCode::RequiresUnsafe,
+    );
+    // A compound assignment reads before it writes, so it is not a plain
+    // write.
+    fails(
+        "extern union Word {\n    whole: u32,\n    bytes: [4]u8,\n}\n\nfunc main() {\n    var w = Word { whole: u32(1) }\n    w.whole += u32(1)\n}",
+        DiagnosticCode::RequiresUnsafe,
+    );
+    // One member, not none and not two.
+    fails(
+        "extern union Word {\n    whole: u32,\n    bytes: [4]u8,\n}\n\nfunc main() {\n    let w = Word { whole: u32(1), bytes: [0; 4] }\n}",
+        DiagnosticCode::MissingField,
+    );
+    fails(
+        "extern union Word {\n    whole: u32,\n}\n\nfunc main() {\n    let w = Word {}\n}",
+        DiagnosticCode::MissingField,
+    );
+    // And its members are still what C can describe.
+    fails(
+        "extern union Bad {\n    text: string,\n}\n\nfunc main() {}",
+        DiagnosticCode::InvalidValueType,
+    );
+}

@@ -1,0 +1,8 @@
+extern union Word {
+    whole: u32,
+    bytes: [4]u8,
+}
+
+func main() {
+    let w = Word { whole: u32(1), bytes: [0; 4] }
+}

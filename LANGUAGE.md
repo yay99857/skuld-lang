@@ -1048,6 +1048,54 @@ extern struct Page align 4096 {
   than recomputed by Skuld — which also means it is not a compile-time constant
   and cannot initialize a `const`.
 
+### Unions
+
+An `extern union` is one piece of memory read as one of several types:
+
+```skuld
+extern union Word {
+    whole: u32
+    halves: [2]u16
+    bytes: [4]u8
+}
+```
+
+- It is constructed one member at a time — `Word { bytes: [0; 4] }` — and
+  writing a member is what makes that member the live one, which needs no
+  claim.
+- **Reading** a member is written inside `unsafe`. A union says nothing about
+  which member was last written, so a read is a claim the program makes and not
+  something the compiler knows.
+- Its members follow the same rule an `extern struct`'s fields do, and it is a
+  value like any other: it copies, it can be a field, and it can cross the
+  boundary.
+
+### Numbered enums
+
+An enum may name the integer type its variants are worth:
+
+```skuld
+enum Protocol: u8 {
+    Icmp = 1,
+    Tcp = 6,
+    Udp = 17,
+}
+```
+
+- A variant that writes no value continues from the one before it, starting at
+  zero, the way C numbers an enumeration. Two variants worth the same number
+  are refused: the conversion back would be ambiguous and one of them
+  unreachable.
+- `u8(protocol)` — or any width the value fits — converts a variant to its
+  number, and `Protocol(value)` converts back, trapping on a number no variant
+  is worth. The trap is the point: the declared numbers are the only protocols,
+  so a number read from somewhere else is checked before the rest of the
+  program matches on it.
+- Only an enum without payloads can be numbered: a variant that carries
+  something is not worth an integer.
+- A numbered enum is not itself a foreign type. It crosses the boundary as the
+  integer it converts to, which is written where a reader can see it.
+
 `std/net` and `std/dns` are written this way: `SockaddrIn` and `Timeval` are
 declared types rather than hand-packed bytes, and `struct timeval` is why it
 matters — its two fields are `long`, so it is sixteen bytes on a 64-bit target

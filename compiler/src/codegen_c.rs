@@ -174,6 +174,8 @@ pub fn emit_c(program: &Program) -> String {
             "/* {} {}: source bytes {}..{} */",
             if declaration.reference {
                 "class"
+            } else if declaration.union {
+                "union"
             } else {
                 "struct"
             },
@@ -203,6 +205,8 @@ pub fn emit_c(program: &Program) -> String {
         };
         if declaration.reference {
             emitter.line(&format!("struct skuld_s{index} {{"));
+        } else if declaration.union {
+            emitter.line(&format!("typedef union {attributes}{{"));
         } else {
             emitter.line(&format!("typedef struct {attributes}{{"));
         }
@@ -245,6 +249,46 @@ pub fn emit_c(program: &Program) -> String {
             function.span.start,
             function.span.end
         ));
+    }
+    // A numbered enum carries what each variant is worth, and the conversion
+    // back from a value to a variant. Both live next to the type rather than
+    // at each call: the values are a property of the declaration.
+    for (index, declaration) in program.enums.iter().enumerate() {
+        let Some(underlying) = declaration.underlying else {
+            continue;
+        };
+        let cell = underlying.c_type();
+        let values = declaration
+            .variants
+            .iter()
+            .map(|variant| format!("({cell}){}", variant.value))
+            .collect::<Vec<_>>()
+            .join(", ");
+        emitter.line(&format!(
+            "static const {cell} skuld_e{index}_values[] = {{ {values} }};"
+        ));
+        emitter.line(&format!(
+            "static skuld_e{index} skuld_e{index}_from({cell} value, size_t byte) {{"
+        ));
+        emitter.indent += 1;
+        emitter.line(&format!(
+            "for (size_t i = 0; i < {}; i++) {{",
+            declaration.variants.len()
+        ));
+        emitter.indent += 1;
+        emitter.line(&format!(
+            "if (skuld_e{index}_values[i] == value) return (skuld_e{index}){{.tag = (int64_t)i}};"
+        ));
+        emitter.indent -= 1;
+        emitter.line("}");
+        emitter.line(&format!(
+            "skuld_fail(\"no `{}` variant has that value\", byte);",
+            declaration.name
+        ));
+        // `skuld_fail` does not return, but C does not know that here.
+        emitter.line(&format!("return (skuld_e{index}){{.tag = 0}};"));
+        emitter.indent -= 1;
+        emitter.line("}");
     }
     // Complete array layouts after value types; arrays themselves are pointers.
     for (index, array) in program.arrays.iter().enumerate() {
@@ -2187,6 +2231,17 @@ impl Emitter {
             ExprKind::PointerAddr(pointer) => {
                 let pointer = self.expression(pointer);
                 self.temporary(expr.ty, &format!("((size_t){pointer})"))
+            }
+            ExprKind::EnumValue { value, id } => {
+                let rendered = self.expression(value);
+                self.temporary(expr.ty, &format!("skuld_e{}_values[{rendered}.tag]", id.0))
+            }
+            ExprKind::EnumFromValue { value, id } => {
+                let rendered = self.expression(value);
+                self.temporary(
+                    expr.ty,
+                    &format!("skuld_e{}_from({rendered}, {})", id.0, expr.span.start),
+                )
             }
             ExprKind::LayoutOf { id, field } => {
                 let query = match field {

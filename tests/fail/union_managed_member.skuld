@@ -1,0 +1,6 @@
+extern union Bad {
+    text: string,
+    bytes: [8]u8,
+}
+
+func main() {}

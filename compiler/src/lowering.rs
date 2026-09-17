@@ -558,7 +558,11 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
             // an expression of the declaring file, so it is lowered with that
             // file's recorded types.
             let declaring = cx.typed.structs[id.0].file;
-            for index in 0..cx.typed.structs[id.0].fields.len() {
+            // A union has exactly one member written and no others to fill:
+            // the rest are the same bytes read another way.
+            for index in
+                (0..cx.typed.structs[id.0].fields.len()).filter(|_| !cx.typed.structs[id.0].union)
+            {
                 if values.iter().any(|(written, _)| *written == index) {
                     continue;
                 }
@@ -899,12 +903,43 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
             if let SymbolKind::Builtin(Builtin::IntConvert(target)) =
                 cx.typed.resolution.symbols[id.0].kind
             {
+                let mut value = expression(&arguments[0], cx);
+                // A numbered enum reaches the width conversion as the integer
+                // it is worth, so nothing below here knows about enums.
+                if let Type::Enum(enum_id) = value.ty {
+                    let underlying = cx.typed.enums[enum_id.0]
+                        .underlying
+                        .expect("checked numbered enum");
+                    let span = value.span;
+                    value = h::Expr {
+                        kind: h::ExprKind::EnumValue {
+                            value: Box::new(value),
+                            id: enum_id,
+                        },
+                        ty: Type::Int(underlying),
+                        span,
+                    };
+                }
                 return h::Expr {
                     kind: h::ExprKind::IntConvert {
-                        value: Box::new(expression(&arguments[0], cx)),
+                        value: Box::new(value),
                         target,
                     },
                     ty: cx.ty(source.span).expect("checked expression"),
+                    span: source.span,
+                };
+            }
+            // `Protocol(6)`: the conversion back, which traps on a value no
+            // variant is worth.
+            if cx.typed.resolution.symbols[id.0].kind == SymbolKind::Enum
+                && let Some(Type::Enum(enum_id)) = cx.ty(source.span)
+            {
+                return h::Expr {
+                    kind: h::ExprKind::EnumFromValue {
+                        value: Box::new(expression(&arguments[0], cx)),
+                        id: enum_id,
+                    },
+                    ty: Type::Enum(enum_id),
                     span: source.span,
                 };
             }

@@ -1,0 +1,5 @@
+enum Small: u8 {
+    Big = 300,
+}
+
+func main() {}

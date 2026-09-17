@@ -1,0 +1,5 @@
+enum Bad: string {
+    A = 1,
+}
+
+func main() {}

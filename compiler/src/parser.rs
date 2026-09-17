@@ -355,6 +355,20 @@ impl Parser<'_> {
             // `extern struct` describes memory somebody else defined; `extern
             // "C"` declares a function somebody else compiled. One token of
             // lookahead separates them.
+            // `extern union` is read through an identifier rather than a
+            // keyword, so `union` stays an ordinary name everywhere else.
+            if self.at(&TokenKind::Extern)
+                && matches!(self.peek_kind(1), TokenKind::Identifier(word) if word == "union")
+            {
+                match self.foreign_union_declaration(visibility) {
+                    Ok(declaration) => structs.push(declaration),
+                    Err(diagnostic) => {
+                        self.diagnostics.push(diagnostic);
+                        self.recover_declaration(start);
+                    }
+                }
+                continue;
+            }
             if self.at(&TokenKind::Extern) && matches!(self.peek_kind(1), TokenKind::Struct) {
                 match self.foreign_struct_declaration(visibility) {
                     Ok(declaration) => structs.push(declaration),
@@ -611,6 +625,12 @@ impl Parser<'_> {
     fn enum_declaration(&mut self, visibility: Visibility) -> Parsed<EnumDecl> {
         let start = self.expect(&TokenKind::Enum, "`enum`")?.span.start;
         let name = self.name("an enum name")?;
+        // `enum Protocol: u8`. The type after the colon is what the variants
+        // are worth, which is a different question from what they carry.
+        let underlying = match self.take(&TokenKind::Colon) {
+            Some(_) => Some(self.type_ref()?),
+            None => None,
+        };
         self.expect(&TokenKind::LeftBrace, "`{` to begin the enum body")?;
         let mut variants = Vec::new();
         while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
@@ -622,10 +642,15 @@ impl Parser<'_> {
             } else {
                 None
             };
+            let value = match self.take(&TokenKind::Equal) {
+                Some(_) => Some(self.nested(Parser::expression)?),
+                None => None,
+            };
             let span = Span::new(variant_name.span.start, self.previous_end());
             variants.push(VariantDecl {
                 name: variant_name,
                 payload,
+                value,
                 span,
             });
             let has_comma = self.take(&TokenKind::Comma).is_some();
@@ -644,6 +669,7 @@ impl Parser<'_> {
         Ok(EnumDecl {
             visibility,
             name,
+            underlying,
             variants,
             span: Span::new(start, end),
         })
@@ -715,6 +741,29 @@ impl Parser<'_> {
             Some(start),
         )
     }
+    /// `extern union Name { ... }`, whose body is a struct's body read another
+    /// way: one field at a time.
+    fn foreign_union_declaration(&mut self, visibility: Visibility) -> Parsed<StructDecl> {
+        let start = self.bump().span.start;
+        // The `union` word itself, which the caller matched.
+        self.bump();
+        let name = self.name("a union name")?;
+        let layout = self.layout_modifiers(Layout::Foreign {
+            packed: false,
+            align: None,
+        })?;
+        let (fields, methods, end) = self.type_body(&name)?;
+        Ok(StructDecl {
+            visibility,
+            kind: TypeDeclKind::Union,
+            layout,
+            name,
+            conforms: Vec::new(),
+            fields,
+            methods,
+            span: Span::new(start, end),
+        })
+    }
     fn struct_declaration_with_layout(
         &mut self,
         visibility: Visibility,
@@ -743,6 +792,22 @@ impl Parser<'_> {
                 }
             }
         }
+        let (fields, methods, end) = self.type_body(&name)?;
+        Ok(StructDecl {
+            visibility,
+            kind,
+            layout,
+            name,
+            conforms,
+            fields,
+            methods,
+            span: Span::new(start, end),
+        })
+    }
+    /// The braces a struct, a class and a union all share: fields, methods,
+    /// and where the body ended. One field or method per line.
+    #[allow(clippy::type_complexity)]
+    fn type_body(&mut self, _name: &Name) -> Parsed<(Vec<FieldDecl>, Vec<FunctionDecl>, usize)> {
         self.expect(&TokenKind::LeftBrace, "`{` to begin the body")?;
         let mut fields = Vec::new();
         let mut methods = Vec::new();
@@ -779,16 +844,7 @@ impl Parser<'_> {
             .expect(&TokenKind::RightBrace, "`}` to close the body")?
             .span
             .end;
-        Ok(StructDecl {
-            visibility,
-            kind,
-            layout,
-            name,
-            conforms,
-            fields,
-            methods,
-            span: Span::new(start, end),
-        })
+        Ok((fields, methods, end))
     }
     /// `packed` and `align N`, in either order, each written at most once.
     fn layout_modifiers(&mut self, layout: Layout) -> Parsed<Layout> {

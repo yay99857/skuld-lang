@@ -1,0 +1,62 @@
+// An enum that names an integer type: each variant is worth a value the
+// program may depend on, which is what a protocol number or an `errno` is.
+
+enum Protocol: u8 {
+    Icmp = 1,
+    Tcp = 6,
+    Udp = 17,
+}
+
+// A value left out continues from the one before it, starting at zero.
+enum Level: i32 {
+    Low,
+    Medium,
+    High = 10,
+    Higher,
+}
+
+// Negative values are ordinary values of a signed type.
+enum Direction: i8 {
+    Back = -1,
+    None = 0,
+    Forward = 1,
+}
+
+func describe(protocol: Protocol) -> string {
+    match protocol {
+        Protocol.Icmp: return "icmp"
+        Protocol.Tcp: return "tcp"
+        Protocol.Udp: return "udp"
+    }
+}
+
+func main() {
+    print(int(u8(Protocol.Tcp)))
+    print(int(u8(Protocol.Udp)))
+    // The value converts to any width it fits in.
+    print(i32(Protocol.Icmp))
+
+    print(i32(Level.Low))
+    print(i32(Level.Medium))
+    print(i32(Level.High))
+    print(i32(Level.Higher))
+
+    print(int(i8(Direction.Back)))
+    print(int(i8(Direction.None)))
+
+    // And back again, which is how a number read from somewhere else becomes
+    // a value the rest of the program can match on.
+    let from_wire = Protocol(u8(17))
+    print(describe(from_wire))
+    print(describe(Protocol(u8(1))))
+
+    var total = 0
+    for value in 0..20 {
+        // Only the three declared numbers are protocols, so the others are
+        // skipped rather than converted.
+        if value == 1 || value == 6 || value == 17 {
+            total += int(u8(Protocol(u8(value))))
+        }
+    }
+    print(total)
+}

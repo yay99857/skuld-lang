@@ -273,3 +273,15 @@ fn an_unsafe_block_keeps_its_keyword_on_the_brace() {
         "func main() {\n    unsafe {\n        let x = 1\n    }\n}\n"
     );
 }
+
+#[test]
+fn a_numbered_enum_keeps_its_type_and_its_values() {
+    let input = "enum Protocol: u8 {\n    Tcp = 6,\n    Udp = 17,\n}\n\nfunc main() {\n    print(int(u8(Protocol.Tcp)))\n}\n";
+    assert_eq!(fmt(input), input);
+}
+
+#[test]
+fn an_extern_struct_keeps_its_layout() {
+    let input = "extern struct Header packed align 8 {\n    magic: u32\n    kind: u8\n}\n\nfunc main() {\n    print(int(size_of(Header)))\n}\n";
+    assert_eq!(fmt(input), input);
+}

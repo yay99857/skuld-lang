@@ -378,6 +378,7 @@ impl<'a> Formatter<'a> {
         match st.kind {
             TypeDeclKind::Value => self.push("struct "),
             TypeDeclKind::Reference => self.push("class "),
+            TypeDeclKind::Union => self.push("union "),
         }
         self.push(&st.name.text);
         // `packed` and `align N` sit between the name and the body, in that
@@ -453,8 +454,16 @@ impl<'a> Formatter<'a> {
         self.format_visibility(en.visibility);
         self.push("enum ");
         self.push(&en.name.text);
+        if let Some(underlying) = &en.underlying {
+            self.push(": ");
+            self.format_type(underlying);
+        }
         self.push(" {");
-        self.emit_trailing_comment(en.name.span.end);
+        let header_end = en
+            .underlying
+            .as_ref()
+            .map_or(en.name.span.end, |ty| ty.span().end);
+        self.emit_trailing_comment(header_end);
 
         self.indent();
         for variant in &en.variants {
@@ -464,6 +473,10 @@ impl<'a> Formatter<'a> {
                 self.push("(");
                 self.format_type(payload);
                 self.push(")");
+            }
+            if let Some(value) = &variant.value {
+                self.push(" = ");
+                self.format_expr(value);
             }
             self.push(",");
             self.emit_trailing_comment(variant.span.end);

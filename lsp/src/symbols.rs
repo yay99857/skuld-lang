@@ -133,6 +133,9 @@ fn type_symbol(declaration: &StructDecl) -> Symbol {
         kind: match declaration.kind {
             TypeDeclKind::Value => kind::STRUCT,
             TypeDeclKind::Reference => kind::CLASS,
+            // LSP has no union kind of its own; a struct is what an outline
+            // shows for one.
+            TypeDeclKind::Union => kind::STRUCT,
         },
         range: declaration.span,
         selection: declaration.name.span,

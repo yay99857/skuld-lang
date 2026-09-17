@@ -166,3 +166,16 @@ since the golden suite links nothing but libc. The `extern_struct_*`,
 managed field, an ordinary struct as a field or in a signature, an alignment
 that is not a power of two, `size_of` of a type the compiler laid out, and a
 field that is not there.
+
+`pass/numbered_enums` and `pass/unions` cover the rest of M24. A numbered
+enum's values are checked in both directions, including a value continuing
+from the one before it and a negative one; `trap/numbered_enum_unknown_value`
+is the conversion back failing, which is the reason it traps rather than
+answering. The union fixture reads its members only inside `unsafe` and sums
+bytes instead of reading them in order, so it says nothing about byte order.
+The `union_*` and `numbered_enum_*` fixtures in `fail/` cover each refusal: a
+member read without the claim, a compound assignment that reads before it
+writes, two members written at once, a managed member, two variants worth the
+same number, a value out of its type's range, a payload in a numbered enum, a
+value written without a type to number it, and a conversion on an enum that is
+not numbered.

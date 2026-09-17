@@ -404,8 +404,10 @@ module and local scope, and scalar/string value and range patterns in `match`),
 M21 (`usize` and `isize`, trapping float/integer conversions and a `char`
 scalar type), M22 (fixed-size arrays `[N]T` living on the stack, in a struct
 or inline in a class allocation, widening into a `[]T` view without allocating)
-and M23 (`unsafe` blocks, where `load`, `store`, `offset`, `addr` and
-`ptr_from` read and write through a raw pointer) are implemented too. The LSP provides
+M23 (`unsafe` blocks, where `load`, `store`, `offset`, `addr` and
+`ptr_from` read and write through a raw pointer) and M24 (`extern struct` and
+`extern union` with the layout C gives them, `size_of`, `offset_of`, numbered
+enums, and structs across the ABI by value) are implemented too. The LSP provides
 diagnostics, completion, hover, definition, find-references, rename, document
 highlights, the document outline, formatting through `skuld fmt`'s own
 formatter, signature help, inlay hints for inferred binding types and semantic
@@ -413,8 +415,8 @@ tokens, and
 `examples/jsontool.skuld` is a multi-module native tool with its own test suite.
 
 No implementation milestone is active. The systems sequence [ROADMAP.md](ROADMAP.md)
-proposes continues with M24–M26, towards the systems language the project aims
-at: layout control, `defer`, and a freestanding
+proposes continues with M25–M26, towards the systems language the project aims
+at: `defer`, and a freestanding
 mode with no runtime and no libc. Every one of them is proposed and none is
 authorized; starting one needs an explicit decision first, as do the older
 candidates listed there, general generics and self-hosting among them.

@@ -1,0 +1,8 @@
+enum Status {
+    On,
+    Off,
+}
+
+func main() {
+    print(int(u8(Status.On)))
+}

@@ -1,7 +1,7 @@
 # Skuld roadmap
 
 This document records completed milestones and a **proposed** next sequence.
-M1–M23 are implemented. M24–M26 propose the continuation of the systems sequence,
+M1–M24 are implemented. M25–M26 propose the continuation of the systems sequence,
 towards the language a system could be written in; every one of them is **Planned**,
 which means proposed and not authorized. Starting one still
 needs an explicit decision recorded in `AGENTS.md`. See `LANGUAGE.md` for
@@ -1163,22 +1163,39 @@ unsafe {
 - **Out:** references with lifetimes, aliasing rules, a borrow checker, and
   unchecked indexing outside `unsafe`.
 
-## M24 — Layout and the ABI — Planned
+## M24 — Layout and the ABI — Implemented
 
 Describing memory somebody else defined: a hardware register block, a kernel
 structure, a file header, a C library's struct.
 
-- **In:** an explicit layout attribute on a struct (packed, and alignment),
+- **In:** `extern struct` with `packed` and `align N`, `size_of` and
   `offset_of`, an enum with explicit discriminant values and an explicit
-  underlying integer type, conversion between such an enum and its integer,
-  unions, and structs passed to and returned from `extern "C"` by value.
-- **Semantics to settle:** the default layout stays the compiler's own and
-  unspecified; a struct that crosses the boundary says so. A union is only
-  readable inside `unsafe`, because which member is live is the program's
-  claim and not the compiler's knowledge.
-- **Closing marker:** `std/net` builds `sockaddr_in` and `std/dns` builds
-  `struct timeval` as declared types rather than as hand-packed `[]u8`, and
-  both are identical on x86-64 and i686.
+  underlying integer type with conversion in both directions, `extern union`,
+  and structs passed to and returned from `extern "C"` by value.
+- **Decision taken — no attribute syntax.** The layout is written as keywords
+  in the declaration — `extern struct Name packed align 8` — rather than as an
+  annotation: `packed` and `align` are read as ordinary identifiers in that one
+  position, so neither becomes a reserved word and the language gains no
+  attribute system it would then have to generalise.
+- **Decision taken — `size_of` came with `offset_of`.** A call that takes a
+  pointer to a structure takes its length beside it, so measuring one without
+  the other would have left `SOCKADDR_IN_SIZE` hand-written next to a declared
+  type. Both are answered by the C compiler for the target being built rather
+  than recomputed here, which also means neither is a compile-time constant.
+- **Semantics settled:** the default layout stays the compiler's own and
+  unspecified, and `size_of`/`offset_of` refuse it; a struct that crosses the
+  boundary says so. A union is constructed one member at a time and only
+  **readable** inside `unsafe`, because which member is live is the program's
+  claim and not the compiler's knowledge — writing one is what makes it live,
+  so a write needs no claim. A numbered enum converts to its integer with the
+  ordinary width conversions and back with `Protocol(value)`, which traps on a
+  value no variant is worth.
+- **Closing marker:** met. `std/net` builds `sockaddr_in` and `std/dns` builds
+  `struct timeval` as declared types rather than as hand-packed `[]u8`, both
+  measured with `size_of`, and `cli/tests/portability.rs` runs every fixture on
+  i686 — where `timeval` really is eight bytes rather than sixteen. `htons` and
+  `htonl` came with it, so neither module says anything about byte order any
+  more.
 - **Out:** bitfields with C's allocation rules, `#[repr(Rust)]`-style
   guarantees, and layout that varies by target in the same source.
 

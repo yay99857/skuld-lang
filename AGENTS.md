@@ -292,9 +292,41 @@ accurate; documenting a future feature is not a request to implement it.
   marker is `tests/pass/pointers.skuld`, a bump allocator and an intrusive
   linked list over `malloc`ed memory, clean under the address, leak and UB
   sanitizers.
-  The systems sequence `ROADMAP.md` proposes continues with M24–M26:
-  layout and ABI control, `defer`, and a freestanding mode with no runtime and
-  no libc.
+  M24 (layout and the ABI) is complete. The ordinary `struct` layout stays the
+  compiler's own and deliberately unspecified; a type that describes memory
+  somebody else defined is written `extern struct Name { ... }` and is laid out
+  the way the platform's C compiler lays out the same fields, with `packed` and
+  `align N` between the name and the body. Both are read as ordinary
+  identifiers in that one position — the decision here was that no attribute
+  syntax enters the language, since `annotations` are excluded by design and a
+  general one would then have to be generalised. Members are restricted to what
+  C can describe (the scalars, a raw pointer, a fixed array of those, another
+  `extern struct` or `extern union`), so a managed value can never sit inside a
+  layout C decides. Such a type crosses the boundary by value in both
+  directions, and `ptr()` takes its address as `*void`. `size_of(Type)` and
+  `offset_of(Type, field)` answer in bytes as a `usize`, refuse a type the
+  compiler laid out, and are answered by the C compiler for the target being
+  built rather than recomputed here — so neither is a compile-time constant and
+  neither can initialize a `const`. `size_of` was added alongside `offset_of`
+  because a call that takes a pointer to a structure takes its length beside
+  it. `extern union Name { ... }` is one piece of memory read as one of several
+  types: it is constructed one member at a time, writing a member is what makes
+  it live and needs no claim, and **reading** one is written inside `unsafe`,
+  since which member is live is the program's claim. An enum may name the
+  integer type its variants are worth — `enum Protocol: u8 { Tcp = 6 }` — where
+  a variant without a value continues from the one before it, two variants
+  worth the same number are refused, a payload excludes numbering, `u8(p)`
+  converts to the number and `Protocol(v)` converts back, trapping on a number
+  no variant is worth. A numbered enum is not itself a foreign type; it crosses
+  as the integer it converts to. The closing marker is met: `std/net`'s
+  `SockaddrIn` and `std/dns`'s `Timeval` are declared types measured with
+  `size_of`, `htons`/`htonl` replaced the arithmetic that assumed a
+  little-endian machine, and `cli/tests/portability.rs` runs every fixture on
+  i686, where `timeval` really is eight bytes. `cli/tests/abi.rs` compiles a C
+  object and links it, which is the only way to observe a struct passed by
+  value actually arriving.
+  The systems sequence `ROADMAP.md` proposes continues with M25–M26:
+  `defer`, and a freestanding mode with no runtime and no libc.
   Every one of them is Planned and none is authorized; each still needs an
   explicit decision recorded here. One decision
   is taken there and should not be reopened by accident: M20's `const` does

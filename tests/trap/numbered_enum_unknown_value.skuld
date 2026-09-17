@@ -1,0 +1,8 @@
+enum Protocol: u8 {
+    Tcp = 6,
+    Udp = 17,
+}
+
+func main() {
+    print(int(u8(Protocol(u8(9)))))
+}

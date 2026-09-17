@@ -1,0 +1,63 @@
+// One piece of memory read as one of several types. Writing a member decides
+// which one is live; reading one is a claim the program makes, so it is
+// written inside `unsafe`.
+
+extern union Word {
+    whole: u32
+    halves: [2]u16
+    bytes: [4]u8
+}
+
+extern union Number {
+    integer: i64
+    real: float
+}
+
+// A union is a value like any other: it copies, and it can sit in a struct
+// that describes somebody else's memory.
+extern struct Packet {
+    kind: u8
+    payload: Word
+}
+
+func main() {
+    print(int(size_of(Word)))
+    print(int(size_of(Number)))
+
+    var word = Word { bytes: [1, 2, 3, 4] }
+    unsafe {
+        // The sum is the same whichever end the bytes start at.
+        var total = 0
+        for byte in word.bytes {
+            total += int(byte)
+        }
+        print(total)
+        print(int(word.whole) > 0)
+        print(int(word.halves[0]) + int(word.halves[1]) > 0)
+    }
+
+    // Writing a member needs no claim: it is what makes that member live.
+    word.whole = u32(0)
+    unsafe {
+        var total = 0
+        for byte in word.bytes {
+            total += int(byte)
+        }
+        print(total)
+    }
+
+    // Value semantics, as everywhere else.
+    var copy = word
+    copy.whole = u32(0x01010101)
+    unsafe {
+        print(int(word.whole))
+        print(int(copy.whole) > 0)
+    }
+
+    let packet = Packet { kind: u8(7), payload: Word { whole: u32(0) } }
+    print(int(packet.kind))
+    unsafe {
+        print(int(packet.payload.whole))
+    }
+    print(int(offset_of(Packet, payload)))
+}

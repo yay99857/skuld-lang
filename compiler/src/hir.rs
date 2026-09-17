@@ -298,6 +298,19 @@ pub(crate) enum ExprKind {
     PointerAddr(Box<Expr>),
     /// `ptr_from(address)`: the pointer an address names.
     PointerFrom(Box<Expr>),
+    /// The integer value a variant is worth, for an enum that names an
+    /// underlying type. Its own type is that underlying type, so an ordinary
+    /// width conversion carries it the rest of the way.
+    EnumValue {
+        value: Box<Expr>,
+        id: crate::types::EnumId,
+    },
+    /// `Protocol(6)`: the variant worth this integer, trapping when no variant
+    /// is worth it.
+    EnumFromValue {
+        value: Box<Expr>,
+        id: crate::types::EnumId,
+    },
     /// `size_of(Type)` and `offset_of(Type, field)`. The backend asks the C
     /// compiler rather than computing a layout of its own, so the answer is
     /// right on every target by construction.
