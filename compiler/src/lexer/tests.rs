@@ -182,7 +182,7 @@ fn spans_are_utf8_byte_ranges() {
 
 #[test]
 fn invalid_characters_recover() {
-    let output = lex("@ é ` $ ; let");
+    let output = lex("@ é ` $ # let");
     assert_eq!(output.diagnostics.len(), 5);
     assert!(
         output
@@ -351,7 +351,10 @@ fn dot_dot_range_tokens() {
     assert_eq!(kinds(".."), vec![DotDot, Eof]);
     assert_eq!(kinds("..="), vec![DotDotEqual, Eof]);
     assert_eq!(kinds("0..10"), vec![Integer(0), DotDot, Integer(10), Eof]);
-    assert_eq!(kinds("0..=10"), vec![Integer(0), DotDotEqual, Integer(10), Eof]);
+    assert_eq!(
+        kinds("0..=10"),
+        vec![Integer(0), DotDotEqual, Integer(10), Eof]
+    );
     assert_eq!(
         kinds("for i in 0..len(bytes)"),
         vec![

@@ -23,16 +23,19 @@ func number(text: string) -> int {
 }
 
 func push_number(buffer: []u8, value: int) -> []u8 {
-    var digits: []u8 = []
+    var digits: [20]u8 = [0; 20]
+    var count = 0
     var rest = value
     if rest == 0 {
-        digits.push(48)
+        digits[0] = 48
+        count = 1
     }
     while rest > 0 {
-        digits.push(u8(48 + rest % 10))
+        digits[count] = u8(48 + rest % 10)
+        count += 1
         rest = rest / 10
     }
-    var index = digits.len()
+    var index = count
     while index > 0 {
         index -= 1
         buffer.push(digits[index])

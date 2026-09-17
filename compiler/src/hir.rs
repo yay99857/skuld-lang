@@ -17,6 +17,7 @@ pub struct Program {
     /// is emitted per pair and none for a conformance nothing exercises.
     pub(crate) vtables: Vec<(StructId, crate::types::InterfaceId)>,
     pub(crate) arrays: Vec<crate::types::ArrayInfo>,
+    pub(crate) fixed_arrays: Vec<crate::types::FixedArrayInfo>,
     pub(crate) options: Vec<crate::types::OptionInfo>,
     pub(crate) results: Vec<crate::types::ResultInfo>,
     pub(crate) functions: Vec<Function>,
@@ -144,6 +145,10 @@ pub(crate) enum ForIterable {
         end: Expr,
     },
     Array(Expr),
+    FixedArray {
+        collection: Expr,
+        size: usize,
+    },
     /// `for byte in text.bytes()`. The bytes of a string are iterated where
     /// they already are: `bytes()` would answer a fresh array, and a loop is
     /// the one place that array cannot be observed, so it is never built.
@@ -247,6 +252,15 @@ pub(crate) enum ExprKind {
     },
     Interpolation(Vec<InterpolationPart>),
     Array(Vec<Expr>),
+    FixedArray(Vec<Expr>),
+    FixedArrayRepeat {
+        element: Box<Expr>,
+        size: usize,
+    },
+    FixedArrayToSlice {
+        object: Box<Expr>,
+        array_id: crate::types::ArrayId,
+    },
     Index {
         object: Box<Expr>,
         index: Box<Expr>,
@@ -309,9 +323,23 @@ pub(crate) enum InterpolationPart {
 #[derive(Debug)]
 pub(crate) enum Place {
     Local(SymbolId),
-    Field { base: Box<Place>, index: usize },
-    ReferenceField { object: Box<Expr>, index: usize },
-    Index { object: Box<Expr>, index: Box<Expr> },
+    Field {
+        base: Box<Place>,
+        index: usize,
+    },
+    ReferenceField {
+        object: Box<Expr>,
+        index: usize,
+    },
+    Index {
+        object: Box<Expr>,
+        index: Box<Expr>,
+    },
+    FixedIndex {
+        base: Box<Place>,
+        index: Box<Expr>,
+        size: usize,
+    },
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ArrayMethod {

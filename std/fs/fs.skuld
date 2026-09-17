@@ -72,12 +72,7 @@ pub func describe(error: FsError) -> string {
 pub func read_file(path: string) -> Result<[]u8, FsError> {
     let handle = open_path(path, read_only(), 0)?
     var all: []u8 = []
-    var block: []u8 = []
-    var index = 0
-    while index < 4096 {
-        block.push(0)
-        index += 1
-    }
+    var block: [4096]u8 = [0; 4096]
     loop {
         let got = read(i32(handle), ptr(block), u64(4096))
         if got < 0 {

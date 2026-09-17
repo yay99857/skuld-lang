@@ -241,6 +241,9 @@ pub fn type_text(type_ref: &TypeRef) -> String {
         }
         TypeRef::Weak { class, .. } => format!("weak {}", path_text(class)),
         TypeRef::Array { element, .. } => format!("[]{}", type_text(element)),
+        TypeRef::FixedArray { element, size, .. } => {
+            format!("[{}]{}", expr_text(size), type_text(element))
+        }
         TypeRef::Function {
             parameters,
             return_type,
@@ -264,6 +267,14 @@ fn path_text(path: &ast::Path) -> String {
     match &path.module {
         Some(module) => format!("{}.{}", module.text, path.name.text),
         None => path.name.text.clone(),
+    }
+}
+
+fn expr_text(expr: &ast::Expr) -> String {
+    match &expr.kind {
+        ast::ExprKind::Literal(ast::Literal::Integer(v)) => v.to_string(),
+        ast::ExprKind::Identifier(name) => name.text.clone(),
+        _ => "...".to_string(),
     }
 }
 

@@ -871,6 +871,30 @@ Slicing, array equality, sorting, callbacks and `for` iteration remain
 planned. Strong cycles through classes and arrays still require explicit
 breaking or weak class links; arrays themselves cannot be weakened yet.
 
+## Fixed-size arrays — Implemented
+
+Fixed-size arrays allocate contiguous elements inline on the stack, inside a struct, or inline in a class allocation without heap allocations:
+
+```skuld
+var line: [256]u8 = [0; 256]
+let header: [4]u8 = [0x7F, 'E', 'L', 'F']
+```
+
+- **Type syntax:** `[N]T`, where `N` is a constant integer expression `> 0`, and `T` is any value or reference type.
+- **Literals:**
+  - Repeated-element literal: `[element; count]`, where `count` is a constant integer expression `> 0`.
+  - List literal: `[a, b, c]`, inferred as `[N]T` when an expected fixed array type of matching length is present.
+- **Semantics:**
+  - Value semantics: assigned or passed by value, copying all elements. Mutating an element (`arr[i] = v`) requires `var` or reached through a class reference.
+  - Indexing: `arr[i]` checks bounds both at compile time (for constant indices) and at runtime, trapping with `array index out of bounds`.
+  - Length: `arr.len()` is a compile-time constant int.
+  - Slicing: `arr[a..b]` creates an owned dynamic array `[]T` copying the sliced elements.
+  - Slice coercion: `[N]T` coerces implicitly to `[]T` slice views for functions expecting dynamic slices (e.g. `bytes_to_string(arr)`), with immortal stack lifetime and zero heap allocations. Mutating a coerced slice view (e.g. `push`) traps at runtime with `"cannot mutate a fixed array view"`.
+  - Escape prevention: returning a local fixed array as a dynamic slice `[]T` or assigning a fixed array to a class dynamic array field is rejected at compile time (`E0103`).
+  - Fields: struct and class types can embed fixed arrays inline (`field: [N]T`).
+  - Iteration: `for item in arr { ... }` loops over elements by value copy.
+  - FFI: `ptr(arr)` borrows `*T` for scalar fixed arrays directly without copying.
+
 ## Enums and pattern matching — Implemented
 
 Enums are user-declared sum types with optional per-variant payloads:

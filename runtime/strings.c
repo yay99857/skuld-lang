@@ -299,6 +299,7 @@ static inline size_t skuld_array_next_length(size_t length, size_t byte) {
 }
 static inline void *skuld_array_reserve(void *data, size_t *capacity,
                                        size_t needed, size_t element, size_t byte) {
+    if (data != NULL && *capacity == 0) skuld_fail("cannot mutate a fixed array view", byte);
     if ((uint64_t)needed > INT64_MAX) skuld_fail("array length overflow", byte);
     if (needed <= *capacity) return data;
     size_t next = *capacity == 0 ? 4 : *capacity;

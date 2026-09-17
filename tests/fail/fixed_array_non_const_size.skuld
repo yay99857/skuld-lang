@@ -1,0 +1,4 @@
+func main() {
+    let n = 5
+    var a: [n]int = [1; 5]
+}

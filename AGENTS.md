@@ -249,8 +249,26 @@ accurate; documenting a future feature is not a request to implement it.
   `u8`/`u32`/integers trapping on invalid Unicode code points, and pattern matching on char literals
   and ranges. `extern "C"` declarations use `usize`/`isize` for `size_t`/`ssize_t`, and
   `portability.rs` runs 100% of pass fixtures on i686 with no exceptions left (`TARGET_SPECIFIC = &[]`).
-  The systems sequence `ROADMAP.md` proposes continues with M22–M26:
-  fixed-size arrays, pointers that can be read inside `unsafe`, layout and ABI control,
+  M22 (fixed-size arrays and stack buffers) is complete: the type `[N]T` with
+  value semantics, `N` a constant expression greater than zero, the repeated
+  literal `[element; count]` and list literals inferred against an expected
+  `[N]T`, indexing bounds-checked at compile time for a constant index and at
+  run time otherwise, `len()` as a compile-time constant, `arr[a..b]` copying
+  into an owned `[]T`, and `ptr(arr)` borrowing `*T` for a scalar element type.
+  A fixed array lives inline: on the stack, inside a struct, and — the
+  milestone's open question, decided yes — inline in a class allocation, with
+  the same rules the object's other fields have, which is sound because a fixed
+  array is not itself reference counted. `[N]T` widens into `[]T` without
+  allocating, as an immortal stack view; a view is read-only, and a mutating
+  call on one traps through `*capacity == 0` in `skuld_array_reserve`, so a
+  stack buffer is never reallocated onto the heap behind a reference. Escape is
+  a diagnostic rather than a trap wherever the compiler can see it: returning a
+  local fixed array as a `[]T`, or storing one into a heap array field, is
+  rejected. The closing marker is met — `std/fs`'s `read_file` and `std/net`'s
+  `receive_all` and `open` read into stack buffers instead of pushing byte by
+  byte, and `tests/bench/strings.skuld` formats integers through one.
+  The systems sequence `ROADMAP.md` proposes continues with M23–M26:
+  pointers that can be read inside `unsafe`, layout and ABI control,
   `defer`, and a freestanding mode with no runtime and no libc.
   Every one of them is Planned and none is authorized; each still needs an
   explicit decision recorded here. Two decisions

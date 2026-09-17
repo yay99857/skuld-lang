@@ -170,6 +170,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
         structs: typed.structs.clone(),
         enums: typed.enums.clone(),
         arrays: typed.arrays.clone(),
+        fixed_arrays: typed.fixed_arrays.clone(),
         options: typed.options.clone(),
         results: typed.results.clone(),
         functions,
@@ -207,10 +208,21 @@ fn place(target: &ast::Expr, cx: &Lowering<'_>) -> h::Place {
                 }
             }
         }
-        ast::ExprKind::Index { object, index } => h::Place::Index {
-            object: Box::new(expression(object, cx)),
-            index: Box::new(expression(index, cx)),
-        },
+        ast::ExprKind::Index { object, index } => {
+            if let Some(Type::FixedArray(id)) = cx.ty(object.span) {
+                let size = cx.typed.fixed_arrays[id.0].size;
+                h::Place::FixedIndex {
+                    base: Box::new(place(object, cx)),
+                    index: Box::new(expression(index, cx)),
+                    size,
+                }
+            } else {
+                h::Place::Index {
+                    object: Box::new(expression(object, cx)),
+                    index: Box::new(expression(index, cx)),
+                }
+            }
+        }
         _ => unreachable!("internal compiler bug: unchecked assignment target"),
     }
 }
@@ -255,12 +267,10 @@ fn statement(source: &ast::Statement, cx: &Lowering<'_>) -> h::Statement {
                 },
             }
         }
-        ast::StatementKind::Constant(constant) => {
-            h::StatementKind::Block(h::Block {
-                statements: Vec::new(),
-                span: constant.span,
-            })
-        }
+        ast::StatementKind::Constant(constant) => h::StatementKind::Block(h::Block {
+            statements: Vec::new(),
+            span: constant.span,
+        }),
         ast::StatementKind::Expression(expr) => h::StatementKind::Expression(expression(expr, cx)),
         ast::StatementKind::Return(value) => {
             h::StatementKind::Return(value.as_ref().map(|e| expression(e, cx)))
@@ -390,12 +400,21 @@ fn statement(source: &ast::Statement, cx: &Lowering<'_>) -> h::Statement {
                     // bytes. Everything else about the loop is unchanged —
                     // the string is still evaluated exactly once, before the
                     // first iteration.
-                    match expression(collection, cx) {
-                        h::Expr {
-                            kind: h::ExprKind::StringBytes(text),
-                            ..
-                        } => h::ForIterable::StringBytes(*text),
-                        lowered => h::ForIterable::Array(lowered),
+                    let lowered = expression(collection, cx);
+                    if let h::Expr {
+                        kind: h::ExprKind::StringBytes(text),
+                        ..
+                    } = lowered
+                    {
+                        h::ForIterable::StringBytes(*text)
+                    } else if let Some(Type::FixedArray(id)) = cx.ty(collection.span) {
+                        let size = cx.typed.fixed_arrays[id.0].size;
+                        h::ForIterable::FixedArray {
+                            collection: lowered,
+                            size,
+                        }
+                    } else {
+                        h::ForIterable::Array(lowered)
                     }
                 }
             };
@@ -473,7 +492,21 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
             h::ExprKind::Lambda { index }
         }
         ast::ExprKind::Array(elements) => {
-            h::ExprKind::Array(elements.iter().map(|e| expression(e, cx)).collect())
+            if matches!(cx.ty(source.span), Some(Type::FixedArray(_))) {
+                h::ExprKind::FixedArray(elements.iter().map(|e| expression(e, cx)).collect())
+            } else {
+                h::ExprKind::Array(elements.iter().map(|e| expression(e, cx)).collect())
+            }
+        }
+        ast::ExprKind::ArrayRepeat { element, .. } => {
+            let Some(Type::FixedArray(id)) = cx.ty(source.span) else {
+                unreachable!("internal compiler bug: unchecked array repeat")
+            };
+            let size = cx.typed.fixed_arrays[id.0].size;
+            h::ExprKind::FixedArrayRepeat {
+                element: Box::new(expression(element, cx)),
+                size,
+            }
         }
         ast::ExprKind::Index { object, index } => h::ExprKind::Index {
             object: Box::new(expression(object, cx)),
@@ -549,7 +582,10 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                 .resolution
                 .references
                 .get(&(cx.file.get(), member.span.start))
-                && matches!(cx.typed.resolution.symbols[sym_id.0].kind, SymbolKind::Constant)
+                && matches!(
+                    cx.typed.resolution.symbols[sym_id.0].kind,
+                    SymbolKind::Constant
+                )
             {
                 let const_val = &cx.typed.constants[&sym_id];
                 match const_val {
@@ -748,6 +784,10 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     (Some(Type::Array(_)), "len") => {
                         Some(h::ExprKind::ArrayLen(Box::new(expression(object, cx))))
                     }
+                    (Some(Type::FixedArray(id)), "len") => {
+                        let size = cx.typed.fixed_arrays[id.0].size as i64;
+                        Some(h::ExprKind::Int(size))
+                    }
                     (Some(Type::String), "len") => {
                         Some(h::ExprKind::StringLen(Box::new(expression(object, cx))))
                     }
@@ -863,7 +903,8 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     span: source.span,
                 };
             }
-            if cx.typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::FloatConvert) {
+            if cx.typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::FloatConvert)
+            {
                 return h::Expr {
                     kind: h::ExprKind::FloatConvert(Box::new(expression(&arguments[0], cx))),
                     ty: cx.ty(source.span).expect("checked expression"),
@@ -937,6 +978,22 @@ fn wrap_expression(kind: h::ExprKind, source: &ast::Expr, cx: &Lowering<'_>) -> 
                 interface,
             },
             ty: Type::Interface(interface),
+            span: source.span,
+        };
+    }
+    if let Some(target_type) = cx
+        .typed
+        .slice_coercions
+        .get(&(cx.file.get(), source.span.start, source.span.end))
+        .copied()
+        && let Type::Array(array_id) = target_type
+    {
+        lowered = h::Expr {
+            kind: h::ExprKind::FixedArrayToSlice {
+                object: Box::new(lowered),
+                array_id,
+            },
+            ty: target_type,
             span: source.span,
         };
     }

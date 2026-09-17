@@ -899,6 +899,13 @@ impl<'a> Formatter<'a> {
                 }
                 self.push("]");
             }
+            ExprKind::ArrayRepeat { element, count } => {
+                self.push("[");
+                self.format_expr(element);
+                self.push("; ");
+                self.format_expr(count);
+                self.push("]");
+            }
             ExprKind::Weak(inner) => {
                 // `weak(value)` or `weak()`
                 self.push("weak(");
@@ -1004,6 +1011,12 @@ impl<'a> Formatter<'a> {
             }
             TypeRef::Array { element, .. } => {
                 self.push("[]");
+                self.format_type(element);
+            }
+            TypeRef::FixedArray { element, size, .. } => {
+                self.push("[");
+                self.format_expr(size);
+                self.push("]");
                 self.format_type(element);
             }
             TypeRef::Function {

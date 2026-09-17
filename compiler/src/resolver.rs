@@ -181,7 +181,11 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
                 resolver.declare(&declaration.name, SymbolKind::Enum, declaration.visibility);
             }
             for declaration in &syntax.constants {
-                resolver.declare(&declaration.name, SymbolKind::Constant, declaration.visibility);
+                resolver.declare(
+                    &declaration.name,
+                    SymbolKind::Constant,
+                    declaration.visibility,
+                );
             }
             // Foreign functions are ordinary value names: only the backend
             // knows they are calls into another object file. Their parameter
@@ -232,6 +236,17 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
         resolver.module = Some(file.module);
         let file_scope = resolver.result.file_scopes[index];
         let syntax = &file.program;
+        for block in &syntax.externs {
+            resolver.current = file_scope;
+            for function in &block.functions {
+                for parameter in &function.parameters {
+                    resolver.type_ref(&parameter.type_ref);
+                }
+                if let Some(t) = &function.return_type {
+                    resolver.type_ref(t);
+                }
+            }
+        }
         // Methods get symbols, but in a scope of their own so they never
         // resolve as bare identifiers: a method is reached through `this` or a
         // value.
@@ -241,8 +256,9 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
             // the file scope for that reason: `this` is not in scope, and
             // neither is another field.
             for field in &declaration.fields {
+                resolver.current = file_scope;
+                resolver.type_ref(&field.type_ref);
                 if let Some(default) = &field.default {
-                    resolver.current = file_scope;
                     resolver.in_field_default = true;
                     resolver.expression(default);
                     resolver.in_field_default = false;
@@ -258,6 +274,12 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
                 // Bodies resolve from the file scope, so a sibling method is
                 // not visible without a receiver.
                 resolver.current = file_scope;
+                for parameter in &method.parameters {
+                    resolver.type_ref(&parameter.type_ref);
+                }
+                if let Some(t) = &method.return_type {
+                    resolver.type_ref(t);
+                }
                 resolver.enter_scope(Some(method.body.span));
                 resolver.insert(
                     "this",
@@ -275,6 +297,12 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
         }
         for function in &syntax.functions {
             resolver.current = file_scope;
+            for parameter in &function.parameters {
+                resolver.type_ref(&parameter.type_ref);
+            }
+            if let Some(t) = &function.return_type {
+                resolver.type_ref(t);
+            }
             resolver.enter_scope(Some(function.body.span));
             for parameter in &function.parameters {
                 resolver.declare(&parameter.name, SymbolKind::Parameter, Visibility::Private);
@@ -285,6 +313,9 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
         }
         for constant in &syntax.constants {
             resolver.current = file_scope;
+            if let Some(t) = &constant.type_ref {
+                resolver.type_ref(t);
+            }
             resolver.expression(&constant.value);
         }
     }
@@ -572,6 +603,9 @@ impl Resolver {
     fn statement(&mut self, statement: &Statement) {
         match &statement.kind {
             StatementKind::Variable(variable) => {
+                if let Some(type_ref) = &variable.type_ref {
+                    self.type_ref(type_ref);
+                }
                 // A binding becomes visible only after its initializer.
                 self.expression(&variable.initializer);
                 // The escape block runs when there is no value, so the name
@@ -596,12 +630,11 @@ impl Resolver {
                 );
             }
             StatementKind::Constant(constant) => {
+                if let Some(type_ref) = &constant.type_ref {
+                    self.type_ref(type_ref);
+                }
                 self.expression(&constant.value);
-                self.declare(
-                    &constant.name,
-                    SymbolKind::Constant,
-                    Visibility::Private,
-                );
+                self.declare(&constant.name, SymbolKind::Constant, Visibility::Private);
             }
             StatementKind::Expression(expr) => self.expression(expr),
             StatementKind::Return(value) => {
@@ -672,24 +705,22 @@ impl Resolver {
                             ..
                         } => {
                             if let Some(path) = enum_name {
-                                if path.module.is_none() {
-                                    if let Some(sym) = self.lookup(&path.name.text) {
-                                        if let SymbolKind::Module(mod_id) =
-                                            self.result.symbols[sym.0].kind
-                                        {
-                                            self.result
-                                                .references
-                                                .insert((self.file, path.name.span.start), sym);
-                                            self.module_member(mod_id, &path.name, variant_name);
-                                        }
-                                    }
-                                }
-                            } else if let Some(sym) = self.lookup(&variant_name.text) {
-                                if matches!(self.result.symbols[sym.0].kind, SymbolKind::Constant) {
+                                if path.module.is_none()
+                                    && let Some(sym) = self.lookup(&path.name.text)
+                                    && let SymbolKind::Module(mod_id) =
+                                        self.result.symbols[sym.0].kind
+                                {
                                     self.result
                                         .references
-                                        .insert((self.file, variant_name.span.start), sym);
+                                        .insert((self.file, path.name.span.start), sym);
+                                    self.module_member(mod_id, &path.name, variant_name);
                                 }
+                            } else if let Some(sym) = self.lookup(&variant_name.text)
+                                && matches!(self.result.symbols[sym.0].kind, SymbolKind::Constant)
+                            {
+                                self.result
+                                    .references
+                                    .insert((self.file, variant_name.span.start), sym);
                             }
                         }
                         MatchPattern::Constant(expr) => {
@@ -782,6 +813,14 @@ impl Resolver {
                 }
             }
             ExprKind::Lambda(lambda) => {
+                for parameter in &lambda.parameters {
+                    if let Some(t) = &parameter.type_ref {
+                        self.type_ref(t);
+                    }
+                }
+                if let Some(t) = &lambda.return_type {
+                    self.type_ref(t);
+                }
                 // Parameters and the body share one scope, as they do in a
                 // declared function. Names the body does not bind resolve
                 // outward, which is what makes a capture a capture.
@@ -804,6 +843,10 @@ impl Resolver {
                     self.expression(element);
                 }
             }
+            ExprKind::ArrayRepeat { element, count } => {
+                self.expression(element);
+                self.expression(count);
+            }
             ExprKind::Index { object, index } => {
                 self.expression(object);
                 self.expression(index);
@@ -813,6 +856,38 @@ impl Resolver {
                 self.expression(start);
                 self.expression(end);
             }
+        }
+    }
+    fn type_ref(&mut self, type_ref: &TypeRef) {
+        match type_ref {
+            TypeRef::FixedArray { element, size, .. } => {
+                self.expression(size);
+                self.type_ref(element);
+            }
+            TypeRef::Array { element, .. }
+            | TypeRef::Option { element, .. }
+            | TypeRef::Pointer {
+                pointee: element, ..
+            } => {
+                self.type_ref(element);
+            }
+            TypeRef::Result { ok, err, .. } => {
+                self.type_ref(ok);
+                self.type_ref(err);
+            }
+            TypeRef::Function {
+                parameters,
+                return_type,
+                ..
+            } => {
+                for p in parameters {
+                    self.type_ref(p);
+                }
+                if let Some(ret) = return_type {
+                    self.type_ref(ret);
+                }
+            }
+            TypeRef::Named(_) | TypeRef::Weak { .. } => {}
         }
     }
 }

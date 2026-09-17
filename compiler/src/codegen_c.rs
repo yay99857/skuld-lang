@@ -10,6 +10,7 @@ pub fn emit_c(program: &Program) -> String {
         enums: program.enums.clone(),
         interfaces: program.interfaces.clone(),
         arrays: program.arrays.clone(),
+        fixed_arrays: program.fixed_arrays.clone(),
         options: program.options.clone(),
         results: program.results.clone(),
         current_return: Type::Void,
@@ -77,9 +78,13 @@ pub fn emit_c(program: &Program) -> String {
             emitter.line(&format!("typedef struct skuld_s{index} skuld_s{index};"));
         }
     }
-    // Inline structs, enums and Options must be complete before embedding them.
+    // Inline structs, enums, fixed arrays and Options must be complete before embedding them.
     let types: Vec<_> = (0..program.structs.len())
         .map(|i| Type::Struct(crate::types::StructId(i)))
+        .chain(
+            (0..program.fixed_arrays.len())
+                .map(|i| Type::FixedArray(crate::types::FixedArrayId(i))),
+        )
         .chain((0..program.options.len()).map(|i| Type::Option(crate::types::OptionId(i))))
         .chain((0..program.results.len()).map(|i| Type::Result(crate::types::ResultId(i))))
         .chain((0..program.enums.len()).map(|i| Type::Enum(crate::types::EnumId(i))))
@@ -93,11 +98,12 @@ pub fn emit_c(program: &Program) -> String {
             }
             let complete = |field: Type| match field {
                 Type::Struct(id) => program.structs[id.0].reference || order.contains(&field),
-                Type::Option(_) | Type::Result(_) => order.contains(&field),
+                Type::Option(_) | Type::Result(_) | Type::FixedArray(_) => order.contains(&field),
                 Type::Enum(_) => order.contains(&field),
                 _ => true,
             };
             let ready = match ty {
+                Type::FixedArray(id) => complete(program.fixed_arrays[id.0].element),
                 Type::Struct(id) => program.structs[id.0]
                     .fields
                     .iter()
@@ -122,6 +128,16 @@ pub fn emit_c(program: &Program) -> String {
     }
     for ty in order {
         let index = match ty {
+            Type::FixedArray(id) => {
+                let info = &program.fixed_arrays[id.0];
+                emitter.line(&format!(
+                    "typedef struct {{ {} data[{}]; }} skuld_fa{};",
+                    emitter.c_type(info.element),
+                    info.size,
+                    id.0
+                ));
+                continue;
+            }
             Type::Option(id) => {
                 emitter.line(&format!(
                     "typedef struct {{ bool some; {} value; }} skuld_o{};",
@@ -219,6 +235,10 @@ pub fn emit_c(program: &Program) -> String {
     let managed: Vec<_> = (0..program.structs.len())
         .map(|i| Type::Struct(crate::types::StructId(i)))
         .chain((0..program.arrays.len()).map(|i| Type::Array(crate::types::ArrayId(i))))
+        .chain(
+            (0..program.fixed_arrays.len())
+                .map(|i| Type::FixedArray(crate::types::FixedArrayId(i))),
+        )
         .chain((0..program.options.len()).map(|i| Type::Option(crate::types::OptionId(i))))
         .chain((0..program.results.len()).map(|i| Type::Result(crate::types::ResultId(i))))
         .chain((0..program.enums.len()).map(|i| Type::Enum(crate::types::EnumId(i))))
@@ -583,6 +603,7 @@ struct Emitter {
     enums: Vec<crate::types::EnumInfo>,
     interfaces: Vec<crate::types::InterfaceInfo>,
     arrays: Vec<crate::types::ArrayInfo>,
+    fixed_arrays: Vec<crate::types::FixedArrayInfo>,
     options: Vec<crate::types::OptionInfo>,
     results: Vec<crate::types::ResultInfo>,
     /// The enclosing function's return type, which `?` needs to build its
@@ -611,6 +632,7 @@ fn type_name(structs: &[StructInfo], ty: Type) -> String {
         Type::Result(id) => format!("skuld_r{}", id.0),
         Type::Enum(id) => format!("skuld_e{}", id.0),
         Type::Array(id) => format!("skuld_a{} *", id.0),
+        Type::FixedArray(id) => format!("skuld_fa{}", id.0),
         // A class value is a pointer to a shared object; a struct is the
         // object itself, and C assignment copies it, which is value semantics.
         Type::Function(id) => format!("skuld_ft{}", id.0),
@@ -661,6 +683,7 @@ impl Emitter {
         match ty {
             Type::Struct(id) => format!("skuld_s{}", id.0),
             Type::Array(id) => format!("skuld_a{}", id.0),
+            Type::FixedArray(id) => format!("skuld_fa{}", id.0),
             Type::Option(id) => format!("skuld_o{}", id.0),
             Type::Result(id) => format!("skuld_r{}", id.0),
             Type::Enum(id) => format!("skuld_e{}", id.0),
@@ -746,7 +769,55 @@ impl Emitter {
         self.indent -= 1;
         self.line("}");
     }
+    fn fixed_array_helpers(&mut self, id: crate::types::FixedArrayId) {
+        let name = format!("skuld_fa{}", id.0);
+        let info = &self.fixed_arrays[id.0];
+        let element = info.element;
+        let size = info.size;
+        let element_managed = self.managed(element);
+
+        self.line(&format!(
+            "static inline {name} {name}_retain({name} value) {{"
+        ));
+        self.indent += 1;
+        if element_managed {
+            self.line(&format!(
+                "for (size_t i = 0; i < {size}; ++i) value.data[i] = {};",
+                self.retained(element, "value.data[i]")
+            ));
+        }
+        self.line("return value;");
+        self.indent -= 1;
+        self.line("}");
+
+        self.line(&format!(
+            "static inline void {name}_release({name} *slot) {{"
+        ));
+        self.indent += 1;
+        if element_managed {
+            let release = self.release_function(element).expect("managed element");
+            self.line(&format!(
+                "for (size_t i = 0; i < {size}; ++i) {release}(&slot->data[i]);"
+            ));
+        }
+        self.indent -= 1;
+        self.line("}");
+
+        self.line(&format!(
+            "static inline void {name}_assign({name} *slot, {name} value) {{"
+        ));
+        self.indent += 1;
+        self.line(&format!("{name} previous = *slot;"));
+        self.line(&format!("*slot = {name}_retain(value);"));
+        self.line(&format!("{name}_release(&previous);"));
+        self.indent -= 1;
+        self.line("}");
+    }
     fn aggregate_helpers(&mut self, ty: Type) {
+        if let Type::FixedArray(id) = ty {
+            self.fixed_array_helpers(id);
+            return;
+        }
         if let Type::Option(id) = ty {
             self.option_helpers(id);
             return;
@@ -1064,6 +1135,52 @@ impl Emitter {
                 format!("{object}->f{index}")
             }
             Place::Index { object, index } => self.index_place(object, index),
+            Place::FixedIndex { base, index, size } => {
+                let base = self.place(base);
+                let subscript = self.expression(index);
+                format!(
+                    "{base}.data[skuld_index({subscript}, {size}, {})]",
+                    index.span.start
+                )
+            }
+        }
+    }
+
+    fn lvalue(&mut self, expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Local { id, .. } => Some(self.local_name(*id)),
+            ExprKind::Field { object, index } => {
+                if let Type::Struct(id) = object.ty
+                    && self.structs[id.0].reference
+                {
+                    let obj = self.expression(object);
+                    Some(format!("{obj}->f{index}"))
+                } else {
+                    let base = self.lvalue(object)?;
+                    Some(format!("{base}.f{index}"))
+                }
+            }
+            ExprKind::Index { object, index } => {
+                if let Type::FixedArray(fa_id) = object.ty {
+                    let base = self.lvalue(object)?;
+                    let size = self.fixed_arrays[fa_id.0].size;
+                    let subscript = self.expression(index);
+                    Some(format!(
+                        "{base}.data[skuld_index({subscript}, {size}, {})]",
+                        index.span.start
+                    ))
+                } else if let Type::Array(_) = object.ty {
+                    let obj = self.expression(object);
+                    let subscript = self.expression(index);
+                    Some(format!(
+                        "{obj}->data[skuld_index({subscript}, {obj}->len, {})]",
+                        index.span.start
+                    ))
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
     }
 
@@ -1088,6 +1205,7 @@ impl Emitter {
     fn managed(&self, ty: Type) -> bool {
         match ty {
             Type::String | Type::Array(_) | Type::Weak(_) | Type::Interface(_) => true,
+            Type::FixedArray(id) => self.managed(self.fixed_arrays[id.0].element),
             Type::Option(id) => self.managed(self.options[id.0].element),
             Type::Result(id) => {
                 self.managed(self.results[id.0].ok) || self.managed(self.results[id.0].err)
@@ -1116,6 +1234,7 @@ impl Emitter {
             Type::Weak(_) => format!("skuld_weak_retain({value})"),
             Type::Interface(id) => format!("skuld_i{}_retain({value})", id.0),
             Type::Array(id) => format!("skuld_a{}_retain({value})", id.0),
+            Type::FixedArray(id) if self.managed(ty) => format!("skuld_fa{}_retain({value})", id.0),
             Type::Struct(id) if self.managed(ty) => format!("skuld_s{}_retain({value})", id.0),
             Type::Enum(id) if self.managed(ty) => format!("skuld_e{}_retain({value})", id.0),
             _ => value.into(),
@@ -1129,6 +1248,7 @@ impl Emitter {
             Type::Weak(_) => Some("skuld_weak_release".into()),
             Type::Interface(id) => Some(format!("skuld_i{}_release", id.0)),
             Type::Array(id) => Some(format!("skuld_a{}_release", id.0)),
+            Type::FixedArray(id) if self.managed(ty) => Some(format!("skuld_fa{}_release", id.0)),
             Type::Struct(id) if self.managed(ty) => Some(format!("skuld_s{}_release", id.0)),
             Type::Enum(id) if self.managed(ty) => Some(format!("skuld_e{}_release", id.0)),
             _ => None,
@@ -1150,6 +1270,7 @@ impl Emitter {
             Type::Weak(_) => Some("skuld_weak_assign".into()),
             Type::Interface(id) => Some(format!("skuld_i{}_assign", id.0)),
             Type::Array(id) => Some(format!("skuld_a{}_assign", id.0)),
+            Type::FixedArray(id) if self.managed(ty) => Some(format!("skuld_fa{}_assign", id.0)),
             Type::Struct(id) if self.managed(ty) => Some(format!("skuld_s{}_assign", id.0)),
             Type::Enum(id) if self.managed(ty) => Some(format!("skuld_e{}_assign", id.0)),
             _ => None,
@@ -1581,6 +1702,37 @@ impl Emitter {
                         self.indent -= 1;
                         self.line("}");
                     }
+                    ForIterable::FixedArray { collection, size } => {
+                        let arr_val = self.expression(collection);
+                        let arr_temp = self.next_temp;
+                        self.next_temp += 1;
+                        let arr_c_ty = self.c_type(collection.ty);
+                        self.line(&format!("{arr_c_ty} skuld_t{arr_temp} = {arr_val};"));
+                        let idx_temp = self.next_temp;
+                        self.next_temp += 1;
+                        self.line(&format!(
+                            "for (int64_t skuld_t{idx_temp} = 0; skuld_t{idx_temp} < {size}; skuld_t{idx_temp}++) {{"
+                        ));
+                        self.indent += 1;
+                        let Type::FixedArray(array_id) = collection.ty else {
+                            unreachable!("checked fixed array for loop")
+                        };
+                        let elem_ty = self.fixed_arrays[array_id.0].element;
+                        let cleanup = self.cleanup(elem_ty);
+                        let elem_c_ty = self.c_type(elem_ty);
+                        let retained_elem = self.retained(
+                            elem_ty,
+                            &format!("skuld_t{arr_temp}.data[skuld_t{idx_temp}]"),
+                        );
+                        self.line(&format!(
+                            "{cleanup}{elem_c_ty} skuld_v{} = {retained_elem};",
+                            variable.0
+                        ));
+                        self.line(&format!("(void)skuld_v{};", variable.0));
+                        self.block_contents(body);
+                        self.indent -= 1;
+                        self.line("}");
+                    }
                     // The same loop over a string's own bytes: no array is
                     // built, and a `u8` needs no retain or release.
                     ForIterable::StringBytes(text) => {
@@ -1767,6 +1919,56 @@ impl Emitter {
                 }
                 name
             }
+            ExprKind::FixedArray(elements) => {
+                let Type::FixedArray(id) = expr.ty else {
+                    unreachable!("checked fixed array")
+                };
+                let element_type = self.fixed_arrays[id.0].element;
+                let values: Vec<_> = elements
+                    .iter()
+                    .map(|element| self.expression(element))
+                    .collect();
+                let type_str = self.c_type(expr.ty);
+                let name = self.store(expr.ty, &format!("({type_str}){{0}}"), false);
+                for (position, value) in values.iter().enumerate() {
+                    self.line(&format!(
+                        "{name}.data[{position}] = {};",
+                        self.retained(element_type, value)
+                    ));
+                }
+                name
+            }
+            ExprKind::FixedArrayRepeat { element, size } => {
+                let Type::FixedArray(id) = expr.ty else {
+                    unreachable!("checked fixed array")
+                };
+                let element_type = self.fixed_arrays[id.0].element;
+                let val = self.expression(element);
+                let type_str = self.c_type(expr.ty);
+                let name = self.store(expr.ty, &format!("({type_str}){{0}}"), false);
+                self.line(&format!(
+                    "for (size_t skuld_i = 0; skuld_i < {size}; ++skuld_i) {{ {name}.data[skuld_i] = {}; }}",
+                    self.retained(element_type, &val)
+                ));
+                name
+            }
+            ExprKind::FixedArrayToSlice { object, array_id } => {
+                let val = if let Some(lv) = self.lvalue(object) {
+                    lv
+                } else {
+                    self.expression(object)
+                };
+                let Type::FixedArray(fa_id) = object.ty else {
+                    unreachable!("checked fixed array to slice")
+                };
+                let size = self.fixed_arrays[fa_id.0].size;
+                let slice_type = format!("skuld_a{}", array_id.0);
+                self.store(
+                    expr.ty,
+                    &format!("(&( {slice_type} ){{ .header = {{ .strong = SIZE_MAX / 2, .weak = SIZE_MAX / 2, .destroy = NULL }}, .len = {size}, .capacity = 0, .data = {val}.data }})"),
+                    true,
+                )
+            }
             ExprKind::Index { object, index } if object.ty == Type::String => {
                 // A byte read out of settled storage borrows it: nothing
                 // between the read and the use can release the string.
@@ -1803,6 +2005,31 @@ impl Emitter {
                         &format!("skuld_string_slice({value}, {from}, {to}, {byte})"),
                         true,
                     );
+                }
+                if let Type::FixedArray(fa_id) = object.ty {
+                    let element = self.fixed_arrays[fa_id.0].element;
+                    let size = self.fixed_arrays[fa_id.0].size;
+                    let low = self.temporary(Type::INT, &format!("(int64_t)({from})"));
+                    let high = self.temporary(Type::INT, &format!("(int64_t)({to})"));
+                    self.line(&format!(
+                        "skuld_slice_range({low}, {high}, {size}, {byte});"
+                    ));
+                    let result = self.allocate(expr.ty, &format!("(size_t)({high} - {low})"), byte);
+                    self.line(&format!("for (size_t i = 0; i < {result}->len; ++i) {{"));
+                    self.indent += 1;
+                    let val = if let Some(lv) = self.lvalue(object) {
+                        lv
+                    } else {
+                        value
+                    };
+                    let source = format!("{val}.data[(size_t){low} + i]");
+                    self.line(&format!(
+                        "{result}->data[i] = {};",
+                        self.retained(element, &source)
+                    ));
+                    self.indent -= 1;
+                    self.line("}");
+                    return result;
                 }
                 let Type::Array(id) = object.ty else {
                     unreachable!("checked slice")
@@ -1867,11 +2094,24 @@ impl Emitter {
             // which the temporary holding it guarantees for this statement.
             ExprKind::Ptr(value) => {
                 let ty = value.ty;
-                let value = self.expression(value);
                 let cast = self.c_type(expr.ty);
                 let bytes = match ty {
-                    Type::String => format!("({cast}){value}.data"),
-                    Type::Array(_) => format!("({cast}){value}->data"),
+                    Type::String => {
+                        let value = self.expression(value);
+                        format!("({cast}){value}.data")
+                    }
+                    Type::Array(_) => {
+                        let value = self.expression(value);
+                        format!("({cast}){value}->data")
+                    }
+                    Type::FixedArray(_) => {
+                        let val = if let Some(lv) = self.lvalue(value) {
+                            lv
+                        } else {
+                            self.expression(value)
+                        };
+                        format!("({cast}){val}.data")
+                    }
                     _ => unreachable!("internal compiler bug: unchecked `ptr` operand"),
                 };
                 self.temporary(expr.ty, &bytes)
@@ -1893,6 +2133,26 @@ impl Emitter {
                 result
             }
             ExprKind::Index { object, index } => {
+                if let Type::FixedArray(id) = object.ty {
+                    let size = self.fixed_arrays[id.0].size;
+                    if self.runs_no_code(index)
+                        && let Some(storage) = self.lvalue(object)
+                    {
+                        let subscript = self.expression(index);
+                        let read = format!(
+                            "{storage}.data[skuld_index({subscript}, {size}, {})]",
+                            index.span.start
+                        );
+                        return self.temporary(expr.ty, &read);
+                    }
+                    let value = self.expression(object);
+                    let subscript = self.expression(index);
+                    let read = format!(
+                        "{value}.data[skuld_index({subscript}, {size}, {})]",
+                        index.span.start
+                    );
+                    return self.temporary(expr.ty, &read);
+                }
                 if let Some(storage) = self.settled_storage(object)
                     && self.runs_no_code(index)
                 {
@@ -2015,12 +2275,18 @@ impl Emitter {
                 } else if value.ty.int_type().is_some_and(|it| it.signed()) {
                     self.temporary(
                         expr.ty,
-                        &format!("skuld_i_to_char((int64_t)({rendered}), {})", expr.span.start),
+                        &format!(
+                            "skuld_i_to_char((int64_t)({rendered}), {})",
+                            expr.span.start
+                        ),
                     )
                 } else {
                     self.temporary(
                         expr.ty,
-                        &format!("skuld_u_to_char((uint64_t)({rendered}), {})", expr.span.start),
+                        &format!(
+                            "skuld_u_to_char((uint64_t)({rendered}), {})",
+                            expr.span.start
+                        ),
                     )
                 }
             }

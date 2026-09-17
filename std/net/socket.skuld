@@ -136,12 +136,16 @@ pub class Connection {
     // without a length requires.
     receive_all() -> Result<[]u8, NetError> {
         var all: []u8 = []
+        var buffer: [4096]u8 = [0; 4096]
         loop {
-            let chunk = this.receive(4096)?
-            if chunk.len() == 0 {
+            let got = recv(i32(this.handle), ptr(buffer), u64(4096), 0)
+            if got < 0 {
+                return Err(NetError.ReceiveFailed(os.failure(this.peer)))
+            }
+            if got == 0 {
                 break
             }
-            for byte in chunk {
+            for byte in buffer[0..int(got)] {
                 all.push(byte)
             }
         }
@@ -162,22 +166,24 @@ pub func open(address: string, port: int) -> Result<Connection, NetError> {
     if handle < 0 {
         return Err(NetError.OpenFailed(os.failure("a socket")))
     }
-    var sockaddr: []u8 = []
-    // sin_family: AF_INET in host order on a little-endian target.
-    sockaddr.push(u8(AF_INET))
-    sockaddr.push(0)
-    // sin_port, network order.
-    sockaddr.push(u8(port / 256))
-    sockaddr.push(u8(port % 256))
-    for octet in octets {
-        sockaddr.push(octet)
-    }
-    // sin_zero.
-    var pad = 0
-    while pad < 8 {
-        sockaddr.push(0)
-        pad = pad + 1
-    }
+    let sockaddr: [16]u8 = [
+        u8(AF_INET),
+        0,
+        u8(port / 256),
+        u8(port % 256),
+        octets[0],
+        octets[1],
+        octets[2],
+        octets[3],
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ]
     if connect(i32(handle), ptr(sockaddr), SOCKADDR_IN_SIZE) < 0 {
         let problem = os.failure("${address}:${port}")
         let ignored = close(i32(handle))

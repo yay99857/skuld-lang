@@ -6,9 +6,10 @@ use crate::{
     resolver::{Builtin, Resolution, SymbolId, SymbolKind},
     span::Span,
     types::{
-        ArrayId, ArrayInfo, ConstValue, EnumId, EnumInfo, FunctionTypeId, FunctionTypeInfo, IntType,
-        InterfaceId, InterfaceInfo, InterfaceMethod, OptionId, OptionInfo, Pointee, ResultId,
-        ResultInfo, StructId, Type, VariantInfo, int_type_fits, int_type_min, sign_extend,
+        ArrayId, ArrayInfo, ConstValue, EnumId, EnumInfo, FixedArrayId, FixedArrayInfo,
+        FunctionTypeId, FunctionTypeInfo, IntType, InterfaceId, InterfaceInfo, InterfaceMethod,
+        OptionId, OptionInfo, Pointee, ResultId, ResultInfo, StructId, Type, VariantInfo,
+        int_type_fits, int_type_min, sign_extend,
     },
 };
 use std::collections::BTreeMap;
@@ -50,9 +51,11 @@ pub struct TypedProgram {
     /// Enum names by module, since two modules may each declare a `Tag`.
     pub(crate) enum_names: Vec<BTreeMap<String, EnumId>>,
     pub(crate) arrays: Vec<ArrayInfo>,
+    pub(crate) fixed_arrays: Vec<FixedArrayInfo>,
     pub(crate) options: Vec<OptionInfo>,
     pub(crate) results: Vec<ResultInfo>,
     pub(crate) implicit_wraps: BTreeMap<(FileId, usize, usize), Type>,
+    pub(crate) slice_coercions: BTreeMap<(FileId, usize, usize), Type>,
     pub(crate) function_signatures: Vec<FunctionTypeInfo>,
     pub(crate) constants: BTreeMap<SymbolId, ConstValue>,
 }
@@ -71,6 +74,9 @@ impl TypedProgram {
     }
     pub fn arrays(&self) -> &[ArrayInfo] {
         &self.arrays
+    }
+    pub fn fixed_arrays(&self) -> &[FixedArrayInfo] {
+        &self.fixed_arrays
     }
     pub fn program(&self) -> &LoadedProgram {
         &self.program
@@ -162,6 +168,9 @@ pub(crate) fn type_check(
         conformances: BTreeMap::new(),
         interface_wraps: BTreeMap::new(),
         arrays: Vec::new(),
+        fixed_arrays: Vec::new(),
+        fixed_array_types: BTreeMap::new(),
+        slice_coercions: BTreeMap::new(),
         options: Vec::new(),
         option_types: BTreeMap::new(),
         results: Vec::new(),
@@ -620,7 +629,9 @@ pub(crate) fn type_check(
         let file_id = FileId(file_idx);
         for constant in &file.program.constants {
             let sym_id = checker.resolution.declarations[&(file_id, constant.name.span.start)];
-            checker.constant_decls.insert(sym_id, (file_id, constant.clone()));
+            checker
+                .constant_decls
+                .insert(sym_id, (file_id, constant.clone()));
         }
     }
     for (file_idx, file) in program.files.iter().enumerate() {
@@ -691,6 +702,7 @@ pub(crate) fn type_check(
         function_signatures,
         module_types,
         arrays,
+        fixed_arrays,
         options,
         results,
         expressions,
@@ -698,6 +710,7 @@ pub(crate) fn type_check(
         signatures,
         externs,
         implicit_wraps,
+        slice_coercions,
         constants,
         ..
     } = checker;
@@ -713,9 +726,11 @@ pub(crate) fn type_check(
         interface_wraps,
         enum_names,
         arrays,
+        fixed_arrays,
         options,
         results,
         implicit_wraps,
+        slice_coercions,
         expressions,
         symbol_types,
         signatures,
@@ -766,6 +781,9 @@ struct Checker<'a> {
     interface_wraps: BTreeMap<(FileId, usize, usize), Type>,
     /// Interned array types; `Type::Array` indexes this.
     arrays: Vec<ArrayInfo>,
+    fixed_arrays: Vec<FixedArrayInfo>,
+    fixed_array_types: BTreeMap<(Type, usize), FixedArrayId>,
+    slice_coercions: BTreeMap<(FileId, usize, usize), Type>,
     options: Vec<OptionInfo>,
     option_types: BTreeMap<Type, OptionId>,
     /// Interned `Result` types; `Type::Result` indexes this.
@@ -1124,6 +1142,11 @@ impl Checker<'_> {
             Type::Struct(id) => self.structs[id.0].name.clone(),
             Type::Enum(id) => self.enums[id.0].name.clone(),
             Type::Array(id) => format!("[]{}", self.type_name(self.arrays[id.0].element)),
+            Type::FixedArray(id) => format!(
+                "[{}]{}",
+                self.fixed_arrays[id.0].size,
+                self.type_name(self.fixed_arrays[id.0].element)
+            ),
             Type::Option(id) => format!("Option<{}>", self.type_name(self.options[id.0].element)),
             Type::Result(id) => format!(
                 "Result<{}, {}>",
@@ -1220,6 +1243,16 @@ impl Checker<'_> {
             self.arrays.push(ArrayInfo { element });
             self.array_types.insert(element, id);
             Type::Array(id)
+        }
+    }
+    fn fixed_array_type(&mut self, element: Type, size: usize) -> Type {
+        if let Some(&id) = self.fixed_array_types.get(&(element, size)) {
+            Type::FixedArray(id)
+        } else {
+            let id = FixedArrayId(self.fixed_arrays.len());
+            self.fixed_arrays.push(FixedArrayInfo { element, size });
+            self.fixed_array_types.insert((element, size), id);
+            Type::FixedArray(id)
         }
     }
     fn type_ref(&mut self, reference: &TypeRef, allow_void: bool) -> Type {
@@ -1375,6 +1408,60 @@ impl Checker<'_> {
                     self.array_type(element_type)
                 }
             }
+            TypeRef::FixedArray {
+                element,
+                size,
+                span,
+            } => {
+                let size_val = self.eval_constant_expr(size, Some(Type::Int(IntType::USize)));
+                let count = match size_val {
+                    Some(ConstValue::Int(v, _)) => {
+                        if v <= 0 {
+                            self.error(
+                                DiagnosticCode::IntegerRange,
+                                size.span,
+                                "fixed array size must be greater than zero",
+                            );
+                            None
+                        } else if v > (i32::MAX as i128) {
+                            self.error(
+                                DiagnosticCode::IntegerRange,
+                                size.span,
+                                "fixed array size is too large",
+                            );
+                            None
+                        } else {
+                            Some(v as usize)
+                        }
+                    }
+                    Some(_) => {
+                        self.error(
+                            DiagnosticCode::TypeMismatch,
+                            size.span,
+                            "fixed array size must be an integer",
+                        );
+                        None
+                    }
+                    None => None,
+                };
+                let element_type = self.type_ref(element, false);
+                self.reject_stored_function(element_type, element.span(), "an array element");
+                match count {
+                    Some(count) if element_type != Type::Error => {
+                        if element_type == Type::Void {
+                            self.error(
+                                DiagnosticCode::InvalidValueType,
+                                *span,
+                                "array element type cannot be `void`",
+                            );
+                            Type::Error
+                        } else {
+                            self.fixed_array_type(element_type, count)
+                        }
+                    }
+                    _ => Type::Error,
+                }
+            }
         }
     }
     fn expect_type(&mut self, expected: Type, found: Type, span: Span) -> bool {
@@ -1383,6 +1470,17 @@ impl Checker<'_> {
         }
         if expected == found {
             return true;
+        }
+        if let Type::Array(expected_array) = expected {
+            let expected_elem = self.arrays[expected_array.0].element;
+            if let Type::FixedArray(found_fixed) = found {
+                let fixed_info = self.fixed_arrays[found_fixed.0];
+                if fixed_info.element == expected_elem {
+                    self.slice_coercions
+                        .insert((self.file, span.start, span.end), expected);
+                    return true;
+                }
+            }
         }
         if let Type::Option(id) = expected {
             let element = self.options[id.0].element;
@@ -1497,11 +1595,16 @@ impl Checker<'_> {
                     .map(|e| self.expression(e))
                     .unwrap_or(Type::Void);
                 self.expected_context = previous_expected;
-                self.expect_type(
-                    self.return_type,
-                    found,
-                    value.as_ref().map(|e| e.span).unwrap_or(statement.span),
-                );
+                let span = value.as_ref().map(|e| e.span).unwrap_or(statement.span);
+                if let (Type::Array(_), Type::FixedArray(_)) = (self.return_type, found) {
+                    self.error(
+                        DiagnosticCode::InvalidValueType,
+                        span,
+                        "cannot return a fixed-size array as a dynamic array slice; slice explicitly",
+                    );
+                    return true;
+                }
+                self.expect_type(self.return_type, found, span);
                 true
             }
             StatementKind::Block(block) => self.block(block),
@@ -1705,10 +1808,7 @@ impl Checker<'_> {
                                         self.error(
                                             DiagnosticCode::TypeMismatch,
                                             variant_name.span,
-                                            format!(
-                                                "`{}` is not a constant",
-                                                variant_name.text
-                                            ),
+                                            format!("`{}` is not a constant", variant_name.text),
                                         );
                                     }
                                 } else {
@@ -1900,6 +2000,7 @@ impl Checker<'_> {
                         let collection_ty = self.expression(collection);
                         match collection_ty {
                             Type::Array(id) => self.arrays[id.0].element,
+                            Type::FixedArray(id) => self.fixed_arrays[id.0].element,
                             Type::Error => Type::Error,
                             other => {
                                 self.error(
@@ -2206,6 +2307,14 @@ impl Checker<'_> {
                 );
             }
             initialized[index] = true;
+            if let (Type::Array(_), Type::FixedArray(_)) = (declared.ty, found) {
+                self.error(
+                    DiagnosticCode::InvalidValueType,
+                    field.value.span,
+                    "cannot initialize a field expecting a dynamic array with a fixed-size array; slice explicitly",
+                );
+                continue;
+            }
             self.expect_type(declared.ty, found, field.value.span);
         }
         // Every field without a default must be given a value: an object is
@@ -2569,6 +2678,16 @@ impl Checker<'_> {
                 self.expected_context = Some(target_type);
                 let value_type = self.expression(value);
                 self.expected_context = previous_expected;
+                if let (Type::Array(_), Type::FixedArray(_)) = (target_type, value_type)
+                    && self.through_reference(target)
+                {
+                    self.error(
+                        DiagnosticCode::InvalidValueType,
+                        value.span,
+                        "cannot assign a fixed-size array to a class field expecting a dynamic array; slice explicitly",
+                    );
+                    return target_type;
+                }
                 self.expect_type(target_type, value_type, value.span);
                 if *op != AssignmentOp::Assign {
                     let binary = match op {
@@ -2592,7 +2711,10 @@ impl Checker<'_> {
             }
             ExprKind::Member { object, member } => {
                 if matches!(&object.kind, ExprKind::Identifier(qualifier) if self.resolution.module_in_file(self.file, &qualifier.text).is_some())
-                    && let Some(&sym_id) = self.resolution.references.get(&(self.file, member.span.start))
+                    && let Some(&sym_id) = self
+                        .resolution
+                        .references
+                        .get(&(self.file, member.span.start))
                     && matches!(self.resolution.symbols[sym_id.0].kind, SymbolKind::Constant)
                 {
                     let ty = self.symbol_types[sym_id.0];
@@ -2728,13 +2850,36 @@ impl Checker<'_> {
             }
             ExprKind::Array(elements) => {
                 let previous_expected = self.expected_context;
-                let expected_elem = match expected {
-                    Some(Type::Array(id)) => Some(self.arrays[id.0].element),
-                    _ => None,
+                let (expected_elem, expected_fixed_size) = match expected {
+                    Some(Type::Array(id)) => (Some(self.arrays[id.0].element), None),
+                    Some(Type::FixedArray(id)) => (
+                        Some(self.fixed_arrays[id.0].element),
+                        Some(self.fixed_arrays[id.0].size),
+                    ),
+                    _ => (None, None),
                 };
+                if let Some(expected_size) = expected_fixed_size
+                    && elements.len() != expected_size
+                {
+                    self.error(
+                        DiagnosticCode::TypeMismatch,
+                        expr.span,
+                        format!(
+                            "fixed array size mismatch: expected {} elements, found {}",
+                            expected_size,
+                            elements.len()
+                        ),
+                    );
+                }
                 if elements.is_empty() {
                     match expected_elem {
-                        Some(elem) => self.array_type(elem),
+                        Some(elem) => {
+                            if let Some(size) = expected_fixed_size {
+                                self.fixed_array_type(elem, size)
+                            } else {
+                                self.array_type(elem)
+                            }
+                        }
                         None => {
                             self.error(
                                 DiagnosticCode::UnknownType,
@@ -2784,10 +2929,88 @@ impl Checker<'_> {
                         Type::Error
                     } else {
                         match elem_ty {
-                            Some(elem) => self.array_type(elem),
+                            Some(elem) => {
+                                if let Some(size) = expected_fixed_size {
+                                    self.fixed_array_type(elem, size)
+                                } else {
+                                    self.array_type(elem)
+                                }
+                            }
                             None => Type::Error,
                         }
                     }
+                }
+            }
+            ExprKind::ArrayRepeat { element, count } => {
+                let count_val = self.eval_constant_expr(count, Some(Type::Int(IntType::USize)));
+                let size = match count_val {
+                    Some(ConstValue::Int(v, _)) => {
+                        if v <= 0 {
+                            self.error(
+                                DiagnosticCode::IntegerRange,
+                                count.span,
+                                "fixed array size must be greater than zero",
+                            );
+                            None
+                        } else if v > (i32::MAX as i128) {
+                            self.error(
+                                DiagnosticCode::IntegerRange,
+                                count.span,
+                                "fixed array size is too large",
+                            );
+                            None
+                        } else {
+                            Some(v as usize)
+                        }
+                    }
+                    Some(_) => {
+                        self.error(
+                            DiagnosticCode::TypeMismatch,
+                            count.span,
+                            "fixed array size must be an integer",
+                        );
+                        None
+                    }
+                    None => None,
+                };
+                let expected_elem = match expected {
+                    Some(Type::FixedArray(id)) => Some(self.fixed_arrays[id.0].element),
+                    Some(Type::Array(id)) => Some(self.arrays[id.0].element),
+                    _ => None,
+                };
+                let previous_expected = self.expected_context;
+                self.expected_context = expected_elem;
+                let elem_ty = self.expression(element);
+                self.expected_context = previous_expected;
+                if let Some(expected_ty) = expected_elem {
+                    self.expect_type(expected_ty, elem_ty, element.span);
+                }
+                if elem_ty == Type::Void {
+                    self.error(
+                        DiagnosticCode::InvalidValueType,
+                        element.span,
+                        "array element cannot be `void`",
+                    );
+                } else if matches!(elem_ty, Type::Function(_)) {
+                    self.reject_stored_function(elem_ty, element.span, "an array element");
+                }
+                if let Some(sz) = size.filter(|_| elem_ty != Type::Error) {
+                    if let Some(Type::FixedArray(id)) = expected {
+                        let expected_sz = self.fixed_arrays[id.0].size;
+                        if sz != expected_sz {
+                            self.error(
+                                DiagnosticCode::TypeMismatch,
+                                expr.span,
+                                format!(
+                                    "fixed array size mismatch: expected {} elements, found {}",
+                                    expected_sz, sz
+                                ),
+                            );
+                        }
+                    }
+                    self.fixed_array_type(elem_ty, sz)
+                } else {
+                    Type::Error
                 }
             }
             ExprKind::Slice { object, start, end } => {
@@ -2809,7 +3032,13 @@ impl Checker<'_> {
                     // through a short view of it.
                     Type::String if usable => Type::String,
                     Type::Array(id) if usable => Type::Array(id),
-                    Type::String | Type::Array(_) | Type::Error => Type::Error,
+                    Type::FixedArray(id) if usable => {
+                        let elem = self.fixed_arrays[id.0].element;
+                        self.array_type(elem)
+                    }
+                    Type::String | Type::Array(_) | Type::FixedArray(_) | Type::Error => {
+                        Type::Error
+                    }
                     other => {
                         self.error(
                             DiagnosticCode::InvalidOperator,
@@ -2835,11 +3064,29 @@ impl Checker<'_> {
                 let usable = index_type == Type::INT;
                 match object_type {
                     Type::Array(id) if usable => self.arrays[id.0].element,
+                    Type::FixedArray(id) if usable => {
+                        let fixed = self.fixed_arrays[id.0];
+                        if let Some(idx) = self.const_int_value(index)
+                            && (idx < 0 || idx >= fixed.size as i128)
+                        {
+                            self.error(
+                                DiagnosticCode::IntegerRange,
+                                index.span,
+                                format!(
+                                    "index `{idx}` out of bounds for array of length {}",
+                                    fixed.size
+                                ),
+                            );
+                        }
+                        fixed.element
+                    }
                     // Indexing a string reads one byte, not one character:
                     // Skuld strings are byte sequences and this milestone adds
                     // no code point type.
                     Type::String if usable => Type::Int(IntType::U8),
-                    Type::Array(_) | Type::String | Type::Error => Type::Error,
+                    Type::Array(_) | Type::FixedArray(_) | Type::String | Type::Error => {
+                        Type::Error
+                    }
                     other => {
                         self.error(
                             DiagnosticCode::InvalidOperator,
@@ -2866,7 +3113,12 @@ impl Checker<'_> {
                     // textual form, and no implicit conversion beyond that.
                     if !matches!(
                         ty,
-                        Type::Int(_) | Type::Float | Type::Bool | Type::Char | Type::String | Type::Error
+                        Type::Int(_)
+                            | Type::Float
+                            | Type::Bool
+                            | Type::Char
+                            | Type::String
+                            | Type::Error
                     ) {
                         self.error(
                             DiagnosticCode::InvalidValueType,
@@ -2897,7 +3149,10 @@ impl Checker<'_> {
             Modulo | BitAnd | BitOr | BitXor | ShiftLeft | ShiftRight => left.int_type().is_some(),
             And | Or => left == Type::Bool,
             Equal | NotEqual => {
-                matches!(left, Type::Int(_) | Type::Float | Type::Bool | Type::String | Type::Char)
+                matches!(
+                    left,
+                    Type::Int(_) | Type::Float | Type::Bool | Type::String | Type::Char
+                )
             }
         };
         if !valid {
@@ -2971,7 +3226,7 @@ impl Checker<'_> {
             }
         }
         let builtin = match (receiver, member.text.as_str()) {
-            (Type::Array(_), "len") => Some(Type::INT),
+            (Type::Array(_) | Type::FixedArray(_), "len") => Some(Type::INT),
             // A string's length is its byte count, matching what indexing and
             // slicing address.
             (Type::String, "len") => Some(Type::INT),
@@ -3265,6 +3520,12 @@ impl Checker<'_> {
                         Type::Bool => Some(Pointee::Bool),
                         _ => None,
                     },
+                    Type::FixedArray(id) => match self.fixed_arrays[id.0].element {
+                        Type::Int(kind) => Some(Pointee::Int(kind)),
+                        Type::Float => Some(Pointee::Float),
+                        Type::Bool => Some(Pointee::Bool),
+                        _ => None,
+                    },
                     _ => None,
                 };
                 match pointee {
@@ -3298,17 +3559,7 @@ impl Checker<'_> {
                 self.expected_context = Some(bytes);
                 let found = self.expression(&arguments[0]);
                 self.expected_context = None;
-                if found == Type::Error {
-                    Type::Error
-                } else if found != bytes {
-                    self.error(
-                        DiagnosticCode::TypeMismatch,
-                        arguments[0].span,
-                        format!(
-                            "`bytes_to_string` expects `[]u8`, found `{}`",
-                            self.type_name(found)
-                        ),
-                    );
+                if found == Type::Error || !self.expect_type(bytes, found, arguments[0].span) {
                     Type::Error
                 } else {
                     // The error side is a message rather than a dedicated type:
@@ -3341,7 +3592,8 @@ impl Checker<'_> {
                 self.expected_context = previous;
                 if found == Type::Error {
                     Type::Error
-                } else if found.int_type().is_none() && found != Type::Float && found != Type::Char {
+                } else if found.int_type().is_none() && found != Type::Float && found != Type::Char
+                {
                     self.error(
                         DiagnosticCode::TypeMismatch,
                         arguments[0].span,
@@ -3489,7 +3741,12 @@ impl Checker<'_> {
                         );
                     } else if !matches!(
                         ty,
-                        Type::Int(_) | Type::Float | Type::Bool | Type::Char | Type::String | Type::Error
+                        Type::Int(_)
+                            | Type::Float
+                            | Type::Bool
+                            | Type::Char
+                            | Type::String
+                            | Type::Error
                     ) {
                         self.error(
                             DiagnosticCode::InvalidValueType,
@@ -3677,13 +3934,44 @@ impl Checker<'_> {
         }
     }
 
+    fn const_int_value(&self, expr: &Expr) -> Option<i128> {
+        match &expr.kind {
+            ExprKind::Literal(Literal::Integer(v)) => Some(*v as i128),
+            ExprKind::Unary {
+                op: UnaryOp::Negative,
+                operand,
+                ..
+            } => {
+                if let ExprKind::Literal(Literal::Integer(v)) = &operand.kind {
+                    Some(-(*v as i128))
+                } else {
+                    None
+                }
+            }
+            ExprKind::Identifier(name) => {
+                if let Some(&sym_id) = self
+                    .resolution
+                    .references
+                    .get(&(self.file, name.span.start))
+                    && let Some(ConstValue::Int(v, _)) = self.constants.get(&sym_id)
+                {
+                    return Some(*v);
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
     fn ensure_constant_evaluated(&mut self, id: SymbolId) -> Option<ConstValue> {
         if let Some(val) = self.constants.get(&id) {
             return Some(val.clone());
         }
         if self.evaluating_constants.contains(&id) {
             let sym_name = &self.resolution.symbols[id.0].name;
-            let sym_span = self.resolution.symbols[id.0].span.unwrap_or(Span::new(0, 0));
+            let sym_span = self.resolution.symbols[id.0]
+                .span
+                .unwrap_or(Span::new(0, 0));
             self.error(
                 DiagnosticCode::UnsupportedFeature,
                 sym_span,
@@ -3691,9 +3979,7 @@ impl Checker<'_> {
             );
             return None;
         }
-        let Some((decl_file, decl)) = self.constant_decls.get(&id).cloned() else {
-            return None;
-        };
+        let (decl_file, decl) = self.constant_decls.get(&id).cloned()?;
         let prev_file = self.file;
         let prev_module = self.module;
         self.file = decl_file;
@@ -4145,35 +4431,37 @@ impl Checker<'_> {
                             None
                         }
                     },
-                    BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => match (&left_val, &right_val) {
-                        (ConstValue::Int(a, it_a), ConstValue::Int(b, it_b)) => {
-                            if it_a != it_b {
+                    BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor => {
+                        match (&left_val, &right_val) {
+                            (ConstValue::Int(a, it_a), ConstValue::Int(b, it_b)) => {
+                                if it_a != it_b {
+                                    self.error(
+                                        DiagnosticCode::TypeMismatch,
+                                        *op_span,
+                                        format!("mismatched integer widths `{it_a}` and `{it_b}`"),
+                                    );
+                                    return None;
+                                }
+                                let res = match op {
+                                    BinaryOp::BitAnd => a & b,
+                                    BinaryOp::BitOr => a | b,
+                                    BinaryOp::BitXor => a ^ b,
+                                    _ => unreachable!(),
+                                };
+                                let v = ConstValue::Int(res, *it_a);
+                                self.record(expr, v.ty());
+                                Some(v)
+                            }
+                            _ => {
                                 self.error(
                                     DiagnosticCode::TypeMismatch,
                                     *op_span,
-                                    format!("mismatched integer widths `{it_a}` and `{it_b}`"),
+                                    "bitwise operators require integer operands",
                                 );
-                                return None;
+                                None
                             }
-                            let res = match op {
-                                BinaryOp::BitAnd => a & b,
-                                BinaryOp::BitOr => a | b,
-                                BinaryOp::BitXor => a ^ b,
-                                _ => unreachable!(),
-                            };
-                            let v = ConstValue::Int(res, *it_a);
-                            self.record(expr, v.ty());
-                            Some(v)
                         }
-                        _ => {
-                            self.error(
-                                DiagnosticCode::TypeMismatch,
-                                *op_span,
-                                "bitwise operators require integer operands",
-                            );
-                            None
-                        }
-                    },
+                    }
                     BinaryOp::ShiftLeft => match (&left_val, &right_val) {
                         (ConstValue::Int(a, it_a), ConstValue::Int(b, _)) => {
                             if *b < 0 || *b >= it_a.bits() as i128 {
@@ -4236,10 +4524,16 @@ impl Checker<'_> {
                             None
                         }
                     },
-                    BinaryOp::Equal | BinaryOp::NotEqual | BinaryOp::Less
-                    | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => {
+                    BinaryOp::Equal
+                    | BinaryOp::NotEqual
+                    | BinaryOp::Less
+                    | BinaryOp::LessEqual
+                    | BinaryOp::Greater
+                    | BinaryOp::GreaterEqual => {
                         let is_cmp = match (&left_val, &right_val) {
-                            (ConstValue::Int(a, it_a), ConstValue::Int(b, it_b)) if it_a == it_b => {
+                            (ConstValue::Int(a, it_a), ConstValue::Int(b, it_b))
+                                if it_a == it_b =>
+                            {
                                 match op {
                                     BinaryOp::Equal => a == b,
                                     BinaryOp::NotEqual => a != b,
@@ -4348,7 +4642,10 @@ impl Checker<'_> {
             }
             ExprKind::Member { object, member } => {
                 if matches!(&object.kind, ExprKind::Identifier(qualifier) if self.resolution.module_in_file(self.file, &qualifier.text).is_some())
-                    && let Some(&sym_id) = self.resolution.references.get(&(self.file, member.span.start))
+                    && let Some(&sym_id) = self
+                        .resolution
+                        .references
+                        .get(&(self.file, member.span.start))
                     && matches!(self.resolution.symbols[sym_id.0].kind, SymbolKind::Constant)
                 {
                     let val = self.ensure_constant_evaluated(sym_id)?;
@@ -4411,11 +4708,15 @@ impl Checker<'_> {
                                         IntType::I8 => (-129.0, 128.0),
                                         IntType::I16 => (-32769.0, 32768.0),
                                         IntType::I32 => (-2147483649.0, 2147483648.0),
-                                        IntType::I64 | IntType::ISize => (-9223372036854775808.0, 9223372036854775808.0),
+                                        IntType::I64 | IntType::ISize => {
+                                            (-9223372036854775808.0, 9223372036854775808.0)
+                                        }
                                         IntType::U8 => (-1.0, 256.0),
                                         IntType::U16 => (-1.0, 65536.0),
                                         IntType::U32 => (-1.0, 4294967296.0),
-                                        IntType::U64 | IntType::USize => (-1.0, 18446744073709551616.0),
+                                        IntType::U64 | IntType::USize => {
+                                            (-1.0, 18446744073709551616.0)
+                                        }
                                     };
                                     let out_of_bounds = match target_it {
                                         IntType::I64 | IntType::ISize => f < min_f || f >= max_f,
@@ -4525,7 +4826,9 @@ impl Checker<'_> {
                             let arg_val = self.eval_constant_expr(&arguments[0], None)?;
                             match arg_val {
                                 ConstValue::Int(val, _) => {
-                                    if val < 0 || val > 0x10FFFF || (val >= 0xD800 && val <= 0xDFFF) {
+                                    if !(0..=0x10FFFF).contains(&val)
+                                        || (0xD800..=0xDFFF).contains(&val)
+                                    {
                                         self.error(
                                             DiagnosticCode::IntegerRange,
                                             expr.span,

@@ -1,0 +1,8 @@
+func mutate_slice(items: []int) {
+    items.push(99)
+}
+
+func main() {
+    var arr: [3]int = [1, 2, 3]
+    mutate_slice(arr)
+}

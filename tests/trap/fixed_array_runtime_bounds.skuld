@@ -1,0 +1,8 @@
+func get(arr: [3]int, i: int) -> int {
+    return arr[i]
+}
+
+func main() {
+    let arr: [3]int = [1, 2, 3]
+    let x = get(arr, 10)
+}

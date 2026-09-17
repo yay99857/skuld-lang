@@ -1,0 +1,8 @@
+class Box {
+    items: []int,
+}
+
+func main() {
+    var a: [3]int = [1, 2, 3]
+    let b = new Box(items: a)
+}

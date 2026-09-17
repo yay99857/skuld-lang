@@ -219,6 +219,7 @@ impl Lexer<'_> {
                 ',' => Comma,
                 '.' => Dot,
                 ':' => Colon,
+                ';' => Semicolon,
                 '+' => Plus,
                 '-' => Minus,
                 '*' => Star,

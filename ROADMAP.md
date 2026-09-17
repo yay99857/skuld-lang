@@ -1,7 +1,7 @@
 # Skuld roadmap
 
 This document records completed milestones and a **proposed** next sequence.
-M1–M21 are implemented. M22–M26 propose the continuation of the systems sequence,
+M1–M22 are implemented. M23–M26 propose the continuation of the systems sequence,
 towards the language a system could be written in; every one of them is **Planned**,
 which means proposed and not authorized. Starting one still
 needs an explicit decision recorded in `AGENTS.md`. See `LANGUAGE.md` for
@@ -1075,7 +1075,7 @@ strings.
   no exception left (`TARGET_SPECIFIC = &[]`).
 - **Out:** `f32`, 128-bit integers, and implicit widening anywhere.
 
-## M22 — Fixed-size arrays and stack buffers — Planned
+## M22 — Fixed-size arrays and stack buffers — Implemented
 
 The first milestone about memory rather than about values: a place to put
 bytes that is not the heap.
@@ -1086,19 +1086,24 @@ let header: [4]u8 = [0x7F, 'E', 'L', 'F']
 ```
 
 - **In:** the type `[N]T` with value semantics and copy on assignment, the
-  repeated-element literal, indexing with the same bounds checking `[]T` has,
-  `len()` as a compile-time constant, and a fixed array as a struct field so a
-  record can embed its own buffer.
-- **Semantics to settle:** `N` is a constant expression, which is why M20 comes
-  first; a `[N]T` coerces to a `[]T` slice for reading without allocating,
-  which is the whole point of having one.
-- **Open decision — does a fixed array live in a class field?** A class field
-  is reference-counted and a fixed array is not; the narrow answer is yes,
-  inline in the object's allocation, with the same rules its other fields
-  have.
-- **Closing marker:** `std/fs` and `std/net` read into a stack buffer instead
-  of pushing into a heap array byte by byte, and the benchmark that builds a
-  string shows the difference.
+  repeated-element literal `[elem; N]`, list literals `[a, b, c]`, indexing with
+  bounds checking both at compile time (for constant indices) and runtime,
+  `len()` as a compile-time constant, fixed arrays as struct and class fields,
+  slice coercion `[N]T -> []T` producing immortal stack views without heap
+  allocation, compile-time escape checks preventing stack buffers from outliving
+  their scope, runtime traps on mutating fixed-array views, and `ptr(arr)`
+  borrowing `*T`.
+- **Semantics settled:** `N` is a constant expression evaluated at compile time;
+  `[N]T` coerces to `[]T` slice views without allocating, with mutating operations
+  trapping at runtime via `*capacity == 0` in `skuld_array_reserve`; compile-time
+  checks reject returning a fixed array as a dynamic slice or storing it into a
+  heap slice field.
+- **Decision taken — a fixed array lives in a class field inline.** A class field
+  allocation embeds the fixed array buffer inline, with the same rules its other
+  fields have.
+- **Closing marker:** `std/fs` (`read_file`) and `std/net` (`receive_all`, `open`
+  sockaddr) read into stack buffers instead of allocating dynamically, and the
+  benchmark that builds a string uses a stack buffer for integer formatting.
 - **Out:** multidimensional array syntax, array-of-array literals with
   inference across dimensions, and a growable buffer type in `std`.
 

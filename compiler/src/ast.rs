@@ -159,7 +159,7 @@ pub struct Name {
 }
 
 /// A source type name, to be resolved to a semantic type in a later phase.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TypeRef {
     Named(Path),
     Option {
@@ -177,6 +177,12 @@ pub enum TypeRef {
     },
     Array {
         element: Box<TypeRef>,
+        span: Span,
+    },
+    /// `[N]T`. A fixed-size array with value semantics.
+    FixedArray {
+        element: Box<TypeRef>,
+        size: Box<Expr>,
         span: Span,
     },
     /// `func(int, int) -> int`. A function value: an argument or a local, never
@@ -199,6 +205,7 @@ impl TypeRef {
         match self {
             Self::Named(path) => path.span,
             Self::Array { span, .. }
+            | Self::FixedArray { span, .. }
             | Self::Function { span, .. }
             | Self::Pointer { span, .. }
             | Self::Weak { span, .. }
@@ -428,6 +435,11 @@ pub enum ExprKind {
     },
     /// `[1, 2, 3]`. Allocates a reference-counted array.
     Array(Vec<Expr>),
+    /// `[expr; count]`. A fixed-size array repeat literal.
+    ArrayRepeat {
+        element: Box<Expr>,
+        count: Box<Expr>,
+    },
     /// `weak(value)` or a contextually typed empty `weak()`.
     Weak(Option<Box<Expr>>),
     /// `func(a: int) -> int { ... }`. Evaluates to a function value.

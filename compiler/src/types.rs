@@ -9,6 +9,10 @@ pub struct StructId(pub usize);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ArrayId(pub usize);
 
+/// Index into the checked program's fixed array table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FixedArrayId(pub usize);
+
 /// Index into the checked program's option table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct OptionId(pub usize);
@@ -82,6 +86,12 @@ impl ResultInfo {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArrayInfo {
     pub element: Type,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FixedArrayInfo {
+    pub element: Type,
+    pub size: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,7 +182,10 @@ impl IntType {
         }
     }
     pub fn signed(self) -> bool {
-        matches!(self, Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::ISize)
+        matches!(
+            self,
+            Self::I8 | Self::I16 | Self::I32 | Self::I64 | Self::ISize
+        )
     }
     pub fn bits(self) -> u32 {
         match self {
@@ -256,6 +269,8 @@ pub enum Type {
     Enum(EnumId),
     /// A reference-counted heap array.
     Array(ArrayId),
+    /// A fixed-size array with value semantics.
+    FixedArray(FixedArrayId),
     /// An inline discriminated optional value.
     Option(OptionId),
     /// An inline discriminated success-or-error value.
@@ -303,6 +318,7 @@ impl fmt::Display for Type {
             Self::Struct(_) => "<struct>",
             Self::Enum(_) => "<enum>",
             Self::Array(_) => "<array>",
+            Self::FixedArray(_) => "<fixed_array>",
             // A signature lives in the checker's table too, which `Display`
             // cannot reach; `type_name` renders it in full.
             Self::Function(_) => "<function>",
@@ -376,4 +392,3 @@ pub fn sign_extend(raw: u128, it: IntType) -> i128 {
         raw as i128
     }
 }
-

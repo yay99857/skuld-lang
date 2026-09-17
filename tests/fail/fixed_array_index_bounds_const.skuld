@@ -1,0 +1,4 @@
+func main() {
+    let arr: [3]int = [1, 2, 3]
+    let x = arr[5]
+}

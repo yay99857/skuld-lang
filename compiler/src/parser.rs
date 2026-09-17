@@ -280,13 +280,24 @@ impl Parser<'_> {
         }
         if self.at(&TokenKind::LeftBracket) {
             let start = self.bump().span.start;
-            self.expect(&TokenKind::RightBracket, "`]` after `[` in an array type")?;
-            let element = self.type_ref()?;
-            let end = element.span().end;
-            Ok(TypeRef::Array {
-                element: Box::new(element),
-                span: Span::new(start, end),
-            })
+            if self.take(&TokenKind::RightBracket).is_some() {
+                let element = self.type_ref()?;
+                let end = element.span().end;
+                Ok(TypeRef::Array {
+                    element: Box::new(element),
+                    span: Span::new(start, end),
+                })
+            } else {
+                let size = self.expression()?;
+                self.expect(&TokenKind::RightBracket, "`]` after array size")?;
+                let element = self.type_ref()?;
+                let end = element.span().end;
+                Ok(TypeRef::FixedArray {
+                    element: Box::new(element),
+                    size: Box::new(size),
+                    span: Span::new(start, end),
+                })
+            }
         } else {
             Ok(TypeRef::Named(self.path("a type name")?))
         }
@@ -1073,7 +1084,8 @@ impl Parser<'_> {
                 && matches!(
                     self.peek_kind(1),
                     TokenKind::Integer(_) | TokenKind::Float(_)
-                )) {
+                ))
+            {
                 let start_expr = self.expression_bp(22)?;
                 if self.take(&TokenKind::DotDot).is_some() {
                     let end_expr = self.expression_bp(22)?;
@@ -1513,17 +1525,35 @@ impl Parser<'_> {
                 self.bump();
                 let mut elements = Vec::new();
                 if !self.at(&TokenKind::RightBracket) {
-                    loop {
-                        elements.push(self.with_struct_literals(true, |p| p.expression())?);
-                        if self.take(&TokenKind::Comma).is_none()
-                            || self.at(&TokenKind::RightBracket)
-                        {
-                            break;
+                    let first = self.with_struct_literals(true, |p| p.expression())?;
+                    if self.take(&TokenKind::Semicolon).is_some() {
+                        let count = self.with_struct_literals(true, |p| p.expression())?;
+                        self.expect(&TokenKind::RightBracket, "`]` after array repeat count")?;
+                        ExprKind::ArrayRepeat {
+                            element: Box::new(first),
+                            count: Box::new(count),
                         }
+                    } else {
+                        elements.push(first);
+                        if self.take(&TokenKind::Comma).is_some()
+                            && !self.at(&TokenKind::RightBracket)
+                        {
+                            loop {
+                                elements.push(self.with_struct_literals(true, |p| p.expression())?);
+                                if self.take(&TokenKind::Comma).is_none()
+                                    || self.at(&TokenKind::RightBracket)
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                        self.expect(&TokenKind::RightBracket, "`]` after array elements")?;
+                        ExprKind::Array(elements)
                     }
+                } else {
+                    self.bump();
+                    ExprKind::Array(elements)
                 }
-                self.expect(&TokenKind::RightBracket, "`]` after array elements")?;
-                ExprKind::Array(elements)
             }
             TokenKind::LeftParen => {
                 self.bump();

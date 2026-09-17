@@ -1,0 +1,8 @@
+func bad() -> []int {
+    var a: [3]int = [1, 2, 3]
+    return a
+}
+
+func main() {
+    let x = bad()
+}
