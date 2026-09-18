@@ -30,6 +30,10 @@ pub enum HttpError {
     Malformed(string),
     // A body that is not valid UTF-8.
     Encoding(string),
+    // A method, header name or header value carrying a carriage return, a
+    // newline or a NUL. Those bytes frame a request, so one inside a value
+    // would end the header and start a second request the caller never wrote.
+    Header(string),
 }
 
 pub func describe(error: HttpError) -> string {
@@ -40,6 +44,7 @@ pub func describe(error: HttpError) -> string {
         HttpError.Network(inner): return net.describe(inner)
         HttpError.Malformed(what): return "malformed response: ${what}"
         HttpError.Encoding(what): return "response body is not UTF-8: ${what}"
+        HttpError.Header(name): return "`${name}` is not a usable header name or value"
     }
 }
 
@@ -131,15 +136,31 @@ pub func parse_url(url: string) -> Result<Url, HttpError> {
     return Ok(new Url(host: host, port: port, path: path))
 }
 
+// A request that is more than a URL: a method, headers of the caller's own,
+// and a body.
+//
+// It exists because an API is rarely reachable without one. A token goes in
+// `Authorization`, an identity in whatever header the service names, and a
+// service behind a content delivery network often refuses a request carrying
+// no `User-Agent` at all. None of that can be said with a URL.
+pub class Request {
+    url: string
+    method: string = "GET"
+    // Sent in the order given, after the two this client sets for itself.
+    headers: []Header = []
+    // Empty for a method that carries none. When it is not, its length in
+    // bytes is sent with it, because that is what a reader counts.
+    body: string = ""
+}
+
+// A plain GET, which is most of them.
 pub func get(url: string) -> Result<Response, HttpError> {
-    let target = parse_url(url)?
-    // `Connection: close` is what makes a body without a length end, and this
-    // client opens one connection per request anyway.
-    let request = "GET ${target.path} HTTP/1.1\r\nHost: ${target.host}:${target.port}\r\nConnection: close\r\n\r\n"
-    var bytes: []u8 = []
-    for byte in request.bytes() {
-        bytes.push(byte)
-    }
+    return send(new Request(url: url))
+}
+
+pub func send(details: Request) -> Result<Response, HttpError> {
+    let target = parse_url(details.url)?
+    let bytes = compose(details, target.path, "${target.host}:${target.port}")?
     // The name is resolved here rather than in `std/net`: a socket takes an
     // address, and `std/dns` needs sockets, so the resolver sits above both.
     let address = dns.resolve(target.host) else reason {
@@ -158,6 +179,63 @@ pub func get(url: string) -> Result<Response, HttpError> {
         return Err(HttpError.Network(reason))
     }
     return parse_response(raw)
+}
+
+// The request text, as the bytes that go on the wire.
+//
+// `Host` is required by HTTP/1.1, and `Connection: close` is what makes a body
+// without a length end — this client opens one connection per request anyway.
+// Everything after those two is the caller's, in the order they gave.
+//
+// A method, name or value carrying a carriage return or a newline is refused
+// rather than escaped. Those bytes are what frames a request, so one inside a
+// value ends the header and begins whatever follows it as a second request,
+// addressed to the same server and looking exactly as legitimate. Refusing is
+// the only answer that cannot be got subtly wrong.
+//
+// Public for `std/https`, which sends the same bytes over a different kind of
+// connection — the same reason `parse_response` is public. Duplicating the
+// refusal above into that module would be duplicating a security check, and
+// this repository has already watched a duplicated list go stale twice.
+pub func compose(details: Request, path: string, authority: string) -> Result<[]u8, HttpError> {
+    if details.method.len() == 0 || !unbroken(details.method) {
+        return Err(HttpError.Header(details.method))
+    }
+    var text = "${details.method} ${path} HTTP/1.1\r\nHost: ${authority}\r\nConnection: close\r\n"
+    for header in details.headers {
+        if header.name.len() == 0 || !unbroken(header.name) || !unbroken(header.value) {
+            return Err(HttpError.Header(header.name))
+        }
+        text = "${text}${header.name}: ${header.value}\r\n"
+    }
+    let body = details.body.bytes()
+    if body.len() > 0 {
+        // In bytes rather than characters, because that is what a reader
+        // counts and a string here is UTF-8.
+        text = "${text}Content-Length: ${body.len()}\r\n"
+    }
+    text = "${text}\r\n"
+    var bytes: []u8 = []
+    for byte in text.bytes() {
+        bytes.push(byte)
+    }
+    for byte in body {
+        bytes.push(byte)
+    }
+    return Ok(bytes)
+}
+
+// Whether text can be written into a request without changing its shape.
+func unbroken(text: string) -> bool {
+    var index = 0
+    while index < text.len() {
+        let byte = text[index]
+        if byte == 13 || byte == 10 || byte == 0 {
+            return false
+        }
+        index += 1
+    }
+    return true
 }
 
 // The head is ASCII by definition, so it is decoded before being split; the

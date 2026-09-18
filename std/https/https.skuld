@@ -47,7 +47,18 @@ pub func describe(error: HttpsError) -> string {
 // One GET over a verified connection. The default port is 443, the name is
 // resolved through `std/dns`, and the certificate is checked against the name
 // the caller wrote — not against the address it resolved to.
+// A plain GET, which is most of them.
 pub func get(url: string) -> Result<http.Response, HttpsError> {
+    return send(new http.Request(url: url))
+}
+
+// The same request `std/http` describes, over a verified connection.
+//
+// The bytes are built by `http.compose` rather than here, because refusing a
+// header that would split the request is a security check and one copy of it
+// is enough.
+pub func send(details: http.Request) -> Result<http.Response, HttpsError> {
+    let url = details.url
     if strings.starts_with(url, "http://") {
         return Err(HttpsError.NotTls(url))
     }
@@ -75,10 +86,11 @@ pub func get(url: string) -> Result<http.Response, HttpsError> {
     // socket, the `SSL` and the context — so a path that forgets it leaks all
     // three, and there were three such paths written by hand here.
     defer connection.close()
-    let request = "GET ${target.path} HTTP/1.1\r\nHost: ${target.host}\r\nConnection: close\r\n\r\n"
-    var bytes: []u8 = []
-    for byte in request.bytes() {
-        bytes.push(byte)
+    // The authority carries no port here: a TLS connection on 443 is the
+    // default the name already implies, and naming it again is noise a server
+    // may or may not match against its certificate.
+    let bytes = http.compose(details, target.path, target.host) else problem {
+        return Err(HttpsError.Response(problem))
     }
     let sent = connection.send_all(bytes) else problem {
         return Err(HttpsError.Transport(problem))
