@@ -415,14 +415,38 @@ accurate; documenting a future feature is not a request to implement it.
   the language deliberately cannot spell — `syscall`, `in`/`out`, anything that
   is one instruction rather than a value — and those are assembly declared
   through `extern "C"`, which is the boundary the FFI already was.
-  No milestone is active. The candidates `ROADMAP.md` lists after the systems
-  sequence — inline assembly, atomics and a memory model, threads, interrupt
-  and naked calling conventions, linker sections, a target that is not Linux —
-  are each a milestone of its own and none is authorized. One older decision
-  should not be reopened by accident either: M20's `const` does not replace
-  `let`, since an immutable binding is what the backend reads to borrow a
-  managed local instead of counting it.
+  M27 — Windows as a supported target — is active, authorized by the user in
+  the session that opened it. It is the one candidate below that has been
+  selected; the rest — inline assembly, atomics and a memory model, threads,
+  interrupt and naked calling conventions, linker sections, and any further
+  target — are each a milestone of its own and none is authorized. One older
+  decision should not be reopened by accident either: M20's `const` does not
+  replace `let`, since an immutable binding is what the backend reads to borrow
+  a managed local instead of counting it.
   Do not infer authorization for further features without explicit decision.
+- M27's shape is decided and should not be reopened by accident. The bar is the
+  one Rust states for a Tier 1 target: **CI builds Windows and every test passes
+  there**, which is a measurement rather than a claim. Platform differences live
+  in a **C platform layer**, `runtime/platform.c`, behind names `std/` already
+  speaks — not in per-platform Skuld files. The reason is that the backend
+  emits each foreign declaration as its own prototype with no header to
+  disagree with, so a wrong declaration links and mis-calls in silence; a
+  definition compiled by clang against the real `<fcntl.h>` and `<winsock2.h>`
+  turns that same mistake into a compile error. Go, Rust and Zig do declare
+  the system in their own language, but each has something this project does
+  not — a generator, official metadata, or `comptime` — so the analogy does
+  not carry. This is the layer `sk_errno`, `sk_error_message` and `sk_arg_*`
+  already are, for the same reason: the foreign boundary cannot express
+  `errno`, a macro, or a pointer to a pointer. The C toolchain is **clang
+  targeting the MSVC ABI**, because `-fsanitize=address` works there and does
+  not under mingw-w64, and the sanitizer suite is a guarantee worth keeping on
+  both platforms. Leak detection is the exception and stays Linux-only:
+  LeakSanitizer has no Windows implementation. TLS is out of M27 and keeps its
+  own milestone, since Windows has no Unix trust store and
+  `SSL_CTX_set_default_verify_paths` is the wrong call there. No `--target`
+  enters the compiler: the platform layer emits the same C everywhere, so
+  nothing in the compiler branches, and cross-compilation stays a separate
+  decision.
 - `ROADMAP.md` proposes the sequence enums/`match` → `for` → `Result` → bytes
   and string slices → `extern "C"` FFI → modules → standard library → function
   values → sockets. It is a plan, not a selection: a remaining entry is Planned,
