@@ -469,7 +469,10 @@ behind it. The obligations above are checkable, and a persona is not.
   is one instruction rather than a value — and those are assembly declared
   through `extern "C"`, which is the boundary the FFI already was.
   M27 — Windows as a supported target — is complete. CI builds Linux and
-  Windows and the whole suite passes on both, which is the bar it set. It is
+  Windows and the whole suite passes on both, which is the bar it set. M28 —
+  TLS on Windows — is in progress: it is the milestone M27 named when it
+  excluded TLS, so it is authorized by that exclusion rather than by drift,
+  and it deliberately does not choose the Windows backend. M27 is
   the one candidate below that has been selected; the rest — inline assembly,
   atomics and a memory model, threads, interrupt and naked calling
   conventions, linker sections, and any further target — are each a milestone
@@ -507,8 +510,12 @@ behind it. The obligations above are checkable, and a persona is not.
   not under mingw-w64, and the sanitizer suite is a guarantee worth keeping on
   both platforms. Leak detection is the exception and stays Linux-only:
   LeakSanitizer has no Windows implementation. TLS is out of M27 and keeps its
-  own milestone, since Windows has no Unix trust store and
-  `SSL_CTX_set_default_verify_paths` is the wrong call there. No `--target`
+  own milestone. The reason M27 recorded for that was imprecise and M28
+  corrects it: Windows does lack a Unix trust store, but nothing in `std/tls`
+  reaches the trust store there, because the system ships no OpenSSL to link
+  against and the flags the project documented do not resolve under this
+  toolchain. Which backend Windows gets is M29's, and M28 exists to measure
+  what M29 needs. No `--target`
   enters the compiler: the platform layer emits the same C everywhere, so
   nothing in the compiler branches, and cross-compilation stays a separate
   decision.

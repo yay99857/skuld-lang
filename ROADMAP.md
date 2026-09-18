@@ -1333,6 +1333,85 @@ constants in `std/` are not absent so much as wrong.
   from disk instead; and the platform layer, inlined, leaked its headers into
   the program and broke every user's right to declare a POSIX function.
 
+## M28 — TLS on Windows: the backend decided by measurement — In progress
+
+M27 excluded TLS and named this milestone. The exclusion was right and the
+reason recorded for it was not quite: it said Windows has no Unix trust store,
+which is true of the system but is not what stops `std/tls` there. Nothing
+stops it at the trust store, because nothing gets that far — Windows ships no
+OpenSSL to link against, and the flags the project documents do not resolve
+under the toolchain M27 chose.
+
+**M28 does not choose the Windows backend.** It makes `std/tls` honest, it
+fixes what is wrong today on every platform, and it produces the one
+measurement the choice needs: whether `std/tls` handshakes on Windows at all
+once OpenSSL is linked. Nobody has ever run it there. Choosing between
+backends before that is choosing without evidence, and the rule against doing
+so is in `AGENTS.md` because M27 paid for it.
+
+- **Decision taken — the documented link flags were wrong, and are now stated
+  per toolchain.** `-lssl -lcrypto` was written as the command everywhere, in
+  seven places. Under clang's MSVC driver, which is what a Windows build uses,
+  a bare `-lssl` asks the linker for `ssl.lib`, while an OpenSSL built for that
+  ABI installs `libssl.lib`. Measured rather than recalled: `clang
+  --target=x86_64-pc-windows-msvc -###` rewrites `-lssl` to `ssl.lib`, and the
+  mingw driver leaves it alone.
+- **Decision taken — a socket OpenSSL cannot take is refused, not trapped.**
+  `SSL_set_fd` takes a C `int`, and on Windows a socket is a `SOCKET`, a
+  machine word. The value was narrowed with `i32`, which ends the process when
+  it does not fit; every other failure in this module reaches the caller.
+- **Rejected — OpenSSL on both systems, with Windows roots read into its
+  `X509_STORE` from Skuld.** This was proposed here and reversed. `d2i_X509`
+  takes its length as a C `long`, which is **4 bytes under the MSVC ABI and 8
+  on LP64 Linux** — measured with `_Static_assert` under both targets. Skuld
+  has one declaration site per foreign function and no target knowledge, so
+  there is no correct way to spell it; worse, on x86-64 the wrong spelling
+  works by accident, which is the silent mis-call the platform layer exists to
+  prevent.
+- **Rejected — doing that same loop in C inside `runtime/platform.c`.** That
+  file is compiled and linked into every program, so including
+  `<openssl/x509.h>` there would make every Windows binary need OpenSSL. The
+  repair is a second, conditionally compiled translation unit, and
+  `cli/src/native.rs` says in its own comment that nothing connects an import
+  to a link flag and that inventing it is a compiler concept of its own.
+- **Rejected — shipping a certificate authority bundle with the language.**
+  The system curates a store that is kept up to date; a bundle compiled in
+  goes stale silently, and Go ships one only for platforms that have no store
+  at all. The asymmetry is worth stating: enumerating a Windows root store has
+  a weaker form of the same defect, since Windows fetches missing roots on
+  demand during `CertGetCertificateChain` and an enumeration sees only what
+  has already been fetched.
+- **Corrected — Windows was never at risk of appearing to verify without
+  verifying.** An earlier note in `cli/tests/https.rs` said it was.
+  `X509_STORE_set_default_paths_ex` returns 1 whether or not anything loaded
+  and calls `ERR_clear_error` before doing so — read in OpenSSL's
+  `crypto/x509/x509_d2.c` — so the guard in `std/tls` is inert, but the
+  handshake then fails closed with X509_V_ERR 20. The failure is
+  under-informative, not unsafe, and the difference decides how urgent this is.
+- **Corrected — how the per-platform call was ruled out.** It was argued that
+  CryptoAPI cannot be declared in `std/tls` because a declaration demands a
+  symbol on every platform. That reasoning is false: an `extern "C"`
+  declaration that is never called still emits a prototype and demands
+  nothing, which `skuld emit-c` shows for any program importing a module it
+  does not fully use. What Skuld cannot express is a *call* that exists on one
+  platform and not the other, and it will not learn how, because no `--target`
+  enters the compiler. The conclusion survives; the reason given for it did
+  not, and a wrong reason gets the option reproposed.
+- **Left to M29 — Schannel, or OpenSSL with roots loaded from C.** Schannel
+  needs no new build concept: its libraries are operating-system DLLs in the
+  same category as `ws2_32` and `iphlpapi`, which every Windows binary already
+  links, and a shim for it includes no third-party header. Against it, the
+  cost in C is unmeasured, and Windows reports `CERT_TRUST_*` flags rather
+  than X509 verification codes, so `TlsError.Certificate(int)` — which already
+  leaks a raw OpenSSL number into a public API — would have to become a real
+  Skuld enum. That may be a gain rather than a cost.
+- **Closing marker.** The Windows leg of CI links OpenSSL and runs the
+  hermetic HTTPS tests — the four that hand OpenSSL their own certificate
+  authority through `SSL_CERT_FILE` and never consult the system store. Green
+  there means the binding works on Windows and only trust is missing; red
+  names what else does. Either way M29 chooses with evidence instead of
+  without.
+
 ## Open design questions
 
 These are not settled by this document and change the shape of the milestones
