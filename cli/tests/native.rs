@@ -193,48 +193,66 @@ fn invalid_source_never_reaches_clang() {
         }
     }
 }
-/// `PATH` for a sanitized program: the existing one, plus the directory
-/// clang keeps its runtime libraries in.
+/// Where clang keeps the sanitizer runtime libraries, as far as can be told.
 ///
-/// Only Windows needs this — elsewhere the sanitizer runtime is linked into
-/// the executable rather than loaded beside it — but prepending a directory
-/// that exists is harmless anywhere, and asking clang beats hard-coding a
-/// path that moves with every release.
-fn runtime_dir() -> String {
+/// `-print-runtime-dir` names the per-target layout, and the LLVM builds
+/// shipped for Windows use the older one — the directory clang names is
+/// `lib/clang/20/lib/x86_64-pc-windows-msvc` and the libraries are in
+/// `lib/clang/20/lib/windows`. Both are offered and only the ones that exist
+/// are kept, since believing clang alone is how this went wrong once.
+fn runtime_dirs() -> Vec<PathBuf> {
     let Ok(output) = Command::new("clang").arg("-print-runtime-dir").output() else {
-        return "clang could not be asked".into();
+        return Vec::new();
     };
-    let directory = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let exists = Path::new(&directory).is_dir();
-    let listing = if exists {
-        fs::read_dir(&directory)
-            .map(|entries| {
-                entries
-                    .filter_map(|entry| {
-                        Some(entry.ok()?.file_name().to_string_lossy().into_owned())
-                    })
-                    .filter(|name| name.contains("asan"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-    format!("{directory} (exists: {exists}) asan files: [{listing}]")
+    let named = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let legacy = named.parent().map(|parent| parent.join("windows"));
+    [Some(named), legacy]
+        .into_iter()
+        .flatten()
+        .filter(|directory| directory.is_dir())
+        .collect()
+}
+
+/// What those directories hold, for a failure that would otherwise say
+/// nothing at all.
+fn runtime_report() -> String {
+    let found = runtime_dirs();
+    if found.is_empty() {
+        return "no directory clang named exists".into();
+    }
+    found
+        .iter()
+        .map(|directory| {
+            let listing = fs::read_dir(directory)
+                .map(|entries| {
+                    entries
+                        .filter_map(|entry| {
+                            Some(entry.ok()?.file_name().to_string_lossy().into_owned())
+                        })
+                        .filter(|name| name.contains("asan"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            format!("{} [{listing}]", directory.display())
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn sanitizer_path() -> String {
     let existing = std::env::var("PATH").unwrap_or_default();
-    let Ok(output) = Command::new("clang").arg("-print-runtime-dir").output() else {
-        return existing;
-    };
-    let directory = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if directory.is_empty() {
+    let separator = if cfg!(windows) { ";" } else { ":" };
+    let found = runtime_dirs();
+    if found.is_empty() {
         return existing;
     }
-    let separator = if cfg!(windows) { ";" } else { ":" };
-    format!("{directory}{separator}{existing}")
+    let prefix = found
+        .iter()
+        .map(|directory| directory.display().to_string())
+        .collect::<Vec<_>>()
+        .join(separator);
+    format!("{prefix}{separator}{existing}")
 }
 
 /// Build one program's generated C under the sanitizers and run it.
@@ -337,7 +355,7 @@ runtime dir: {}",
         output.status.code(),
         String::from_utf8_lossy(&output.stderr),
         String::from_utf8_lossy(&output.stdout),
-        runtime_dir()
+        runtime_report()
     );
     assert_eq!(output.stdout, expected);
     assert!(
