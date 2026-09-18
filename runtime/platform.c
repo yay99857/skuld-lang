@@ -43,6 +43,17 @@
  * below declare `read`, `write`, `open` and `close`, and a program is allowed
  * to declare those itself through `extern "C"` — as `tests/pass/extern_c_ffi`
  * does. Inlining this file would make the two collide. */
+
+/* `getentropy` is declared by glibc only under `_DEFAULT_SOURCE`, and this
+ * file is compiled with `-std=c11`, which defines `__STRICT_ANSI__` and so
+ * asks for nothing beyond ISO C plus POSIX. Everything else this file calls
+ * is POSIX and arrives without help; the random source is the one thing that
+ * does not, so it is requested here rather than by widening the standard the
+ * whole program is compiled against. It must precede every include, and it is
+ * a no-op where the header does not read it. */
+#ifndef _WIN32
+#define _DEFAULT_SOURCE
+#endif
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
