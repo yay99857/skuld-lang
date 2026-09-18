@@ -14,57 +14,40 @@
 // only other thing an answer has to match. It is meant for the nameserver the
 // machine is already configured to trust, on a local network.
 
-import "std/fs"
 import "std/net"
 import "std/os"
 import "std/strings"
 
-pub const AF_INET: i32 = 2
-
-pub const SOCK_DGRAM: i32 = 2
-
-pub const IPPROTO_UDP: i32 = 0
-
-pub const SOL_SOCKET: i32 = 1
-
-pub const SO_RCVTIMEO: i32 = 20
-
 pub const DNS_PORT: int = 53
 
-pub const TIMEOUT_SECONDS: u8 = 3
+pub const TIMEOUT_MILLISECONDS: int = 3000
 
-// `struct sockaddr_in` and `struct timeval`, both laid out by the C compiler
-// for the target being built. `timeval` is the reason this matters twice over:
-// its two fields are `long`, so the structure is sixteen bytes on a 64-bit
-// target and eight on a 32-bit one, which hand-packed bytes cannot be.
-pub extern struct SockaddrIn {
-    family: u16
-    port: u16
-    address: u32
-    zero: [8]u8
-}
-
-pub extern struct Timeval {
-    seconds: isize
-    microseconds: isize
-}
-
+// Everything that touches the system goes through the platform layer, and
+// what used to be written here went with it. `struct timeval` was the sharpest
+// of the reasons: its fields are `long`, which is sixty-four bits on a 64-bit
+// Unix and thirty-two on Windows, so the structure is sixteen bytes on one
+// and eight on the other — and Windows does not take a `timeval` for this
+// option at all, it takes a count of milliseconds. A declaration here would
+// have to be one of those and would be silently wrong as the other. So a
+// timeout crosses as milliseconds, which both systems can say.
+//
+// `servers()` moved for a different reason: the answer lives in a text file on
+// one system and behind an API on the other, which is not a difference a
+// declaration can bridge at all.
 unsafe extern "C" {
-    func socket(domain: i32, kind: i32, protocol: i32) -> i32
-    func connect(handle: i32, address: *void, length: u32) -> i32
-    func setsockopt(handle: i32, level: i32, option: i32, value: *void, length: u32) -> i32
-    func htons(value: u16) -> u16
-    func htonl(value: u32) -> u32
-    func send(handle: i32, buffer: *u8, length: u64, flags: i32) -> i64
-    func recv(handle: i32, buffer: *u8, length: u64, flags: i32) -> i64
-    func close(handle: i32) -> i32
+    func sk_socket_connect(octets: *u8, port: i64, datagram: i64) -> i64
+    func sk_socket_send(handle: i64, buffer: *u8, length: u64) -> i64
+    func sk_socket_recv(handle: i64, buffer: *u8, capacity: u64) -> i64
+    func sk_socket_timeout(handle: i64, milliseconds: i64) -> i64
+    func sk_socket_close(handle: i64) -> void
+    func sk_dns_servers(out: *u8, capacity: u64) -> i64
     // Seconds since the epoch, written into the eight bytes handed to it. The
     // return value is the same number, which is the one this module uses.
     func time(out: *u8) -> i64
 }
 
 pub enum DnsError {
-    // `/etc/resolv.conf` named no server this module could use.
+    // The machine named no server this module could use.
     NoServer(string),
     // The name is empty, too long, or has a label that is.
     BadName(string),
@@ -99,28 +82,35 @@ func rcode_hint(code: int) -> string {
     return ""
 }
 
-// The nameservers `/etc/resolv.conf` lists, in order. An unreadable file is an
-// empty list rather than an error: the caller decides what to do without one.
+// The nameservers this machine is configured with, in the order it lists
+// them. Finding them is the platform layer's, because the answer is a text
+// file on one system and an adapter API on the other — a difference no
+// declaration could bridge. No servers is an empty list rather than an error:
+// the caller decides what to do without one.
 pub func servers() -> []string {
     var found: []string = []
-    let text = fs.read_text("/etc/resolv.conf") else problem {
+    var buffer: [1024]u8 = [0; 1024]
+    let got = sk_dns_servers(ptr(buffer), u64(1024))
+    if got <= 0 {
         return found
     }
-    for line in strings.split(text, "\n") {
-        let trimmed = strings.trim(line)
-        if strings.starts_with(trimmed, "nameserver") == false {
-            continue
+    // NUL-separated dotted quads, which is the one shape both systems can
+    // produce and this module can already parse.
+    var start = 0
+    var index = 0
+    while index < int(got) {
+        if buffer[index] == 0 {
+            if index > start {
+                let text = bytes_to_string(buffer[start..index]) else invalid {
+                    start = index + 1
+                    index += 1
+                    continue
+                }
+                found.push(text)
+            }
+            start = index + 1
         }
-        let rest = strings.trim(trimmed[10..trimmed.len()])
-        if rest.len() == 0 {
-            continue
-        }
-        // An IPv6 server is skipped rather than mis-parsed: this resolver
-        // speaks IPv4 only, and says so by finding nothing.
-        if strings.contains(rest, ":") {
-            continue
-        }
-        found.push(rest)
+        index += 1
     }
     return found
 }
@@ -129,7 +119,7 @@ pub func servers() -> []string {
 pub func resolve(name: string) -> Result<string, DnsError> {
     let configured = servers()
     if configured.len() == 0 {
-        return Err(DnsError.NoServer("`/etc/resolv.conf` lists no IPv4 nameserver"))
+        return Err(DnsError.NoServer("this machine lists no IPv4 nameserver"))
     }
     var last = DnsError.NoServer("no server was tried")
     for server in configured {
@@ -219,31 +209,18 @@ func query(name: string) -> Result<[]u8, DnsError> {
 
 // Send one datagram and wait for one, with a timeout so an unreachable server
 // is a failure rather than a hang.
-// Four octets as one host-order `u32`; `htonl` puts it in network order.
-func packed_address(octets: []u8) -> u32 {
-    return (u32(octets[0]) << 24) | (u32(octets[1]) << 16) | (u32(octets[2]) << 8) | u32(octets[3])
-}
-
 func exchange(server: string, port: int, question: []u8) -> Result<[]u8, DnsError> {
     let octets = address_bytes(server)?
-    let handle = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+    let handle = sk_socket_connect(ptr(octets), i64(port), 1)
     if handle < 0 {
-        return Err(DnsError.Transport(os.failure("a datagram socket")))
+        return Err(DnsError.Transport(net.failure("${server}:${port}")))
     }
-    // SO_RCVTIMEO on SOL_SOCKET, so a server that never answers is a failure
-    // rather than a hang.
-    let timeout = Timeval { seconds: isize(int(TIMEOUT_SECONDS)), microseconds: isize(0) }
-    let ignored_option = setsockopt(i32(handle), SOL_SOCKET, SO_RCVTIMEO, ptr(timeout), u32(size_of(Timeval)))
-    let sockaddr = SockaddrIn { family: u16(AF_INET), port: htons(u16(port)), address: htonl(packed_address(octets)), zero: [0; 8] }
-    if connect(i32(handle), ptr(sockaddr), u32(size_of(SockaddrIn))) < 0 {
-        let problem = os.failure("${server}:${port}")
-        let ignored = close(i32(handle))
-        return Err(DnsError.Transport(problem))
-    }
-    let sent = send(i32(handle), ptr(question), u64(question.len()), 0)
+    // A server that never answers has to become a failure rather than a hang.
+    let ignored_option = sk_socket_timeout(handle, i64(TIMEOUT_MILLISECONDS))
+    let sent = sk_socket_send(handle, ptr(question), u64(question.len()))
     if sent < 0 {
-        let problem = os.failure("${server}:${port}")
-        let ignored = close(i32(handle))
+        let problem = net.failure("${server}:${port}")
+        sk_socket_close(handle)
         return Err(DnsError.Transport(problem))
     }
     var buffer: []u8 = []
@@ -252,9 +229,9 @@ func exchange(server: string, port: int, question: []u8) -> Result<[]u8, DnsErro
         buffer.push(0)
         index += 1
     }
-    let got = recv(i32(handle), ptr(buffer), u64(512), 0)
-    let problem = os.failure("${server}:${port}")
-    let ignored = close(i32(handle))
+    let got = sk_socket_recv(handle, ptr(buffer), u64(512))
+    let problem = net.failure("${server}:${port}")
+    sk_socket_close(handle)
     if got < 0 {
         return Err(DnsError.Transport(problem))
     }

@@ -35,6 +35,8 @@
 /* <winsock2.h> must precede <windows.h>, which <io.h> may pull in. */
 #include <winsock2.h>
 #include <ws2tcpip.h>
+/* After <winsock2.h>, which it depends on. */
+#include <iphlpapi.h>
 
 #include <fcntl.h>
 #include <io.h>
@@ -123,11 +125,41 @@ int64_t sk_is_null(void *value) { return value == NULL ? 1 : 0; }
 int64_t sk_errno(void) { return (int64_t)errno; }
 
 int64_t sk_error_message(int64_t code, unsigned char *out, uint64_t capacity) {
+#ifdef _WIN32
+    /* `strerror` knows the C library's own numbers and nothing else, and a
+     * socket failure is not one of them: Winsock reports in a range of its
+     * own, where `WSAECONNREFUSED` is 10061 rather than 111. Asking the
+     * system itself covers both, and answers in the user's language.
+     *
+     * The message arrives with a trailing newline, which belongs to a dialog
+     * box rather than to a value being put inside a sentence. */
+    char *text = NULL;
+    DWORD length = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM
+                                      | FORMAT_MESSAGE_IGNORE_INSERTS,
+                                  NULL, (DWORD)code, 0, (char *)&text, 0, NULL);
+    if (length == 0 || text == NULL) {
+        if (text != NULL) LocalFree(text);
+        return -1;
+    }
+    while (length > 0) {
+        char last = text[length - 1];
+        if (last != '\n' && last != '\r' && last != '.' && last != ' ') break;
+        length--;
+    }
+    if ((uint64_t)length > capacity) {
+        LocalFree(text);
+        return -1;
+    }
+    memcpy(out, text, (size_t)length);
+    LocalFree(text);
+    return (int64_t)length;
+#else
     const char *text = strerror((int)code);
     size_t len = strlen(text);
     if (len > capacity) return -1;
     memcpy(out, text, len);
     return (int64_t)len;
+#endif
 }
 
 /* Flush what has been printed so far. A test runner needs this: a program
@@ -281,10 +313,17 @@ int64_t sk_socket_connect(unsigned char *octets, int64_t port, int64_t datagram)
                            | ((unsigned long)octets[2] << 8) | (unsigned long)octets[3];
     address.sin_addr.s_addr = htonl(packed);
     if (connect(handle, (struct sockaddr *)&address, (int)sizeof address) != 0) {
+        /* Closing the socket resets the last error on both systems, so the
+         * reason the connect failed has to be saved across it — otherwise the
+         * caller asks why and is told nothing happened. */
 #ifdef _WIN32
+        int reason = WSAGetLastError();
         closesocket(handle);
+        WSASetLastError(reason);
 #else
+        int reason = errno;
         close(handle);
+        errno = reason;
 #endif
         return -1;
     }
@@ -341,4 +380,80 @@ void sk_socket_close(int64_t handle) {
 #else
     close((skuld_socket)handle);
 #endif
+}
+
+/* The machine's own DNS servers, as dotted quads separated by NUL bytes.
+ *
+ * The two systems do not merely store this differently, they store it in
+ * different kinds of place: a text file on one, and a per-adapter structure
+ * reached through an API on the other. A resolver written in Skuld can parse
+ * either once it is text, so the answer crosses as text and the finding of it
+ * stays here.
+ *
+ * Answers the number of bytes written, 0 when the machine lists none, and -1
+ * when the buffer is too small. IPv6 servers are left out: this resolver
+ * speaks IPv4, and an address it cannot use is not an answer. */
+int64_t sk_dns_servers(unsigned char *out, uint64_t capacity) {
+    uint64_t written = 0;
+#ifdef _WIN32
+    /* `GetAdaptersAddresses` wants a buffer it can grow into, and the usual
+     * advice is 15 KB to avoid asking twice. */
+    ULONG size = 15 * 1024;
+    IP_ADAPTER_ADDRESSES *adapters = NULL;
+    for (int attempt = 0; attempt < 3; attempt++) {
+        adapters = (IP_ADAPTER_ADDRESSES *)malloc(size);
+        if (adapters == NULL) return 0;
+        ULONG result = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST
+                                                         | GAA_FLAG_SKIP_FRIENDLY_NAME,
+                                            NULL, adapters, &size);
+        if (result == ERROR_SUCCESS) break;
+        free(adapters);
+        adapters = NULL;
+        if (result != ERROR_BUFFER_OVERFLOW) return 0;
+    }
+    if (adapters == NULL) return 0;
+    for (IP_ADAPTER_ADDRESSES *adapter = adapters; adapter != NULL; adapter = adapter->Next) {
+        if (adapter->OperStatus != IfOperStatusUp) continue;
+        for (IP_ADAPTER_DNS_SERVER_ADDRESS *server = adapter->FirstDnsServerAddress; server != NULL;
+             server = server->Next) {
+            if (server->Address.lpSockaddr == NULL) continue;
+            if (server->Address.lpSockaddr->sa_family != AF_INET) continue;
+            struct sockaddr_in *address = (struct sockaddr_in *)server->Address.lpSockaddr;
+            char text[16];
+            unsigned char *octets = (unsigned char *)&address->sin_addr;
+            int length = snprintf(text, sizeof text, "%u.%u.%u.%u", octets[0], octets[1], octets[2],
+                                  octets[3]);
+            if (length <= 0) continue;
+            if (written + (uint64_t)length + 1 > capacity) {
+                free(adapters);
+                return -1;
+            }
+            memcpy(out + written, text, (size_t)length);
+            written += (uint64_t)length;
+            out[written++] = 0;
+        }
+    }
+    free(adapters);
+#else
+    FILE *file = fopen("/etc/resolv.conf", "r");
+    if (file == NULL) return 0;
+    char line[512];
+    while (fgets(line, (int)sizeof line, file) != NULL) {
+        if (strncmp(line, "nameserver", 10) != 0) continue;
+        const char *rest = line + 10;
+        while (*rest == ' ' || *rest == '\t') rest++;
+        size_t length = strcspn(rest, " \t\r\n");
+        /* An IPv6 server is skipped rather than mis-parsed. */
+        if (length == 0 || memchr(rest, ':', length) != NULL) continue;
+        if (written + (uint64_t)length + 1 > capacity) {
+            fclose(file);
+            return -1;
+        }
+        memcpy(out + written, rest, length);
+        written += (uint64_t)length;
+        out[written++] = 0;
+    }
+    fclose(file);
+#endif
+    return (int64_t)written;
 }

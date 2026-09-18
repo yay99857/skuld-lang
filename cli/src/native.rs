@@ -192,7 +192,11 @@ pub fn capture(c_source: &str, link_flags: &[String]) -> Result<(u8, String, Str
 /// the cost of always asking is an import library for a DLL every Windows
 /// process has mapped already. Elsewhere the sockets are in libc, which clang
 /// links without being asked.
-const PLATFORM_LIBRARIES: &[&str] = if cfg!(windows) { &["-lws2_32"] } else { &[] };
+const PLATFORM_LIBRARIES: &[&str] = if cfg!(windows) {
+    &["-lws2_32", "-liphlpapi"]
+} else {
+    &[]
+};
 
 /// `link_flags` carries `-l`/`-L` arguments for libraries an `extern "C"`
 /// declaration needs; libc is linked by clang without asking.

@@ -183,6 +183,9 @@ pub func open(address: string, port: int) -> Result<Connection, NetError> {
 // where the system actually left it: Winsock never touches `errno`, and its
 // numbers are a range of their own, so asking `os.last_error()` after a
 // socket call answers about something else entirely.
-func failure(subject: string) -> os.OsFailure {
+//
+// Exported because `std/dns` speaks to sockets too, and a resolver reporting
+// a connection failure has the same question to ask.
+pub func failure(subject: string) -> os.OsFailure {
     return new os.OsFailure(subject: subject, code: int(sk_socket_error()))
 }
