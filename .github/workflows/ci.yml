@@ -36,11 +36,18 @@ jobs:
       # asking clang to build one, and until now the answer here was no — the
       # image carries no 32-bit libc — so the whole suite returned early and
       # the claim that it runs every fixture on i686 was checked by nothing.
-      - name: Install a 32-bit libc for the portability suite
+      # The 32-bit libc is for the portability suite; the emulator is for the
+      # freestanding one, which builds a multiboot kernel and then only boots
+      # it "where qemu exists". It existed nowhere here, so the most striking
+      # thing this project claims — that a program with no runtime and no libc
+      # boots a machine — was checked by every developer's own patience and by
+      # no run at all. `qemu-system-x86` provides `qemu-system-i386`, and the
+      # test already drives it headless.
+      - name: Install what the Linux-only suites need
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-multilib libc6-dev-i386
+          sudo apt-get install -y gcc-multilib libc6-dev-i386 qemu-system-x86
 
       # `run` and `trap` fixtures compile generated C, so clang is required
       # rather than optional: a missing clang must fail the suite, not skip it.
@@ -139,6 +146,20 @@ jobs:
           echo "$output"
           if echo "$output" | grep -q "skipping:"; then
             echo "::error::the i686 suite skipped, so no fixture was checked on a 32-bit target"
+            exit 1
+          fi
+
+      # Same reasoning again. This one guards a kernel: without it the suite
+      # can build an image, check its multiboot header, and never start the
+      # machine, while still reporting that everything passed.
+      - name: Fail if the freestanding suite skipped itself
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          output=$(cargo test -p skuld-cli --test freestanding -- --nocapture 2>&1)
+          echo "$output"
+          if echo "$output" | grep -q "skipping"; then
+            echo "::error::the freestanding suite skipped, so the kernel was not booted"
             exit 1
           fi
 
