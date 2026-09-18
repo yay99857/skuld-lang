@@ -26,7 +26,8 @@ that builds the `skuld` binary. The pipeline is
 | `cli/src/native.rs` | clang orchestration; the compiler library never launches processes |
 | `examples/` | `hello.skuld`, `functions.skuld` — the Demo 0/1 sources |
 | `tests/pass|fail|trap/` | Language golden fixtures, run by `cli/tests/golden.rs` (see `tests/README.md`) |
-| `runtime/` | Placeholder; keep it minimal until allocation or reference management needs it |
+| `runtime/strings.c` | The managed-memory runtime: retain, release, allocation, the checks that trap |
+| `runtime/platform.c` | The platform layer: what the OS is called, behind names `std/` speaks. Compiled as its own translation unit, so its headers never reach the program |
 
 Unit tests live in `compiler/src/<stage>/tests.rs` next to the stage they cover.
 
@@ -81,6 +82,39 @@ Documentation-only edits need a consistency review across `README.md`,
   Experimental. Changing behavior means updating those markers in the same
   change; documenting a feature is not permission to implement it.
 - Stay inside the active milestone described in `AGENTS.md`.
+
+## Deciding something about the language
+
+`AGENTS.md` carries the rule: a decision about what Skuld is comes from agents
+reaching agreement, over evidence, and not from whoever happened to be asked.
+This is how that is done here rather than why.
+
+**Before proposing a design, go and read what the languages you are about to
+cite actually do.** Their source is public and their specifications are
+written down. `WebFetch` and `WebSearch` are available for exactly this, and
+so is reading a vendored copy if one is nearer. The failure this guards
+against is not ignorance, it is a confident paraphrase: "Go does X" is worth
+nothing in a design argument unless you opened `mksyscall_windows.go` and it
+said X. Cite what you read, by file or by section, so the next reader can
+check it instead of re-deriving it.
+
+**Then have it argued against.** Launch a second agent and ask for the
+strongest case *against* the design, not for a review of it. Give it the
+evidence you gathered and the constraints from `AGENTS.md`, and ask what
+would have to be true for the design to be wrong. When it disagrees, the
+disagreement is the product — resolve it in writing before any code moves.
+
+**Record the outcome where the decision lives**, which is `AGENTS.md` for a
+language rule and `ROADMAP.md` for a milestone. Include what was rejected.
+A reversal is worth writing plainly: "this reverses the earlier draft, and
+here is what changed my mind" costs a sentence and saves the next agent from
+reopening it.
+
+**Verify a claim about behaviour by running the behaviour.** A milestone's
+closing marker, a "supported" in `README.md`, a platform in a table — each is
+a claim that some program does something somewhere. Run it there. Reading the
+diff that asserts it is not the same check, and on a second platform it is
+not a check at all.
 
 ## Committing
 

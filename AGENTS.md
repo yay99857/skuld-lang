@@ -57,6 +57,59 @@ accurate; documenting a future feature is not a request to implement it.
 - No normal `null` value. Optional values use builtin `Option<T>`; future errors
   use `Result`. Exceptions are not the primary error mechanism.
 
+## How a language decision is made
+
+A decision about what Skuld *is* — its syntax, its semantics, what the
+standard library owes, which platform is supported, what the foreign boundary
+will and will not admit — is not one agent's to take alone. What follows is
+not a principle; every rule here was paid for by a mistake this repository
+actually made, and the episode is kept with the rule so the cost is legible.
+
+**Read how other languages did it, in their source rather than in their
+reputation.** In M27 an agent wrote that per-platform source files were
+"exactly how Go solves this" and built a milestone's architecture on it. Go
+does not solve it that way: `mksyscall_windows.go` *generates* those
+declarations, Rust generates `windows-sys` from Microsoft's own Win32
+metadata, and Zig checks them in `comptime`. All three have a mechanism that
+keeps the declarations honest; Skuld has none of the three, so the analogy
+argued for the opposite of what it appeared to. The claim was confident,
+specific and wrong. A recollection of a language is not a citation of it, and
+the difference is usually the part the decision turns on. Read the code, the
+specification, or the design document — and say which you read.
+
+**A design decision needs a second agent that can contradict it, and the
+second agent owes disagreement rather than approval.** The same M27 decision
+was reversed by an independent review that found the argument for it
+unsound — not because the reviewer outranked anyone, but because it checked
+the premise. An agent asked only to confirm a plan will confirm it. Ask for
+the strongest case against, and require that it name what evidence would
+settle the question.
+
+**Consensus means the disagreement was resolved by argument, not by
+seniority, order of arrival, or who wrote first.** Where two agents disagree,
+the one who changes position says so plainly and records what changed their
+mind. A decision nobody argued against is not agreed; it is merely
+unexamined, and should be marked as such rather than written up as settled.
+
+**Write down what was rejected, and why.** Half of this file's value is the
+alternatives it forecloses: `errdefer`, a retaining slice, a constructor with
+a body, the Go zero-value model. A rejected option with no reason attached
+gets reproposed every few months, and the second proposer has no way to know
+it was ever weighed.
+
+**Do not mark work complete from the same place that produced it.** M27 was
+recorded as met while `os.run` did not link on Windows, inside the scope the
+milestone itself had announced. The tests were green because the failing one
+was gated; the gate was honest and the documentation was not. A closing
+marker is a claim about behaviour, so it is checked by running the behaviour
+on the platform it claims, not by reading the diff that asserts it.
+
+There is deliberately no persona in these instructions — no sentence casting
+the reader as a senior engineer or a language designer. It was considered and
+rejected: a role does not make a claim true, and the failure mode here has
+never been insufficient confidence. It has been confidence without a citation
+behind it. The obligations above are checkable, and a persona is not.
+
 ## Repository and current milestone
 
 - Rust stable, edition 2024; one Cargo workspace with two crates:
@@ -681,8 +734,16 @@ accurate; documenting a future feature is not a request to implement it.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built
-  with address, leak and UB detection, so a leak or double free fails the suite.
-  `runtime/` stays minimal until managed allocation needs it.
+  with address and UB detection on both platforms, so a leak or double free
+  fails the suite. Leak detection is Linux-only, since LeakSanitizer has no
+  Windows implementation.
+  `runtime/` is two files with two jobs. `strings.c` is the managed-memory
+  runtime and the rule it always had still holds: it grows when managed
+  allocation needs it and not before. `platform.c` is the platform layer, and
+  its brake is the one `std/` has — an entry point needs a named caller in
+  `std/`. It is compiled as its own translation unit, which is not a detail:
+  the headers it needs declare `read`, `write` and `open`, and a program is
+  free to declare those itself, so inlining it would take that right away.
 - Report status as completed milestones and verified behavior. Do not introduce
   completion percentages or progress scores; they imply a precision the project
   cannot justify and drift out of sync across documents.
