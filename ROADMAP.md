@@ -1429,9 +1429,9 @@ so is in `AGENTS.md` because M27 paid for it.
   already leaks a raw OpenSSL number into a public API, and `std/tls` says in
   its own comment that it cannot interpret one, so replacing it with a Skuld
   enum is a gain that this milestone would force rather than a cost it pays.
-- **Closing marker.** The Windows leg of CI links OpenSSL and runs the
-  hermetic HTTPS tests — the four that hand OpenSSL their own certificate
-  authority through `SSL_CERT_FILE` and never consult the system store. Green
+- **Closing marker.** The Windows leg of CI links OpenSSL and runs the HTTPS
+  suite — all six of them, since every one hands OpenSSL its own certificate
+  authority through `SSL_CERT_FILE` and none consults the system store. Green
   there means the binding works on Windows and only trust is missing; red
   names what else does. Either way M29 chooses with evidence instead of
   without.
