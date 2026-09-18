@@ -111,10 +111,14 @@ fn invalid_arguments() {
 fn options_may_come_before_the_file_and_after_a_separator() {
     let fixture = std::env::temp_dir().join(format!("skuld-order-{}.skuld", std::process::id()));
     std::fs::write(&fixture, "func main() { print(7) }").expect("write fixture");
-    // A flag before the file is the same command as a flag after it.
+    // A flag before the file is the same command as a flag after it. The
+    // linker flag is `-L`, not `-lm`: this is about where an option may sit,
+    // not about linking, and `libm` is a Unix arrangement — the MSVC toolchain
+    // keeps the maths in the C runtime and has no `m.lib` to find. Naming a
+    // search directory asks nothing of either system.
     for args in [
         vec!["run".into(), fixture.display().to_string()],
-        vec!["run".into(), "-lm".into(), fixture.display().to_string()],
+        vec!["run".into(), "-L.".into(), fixture.display().to_string()],
         vec!["run".into(), "--".into(), fixture.display().to_string()],
     ] {
         let output = cli().args(&args).output().expect("start CLI");
