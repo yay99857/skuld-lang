@@ -200,6 +200,30 @@ fn invalid_source_never_reaches_clang() {
 /// the executable rather than loaded beside it — but prepending a directory
 /// that exists is harmless anywhere, and asking clang beats hard-coding a
 /// path that moves with every release.
+fn runtime_dir() -> String {
+    let Ok(output) = Command::new("clang").arg("-print-runtime-dir").output() else {
+        return "clang could not be asked".into();
+    };
+    let directory = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let exists = Path::new(&directory).is_dir();
+    let listing = if exists {
+        fs::read_dir(&directory)
+            .map(|entries| {
+                entries
+                    .filter_map(|entry| {
+                        Some(entry.ok()?.file_name().to_string_lossy().into_owned())
+                    })
+                    .filter(|name| name.contains("asan"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    format!("{directory} (exists: {exists}) asan files: [{listing}]")
+}
+
 fn sanitizer_path() -> String {
     let existing = std::env::var("PATH").unwrap_or_default();
     let Ok(output) = Command::new("clang").arg("-print-runtime-dir").output() else {
@@ -301,10 +325,19 @@ fn sanitized_c(emitted: &[u8], expected: &[u8]) {
         )
         .output()
         .expect("standalone program");
+    // A sanitized program that cannot start prints nothing at all, so the
+    // status and where its runtime was looked for are the only evidence
+    // there is. Reporting them beats an empty assertion message.
     assert!(
         output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        "sanitized program exited {:?}
+stderr: {}
+stdout: {}
+runtime dir: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout),
+        runtime_dir()
     );
     assert_eq!(output.stdout, expected);
     assert!(
