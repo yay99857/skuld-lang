@@ -308,7 +308,7 @@ fn sanitized_c(emitted: &[u8], expected: &[u8]) {
         // itself. A consumer compiling emitted C by hand passes them too, and
         // the layer's own header comment says so.
         .args(if cfg!(windows) {
-            &["-lws2_32", "-liphlpapi"][..]
+            &["-lws2_32", "-liphlpapi", "-lcrypt32"][..]
         } else {
             &[][..]
         })

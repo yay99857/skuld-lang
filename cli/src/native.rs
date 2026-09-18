@@ -192,8 +192,14 @@ pub fn capture(c_source: &str, link_flags: &[String]) -> Result<(u8, String, Str
 /// the cost of always asking is an import library for a DLL every Windows
 /// process has mapped already. Elsewhere the sockets are in libc, which clang
 /// links without being asked.
+///
+/// `crypt32` joins them on the same reasoning and not by a new one: the layer
+/// reads the machine's trust anchors out of the Windows certificate store, and
+/// that is where those calls live. It is an operating-system DLL like the
+/// other two, so the choice above — pay a free import rather than invent a way
+/// to tie a link flag to an import — covers it unchanged.
 const PLATFORM_LIBRARIES: &[&str] = if cfg!(windows) {
-    &["-lws2_32", "-liphlpapi"]
+    &["-lws2_32", "-liphlpapi", "-lcrypt32"]
 } else {
     &[]
 };
