@@ -475,8 +475,15 @@ behind it. The obligations above are checkable, and a persona is not.
   the HTTPS suite there for the first time, where all six tests pass. So the
   binding works on Windows; what Windows lacks is a trust store, and a
   program there must point `SSL_CERT_FILE` at a bundle until one arrives.
-  Choosing between Schannel and OpenSSL-with-native-roots is M29's, and it is
-  not authorized. M27 is
+  M29 — a trust store on Windows — is in progress and chose **OpenSSL
+  everywhere, with the anchors supplied by the platform layer as PEM**. A
+  second TLS backend was proposed here and reversed: Go and Zig each implement
+  the protocol once and vary only where trust comes from, the multi-backend
+  shape is a facade whose surface is the intersection of its backends, and
+  Schannel does not read `SSL_CERT_FILE` — so five of the six HTTPS tests
+  would stop describing Windows, repairable only by writing a certificate
+  authority into the machine's own store or by giving `std/tls` the trust
+  override whose absence is its guarantee. M27 is
   the one candidate below that has been selected; the rest — inline assembly,
   atomics and a memory model, threads, interrupt and naked calling
   conventions, linker sections, and any further target — are each a milestone
