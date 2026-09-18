@@ -83,6 +83,7 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #endif
 
@@ -869,5 +870,31 @@ int64_t sk_random_bytes(unsigned char *out, uint64_t count) {
         filled += chunk;
     }
     return (int64_t)count;
+#endif
+}
+
+/* Waiting.
+ *
+ * A program that polls something wants to not poll it continuously, and the
+ * two systems spell that differently enough that neither name can be declared
+ * from Skuld: Windows takes milliseconds in a `DWORD`, POSIX takes a
+ * structure of seconds and nanoseconds, and `nanosleep` returns early when a
+ * signal arrives, which is a detail no caller of this should have to know.
+ *
+ * Interruption is absorbed rather than reported: the caller asked to wait a
+ * duration, not to be told about signals, and a partial wait that answered
+ * success would be worse than one that finishes. */
+void sk_sleep(int64_t milliseconds) {
+    if (milliseconds <= 0) return;
+#ifdef _WIN32
+    Sleep((DWORD)milliseconds);
+#else
+    struct timespec wanted;
+    wanted.tv_sec = (time_t)(milliseconds / 1000);
+    wanted.tv_nsec = (long)((milliseconds % 1000) * 1000000L);
+    struct timespec left;
+    while (nanosleep(&wanted, &left) != 0 && errno == EINTR) {
+        wanted = left;
+    }
 #endif
 }
