@@ -14,8 +14,15 @@
 // which is what a Windows build uses — a bare `-lssl` asks for `ssl.lib`,
 // while an OpenSSL built there installs `libssl.lib`; the flags are then
 // `-llibssl -llibcrypto` with a `-L` naming where it was installed. Windows
-// carries no OpenSSL of its own, so that install is the user's to provide,
-// and this module is unported there rather than merely untested.
+// carries no OpenSSL of its own, so that install is the user's to provide.
+//
+// This module runs on Windows once it is linked — the whole HTTPS suite
+// passes there, certificates accepted and refused alike. What Windows does
+// not give it is a trust store: `SSL_CTX_set_default_verify_paths` finds
+// nothing, and reports success anyway, so a program reaches the handshake
+// and then refuses every certificate for want of an issuer. Until a native
+// trust store arrives, a program on Windows must say what to believe, by
+// pointing `SSL_CERT_FILE` at a certificate authority bundle.
 //
 // Verification is on and cannot be turned off from here. There is no
 // `insecure` flag, because the first thing anybody would do with one is reach

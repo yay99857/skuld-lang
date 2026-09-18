@@ -470,9 +470,13 @@ behind it. The obligations above are checkable, and a persona is not.
   through `extern "C"`, which is the boundary the FFI already was.
   M27 — Windows as a supported target — is complete. CI builds Linux and
   Windows and the whole suite passes on both, which is the bar it set. M28 —
-  TLS on Windows — is in progress: it is the milestone M27 named when it
-  excluded TLS, so it is authorized by that exclusion rather than by drift,
-  and it deliberately does not choose the Windows backend. M27 is
+  TLS on Windows — is complete, and deliberately did not choose the Windows
+  backend: it made `std/tls` honest, linked it on the Windows runner and ran
+  the HTTPS suite there for the first time, where all six tests pass. So the
+  binding works on Windows; what Windows lacks is a trust store, and a
+  program there must point `SSL_CERT_FILE` at a bundle until one arrives.
+  Choosing between Schannel and OpenSSL-with-native-roots is M29's, and it is
+  not authorized. M27 is
   the one candidate below that has been selected; the rest — inline assembly,
   atomics and a memory model, threads, interrupt and naked calling
   conventions, linker sections, and any further target — are each a milestone

@@ -1333,7 +1333,7 @@ constants in `std/` are not absent so much as wrong.
   from disk instead; and the platform layer, inlined, leaked its headers into
   the program and broke every user's right to declare a POSIX function.
 
-## M28 — TLS on Windows: the backend decided by measurement — In progress
+## M28 — TLS on Windows: the backend decided by measurement — Implemented
 
 M27 excluded TLS and named this milestone. The exclusion was right and the
 reason recorded for it was not quite: it said Windows has no Unix trust store,
@@ -1429,12 +1429,30 @@ so is in `AGENTS.md` because M27 paid for it.
   already leaks a raw OpenSSL number into a public API, and `std/tls` says in
   its own comment that it cannot interpret one, so replacing it with a Skuld
   enum is a gain that this milestone would force rather than a cost it pays.
-- **Closing marker.** The Windows leg of CI links OpenSSL and runs the HTTPS
-  suite — all six of them, since every one hands OpenSSL its own certificate
-  authority through `SSL_CERT_FILE` and none consults the system store. Green
-  there means the binding works on Windows and only trust is missing; red
-  names what else does. Either way M29 chooses with evidence instead of
-  without.
+- **Closing marker: met, and it answered more than it asked.** The Windows
+  leg links OpenSSL from the runner's own MSVC install — `lib\VC\x64\MT`,
+  matching the `-defaultlib:libcmt` that clang's MSVC driver passes — and the
+  whole HTTPS suite runs there: six tests, no skips, checked by grepping the
+  job for a skip message rather than by trusting a green count, since a
+  skipped test also reports `ok`.
+
+  So `std/tls` **works on Windows**, which nobody knew. A document is fetched
+  over a verified connection, JSON is fetched and parsed over one, and a
+  certificate nothing trusts, one for another host name and an expired one
+  are each refused with the right reason. The socket crossing, `SSL_set1_host`,
+  SNI and the verification result are all correct over a Winsock `SOCKET`.
+
+  What Windows does not have is a **trust store**, and that is now the only
+  thing between it and HTTPS: a program there must point `SSL_CERT_FILE` at a
+  bundle, because `SSL_CTX_set_default_verify_paths` finds nothing and says it
+  succeeded. `std/tls` documents that limitation rather than leaving a user to
+  discover it at the handshake.
+
+  This narrows M29 rather than settling it. Keeping OpenSSL is no longer a
+  question of whether the binding works — it does — but of whether a language
+  should require its users to install OpenSSL to speak HTTPS on Windows.
+  Schannel answers that at the cost of a second backend whose size and error
+  taxonomy are now measured above.
 
 ## Open design questions
 
