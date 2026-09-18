@@ -1262,8 +1262,9 @@ utility has.
   stub, links nothing, and is checked to be statically linked rather than
   assumed to be; and a 32-bit multiboot kernel that writes to the VGA text
   buffer, reads it back, and stops the machine — built and checked for its
-  multiboot header everywhere, and booted under `qemu-system-i386` where that
-  exists.
+  multiboot header everywhere, and booted under `qemu-system-i386` — on every
+  push, since the Linux runner carries the emulator and the suite fails rather
+  than skips when it cannot start the machine.
 - **Out:** interrupts, a scheduler, drivers, a memory manager, and anything
   that is an operating system rather than the language it would be written in.
 

@@ -463,8 +463,8 @@ behind it. The obligations above are checkable, and a persona is not.
   and `exit` syscalls through an assembly stub, checked to be statically linked
   rather than assumed to be, and a 32-bit multiboot kernel that writes to the
   VGA text buffer, reads it back and stops the machine — built and checked for
-  its multiboot header everywhere, booted under `qemu-system-i386` where that
-  exists. What a freestanding program cannot do without help is exactly what
+  its multiboot header everywhere, booted under `qemu-system-i386` on every
+  push, since CI installs the emulator and refuses a run that skips it. What a freestanding program cannot do without help is exactly what
   the language deliberately cannot spell — `syscall`, `in`/`out`, anything that
   is one instruction rather than a value — and those are assembly declared
   through `extern "C"`, which is the boundary the FFI already was.
