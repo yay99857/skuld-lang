@@ -597,7 +597,9 @@ behind it. The obligations above are checkable, and a persona is not.
   `std/net` carry an `OsFailure` of what was attempted and the system's number.
   TLS is OpenSSL through the FFI, quarantined in `std/tls` and `std/https`:
   `std/http` still refuses `https://` and links nothing, and a program that
-  wants TLS imports it and passes `-lssl -lcrypto` itself. Verification cannot
+  wants TLS imports it and passes `-lssl -lcrypto` itself — `-llibssl
+  -llibcrypto` under the MSVC toolchain Windows builds use, because those are
+  the linker's names for the libraries and not the language's. Verification cannot
   be turned off from Skuld and there is no `insecure` flag. `std/ffi` adds the
   only two pointer operations that read no memory — `null()` and `is_null()` —
   because a library that allocates answers with NULL. Do not add a

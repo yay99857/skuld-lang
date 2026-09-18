@@ -1708,8 +1708,9 @@ cache.
 
 **`std/tls` and `std/https`** are the one place the project takes a
 dependency, and it is opt-in: they bind OpenSSL, so a program that imports
-them links it itself with `-lssl -lcrypto`. `std/http` still refuses `https://`
-and links nothing. Verification cannot be turned off from Skuld: the chain is
+them links it itself with `-lssl -lcrypto` — `-llibssl -llibcrypto` under the
+MSVC toolchain Windows builds use, since those are the linker's names and not
+the language's. `std/http` still refuses `https://` and links nothing. Verification cannot be turned off from Skuld: the chain is
 checked against the system trust store and the name against the certificate,
 and there is no `insecure` flag.
 
@@ -1735,7 +1736,7 @@ move with the language.
 | `std/map` | A map from `string` to `int`, iterated in insertion order |
 | `std/dns` | Host names, by speaking DNS over UDP |
 | `std/ffi` | The null pointer, and whether a pointer is it |
-| `std/tls` | A verified TLS connection over OpenSSL (needs `-lssl -lcrypto`) |
+| `std/tls` | A verified TLS connection over OpenSSL (linked by the program) |
 | `std/https` | The HTTP client of `std/http` over `std/tls` |
 
 The last three arrived with M9, and reach as far as fetching a document and

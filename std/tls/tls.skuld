@@ -9,6 +9,14 @@
 //
 //     skuld build fetch.skuld -lssl -lcrypto
 //
+// Those are the linker's names for the libraries rather than the language's,
+// so they follow the toolchain and not Skuld. Under clang's MSVC driver —
+// which is what a Windows build uses — a bare `-lssl` asks for `ssl.lib`,
+// while an OpenSSL built there installs `libssl.lib`; the flags are then
+// `-llibssl -llibcrypto` with a `-L` naming where it was installed. Windows
+// carries no OpenSSL of its own, so that install is the user's to provide,
+// and this module is unported there rather than merely untested.
+//
 // Verification is on and cannot be turned off from here. There is no
 // `insecure` flag, because the first thing anybody would do with one is reach
 // for it, and a verified connection is the only kind this module knows how to
