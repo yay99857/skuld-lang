@@ -148,15 +148,15 @@ pub func get(url: string) -> Result<Response, HttpError> {
     let connection = net.open(address, target.port) else reason {
         return Err(HttpError.Network(reason))
     }
+    // One close, on every way out. This is what `defer` is for, and the
+    // three hand-written calls it replaces were three chances to miss one.
+    defer connection.close()
     let sent = connection.send_all(bytes) else reason {
-        connection.close()
         return Err(HttpError.Network(reason))
     }
     let raw = connection.receive_all() else reason {
-        connection.close()
         return Err(HttpError.Network(reason))
     }
-    connection.close()
     return parse_response(raw)
 }
 

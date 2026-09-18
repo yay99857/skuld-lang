@@ -71,20 +71,21 @@ pub func get(url: string) -> Result<http.Response, HttpsError> {
     let connection = tls.connect(address, port, target.host) else problem {
         return Err(HttpsError.Transport(problem))
     }
+    // One close, on every way out. A TLS connection holds three things — the
+    // socket, the `SSL` and the context — so a path that forgets it leaks all
+    // three, and there were three such paths written by hand here.
+    defer connection.close()
     let request = "GET ${target.path} HTTP/1.1\r\nHost: ${target.host}\r\nConnection: close\r\n\r\n"
     var bytes: []u8 = []
     for byte in request.bytes() {
         bytes.push(byte)
     }
     let sent = connection.send_all(bytes) else problem {
-        connection.close()
         return Err(HttpsError.Transport(problem))
     }
     let raw = connection.receive_all() else problem {
-        connection.close()
         return Err(HttpsError.Transport(problem))
     }
-    connection.close()
     let response = http.parse_response(raw) else problem {
         return Err(HttpsError.Response(problem))
     }
