@@ -95,7 +95,14 @@ fn an_extern_struct_crosses_the_boundary_by_value_in_both_directions() {
     let helper_object = scratch.directory.join("helper.o");
     fs::write(&helper_source, HELPER).expect("helper source");
     let compiled = Command::new("clang")
-        .args(["-c", "-fPIC", "-std=c11"])
+        // `-fPIC` describes how an ELF object is relocated, and the Windows
+        // target refuses it rather than ignoring it: a PE image is relocated
+        // whether or not anyone asks.
+        .args(if cfg!(unix) {
+            &["-c", "-fPIC", "-std=c11"][..]
+        } else {
+            &["-c", "-std=c11"][..]
+        })
         .arg(&helper_source)
         .arg("-o")
         .arg(&helper_object)
@@ -109,7 +116,15 @@ fn an_extern_struct_crosses_the_boundary_by_value_in_both_directions() {
     // A static library, because `-l` is the only way a program names something
     // to link and the CLI forwards nothing else.
     let archive = scratch.directory.join("libskuldabi.a");
-    let archived = Command::new("ar")
+    // `llvm-ar` ships with the clang this test already needs, and is the one
+    // archiver present on both systems; GNU `ar` is not on a stock Windows
+    // machine. Both accept the same arguments here.
+    let archiver = if Command::new("llvm-ar").arg("--version").output().is_ok() {
+        "llvm-ar"
+    } else {
+        "ar"
+    };
+    let archived = Command::new(archiver)
         .arg("rcs")
         .arg(&archive)
         .arg(&helper_object)

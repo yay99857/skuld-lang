@@ -182,10 +182,22 @@ pub fn capture(c_source: &str, link_flags: &[String]) -> Result<(u8, String, Str
     ))
 }
 
+/// What the platform layer itself needs linked, as opposed to what a program
+/// asks for.
+///
+/// On Windows the sockets live in `ws2_32` rather than in the C library, so
+/// the layer does not link without it. It is added unconditionally rather
+/// than when a program imports `std/net`, because nothing today connects an
+/// import to a link flag and inventing that is a compiler concept of its own;
+/// the cost of always asking is an import library for a DLL every Windows
+/// process has mapped already. Elsewhere the sockets are in libc, which clang
+/// links without being asked.
+const PLATFORM_LIBRARIES: &[&str] = if cfg!(windows) { &["-lws2_32"] } else { &[] };
+
 /// `link_flags` carries `-l`/`-L` arguments for libraries an `extern "C"`
 /// declaration needs; libc is linked by clang without asking.
 fn compile(sources: &[&Path], executable: &Path, link_flags: &[String]) -> Result<(), String> {
-    let output = Command::new("clang").arg("-std=c11").arg("-O2").arg("-fno-fast-math").args(sources).arg("-o").arg(executable).args(link_flags).stdin(Stdio::null()).output().map_err(|error| {
+    let output = Command::new("clang").arg("-std=c11").arg("-O2").arg("-fno-fast-math").args(sources).arg("-o").arg(executable).args(link_flags).args(PLATFORM_LIBRARIES).stdin(Stdio::null()).output().map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound { "clang was not found; install clang and make it available on PATH to use `skuld run` (checking does not need clang)".into() }
         else { format!("cannot launch clang: {error}") }
     })?;

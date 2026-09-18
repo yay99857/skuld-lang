@@ -32,11 +32,19 @@
 #include <string.h>
 
 #ifdef _WIN32
+/* <winsock2.h> must precede <windows.h>, which <io.h> may pull in. */
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
 #include <fcntl.h>
 #include <io.h>
 #include <sys/stat.h>
 #else
+#include <arpa/inet.h>
 #include <fcntl.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 #include <unistd.h>
 #endif
 
@@ -59,7 +67,13 @@ static char **skuld_argument_values = NULL;
  * for no reason the language admits to, so the streams are put into binary
  * mode and Skuld's output is LF everywhere. This is what Go does too.
  *
- * Nothing is needed on any other system: there is no translation to undo. */
+ * Nothing is needed on any other system: there is no translation to undo.
+ *
+ * Winsock is started here for a different reason: on Windows no socket call
+ * works until it has been, and doing it once at the start means no call in
+ * the socket section below has to wonder whether it has happened. */
+static void skuld_sockets_start(void);
+
 void skuld_start(int argc, char **argv) {
     skuld_argument_count = argc;
     skuld_argument_values = argv;
@@ -67,6 +81,7 @@ void skuld_start(int argc, char **argv) {
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stderr), _O_BINARY);
 #endif
+    skuld_sockets_start();
 }
 
 int64_t sk_arg_count(void) { return (int64_t)skuld_argument_count; }
@@ -199,4 +214,131 @@ int64_t sk_environment(unsigned char *name, unsigned char *out, uint64_t capacit
     if ((uint64_t)len > capacity) return -2;
     memcpy(out, value, len);
     return (int64_t)len;
+}
+
+/* Sockets.
+ *
+ * Almost every disagreement between the two systems lives in this one area,
+ * and none of it is visible from Skuld once it is behind these names.
+ *
+ * A Windows `SOCKET` is a `UINT_PTR`, not an `int`, and failure is
+ * `INVALID_SOCKET` — all bits set — rather than -1, so the POSIX test
+ * `handle < 0` is not merely wrong there, it is wrong in the direction that
+ * accepts a failed call. Closing one is `closesocket`, since the descriptor
+ * is not a file descriptor. Writing to a connection the peer has closed
+ * raises SIGPIPE on POSIX and needs `MSG_NOSIGNAL` to say otherwise, while
+ * Windows has no signal to suppress and rejects the flag. The receive
+ * timeout is a `struct timeval` on one system and a `DWORD` of milliseconds
+ * on the other, and the struct itself is eight bytes there and sixteen here.
+ * And nothing works at all on Windows until `WSAStartup` has run.
+ *
+ * So a handle crosses as an `i64` with -1 for failure, a timeout crosses as
+ * milliseconds, and an address crosses as its four octets. */
+
+#ifdef _WIN32
+typedef SOCKET skuld_socket;
+#define SKULD_NO_SOCKET INVALID_SOCKET
+#else
+typedef int skuld_socket;
+#define SKULD_NO_SOCKET (-1)
+#endif
+
+/* Winsock has to be started before any other call in this section, and the
+ * program's first statement has not run yet when `skuld_start` does. Doing it
+ * there rather than lazily means no socket call has to wonder. */
+static void skuld_sockets_start(void) {
+#ifdef _WIN32
+    WSADATA data;
+    WSAStartup(MAKEWORD(2, 2), &data);
+#endif
+}
+
+/* The system's reason the last socket call failed.
+ *
+ * It is a separate question from `sk_errno` because Winsock answers it in a
+ * separate place: it never touches `errno`, and its numbers are their own
+ * range — `WSAECONNREFUSED` is 10061 where POSIX `ECONNREFUSED` is 111. A
+ * caller that wants to explain a network failure has to ask here. */
+int64_t sk_socket_error(void) {
+#ifdef _WIN32
+    return (int64_t)WSAGetLastError();
+#else
+    return (int64_t)errno;
+#endif
+}
+
+/* Connect to an IPv4 address given as its four octets. `datagram` chooses UDP
+ * over TCP, which is the whole of what `std/dns` needs that `std/net` does
+ * not. Answers the handle, or -1. */
+int64_t sk_socket_connect(unsigned char *octets, int64_t port, int64_t datagram) {
+    skuld_socket handle = socket(AF_INET, datagram ? SOCK_DGRAM : SOCK_STREAM, 0);
+    if (handle == SKULD_NO_SOCKET) return -1;
+    struct sockaddr_in address;
+    memset(&address, 0, sizeof address);
+    address.sin_family = AF_INET;
+    address.sin_port = htons((unsigned short)port);
+    unsigned long packed = ((unsigned long)octets[0] << 24) | ((unsigned long)octets[1] << 16)
+                           | ((unsigned long)octets[2] << 8) | (unsigned long)octets[3];
+    address.sin_addr.s_addr = htonl(packed);
+    if (connect(handle, (struct sockaddr *)&address, (int)sizeof address) != 0) {
+#ifdef _WIN32
+        closesocket(handle);
+#else
+        close(handle);
+#endif
+        return -1;
+    }
+    return (int64_t)handle;
+}
+
+/* One write. Answers what was written, or -1. The caller loops: a socket is
+ * allowed to accept less than it was offered on both systems. */
+int64_t sk_socket_send(int64_t handle, unsigned char *buffer, uint64_t length) {
+    int want = length > (uint64_t)INT_MAX ? INT_MAX : (int)length;
+#ifdef _WIN32
+    int wrote = send((skuld_socket)handle, (const char *)buffer, want, 0);
+#else
+    /* Without MSG_NOSIGNAL a write to a closed connection kills the process
+     * rather than answering, which is not an error a Skuld program could
+     * catch. Windows has no such signal and rejects the flag. */
+    ssize_t wrote = send((skuld_socket)handle, buffer, (size_t)want, MSG_NOSIGNAL);
+#endif
+    return (int64_t)wrote;
+}
+
+/* One read. 0 means the peer closed, which is how a body with no declared
+ * length ends; -1 is a failure. */
+int64_t sk_socket_recv(int64_t handle, unsigned char *buffer, uint64_t capacity) {
+    int want = capacity > (uint64_t)INT_MAX ? INT_MAX : (int)capacity;
+#ifdef _WIN32
+    int got = recv((skuld_socket)handle, (char *)buffer, want, 0);
+#else
+    ssize_t got = recv((skuld_socket)handle, buffer, (size_t)want, 0);
+#endif
+    return (int64_t)got;
+}
+
+/* How long a read may block before it gives up, in milliseconds. A resolver
+ * that waits for a server that will never answer is the reason this exists.
+ * Answers 0, or -1 if the system refused. */
+int64_t sk_socket_timeout(int64_t handle, int64_t milliseconds) {
+#ifdef _WIN32
+    DWORD value = (DWORD)milliseconds;
+    int result = setsockopt((skuld_socket)handle, SOL_SOCKET, SO_RCVTIMEO, (const char *)&value,
+                            (int)sizeof value);
+#else
+    struct timeval value;
+    value.tv_sec = (long)(milliseconds / 1000);
+    value.tv_usec = (long)((milliseconds % 1000) * 1000);
+    int result = setsockopt((skuld_socket)handle, SOL_SOCKET, SO_RCVTIMEO, &value, sizeof value);
+#endif
+    return result == 0 ? 0 : -1;
+}
+
+void sk_socket_close(int64_t handle) {
+#ifdef _WIN32
+    closesocket((skuld_socket)handle);
+#else
+    close((skuld_socket)handle);
+#endif
 }
