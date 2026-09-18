@@ -10,6 +10,13 @@
 //! The kernel is built here always and booted only where `qemu-system-i386`
 //! exists, the way the rest of the suite treats a tool it needs but cannot
 //! assume.
+//!
+//! The file is Linux-only because both programs are: one makes Linux syscalls
+//! by number through `_start`, the other is an ELF laid out by a linker
+//! script and checked for a multiboot header. Freestanding is *about* a
+//! particular target, so a PE or UEFI freestanding mode is not this test
+//! running elsewhere — it is a milestone of its own, with its own marker.
+#![cfg(target_os = "linux")]
 use std::{
     env, fs,
     path::{Path, PathBuf},

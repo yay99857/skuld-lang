@@ -285,6 +285,29 @@ fn emitted_c_compiles_and_runs_independently() {
     sanitized(include_str!("../../examples/functions.skuld"), b"42\n");
 }
 
+/// Fixtures that only run on one kind of system, and why.
+///
+/// A fixture lands here when the program it holds names something the other
+/// system genuinely does not have, rather than something not ported yet. The
+/// shape follows `portability.rs`'s `TARGET_SPECIFIC`: an opt-out list with
+/// the reason written beside each entry, so that a fixture is never skipped
+/// quietly and the list can be read as a statement about the language.
+const POSIX_ONLY: &[&str] = &[
+    // Declares `pipe` and `close` to demonstrate `ptr()` over a fixed array.
+    // `pipe` is POSIX and has no Windows equivalent — `_pipe` takes three
+    // arguments and a different contract — so the fixture cannot link there.
+    "fixed_arrays",
+];
+
+/// Whether this fixture runs on the system the tests are running on.
+fn runs_here(source: &Path) -> bool {
+    if cfg!(unix) {
+        return true;
+    }
+    let stem = source.file_stem().unwrap_or_default().to_string_lossy();
+    !POSIX_ONLY.contains(&stem.as_ref())
+}
+
 #[test]
 fn every_language_fixture_is_sanitizer_clean() {
     // The golden fixtures are the broadest sample of real programs; running all
@@ -303,6 +326,9 @@ fn every_language_fixture_is_sanitizer_clean() {
     sources.sort();
     assert!(!sources.is_empty(), "no fixtures found");
     for source in sources {
+        if !runs_here(&source) {
+            continue;
+        }
         let expected = fs::read(source.with_extension("out")).expect("expected output");
         // Emitted from the fixture's own directory, so that a program made of
         // modules resolves its imports against the real tree.
@@ -405,6 +431,11 @@ fn build_rejects_invalid_source_without_writing_an_executable() {
 }
 
 #[test]
+// The collision this guards against needs the executable to be named exactly
+// like its source, which only happens where an executable carries no
+// extension. On Windows `build` writes `noextension.exe`, so the source is
+// never in danger and there is nothing here to refuse.
+#[cfg(unix)]
 fn build_refuses_to_overwrite_the_source() {
     // Without a `.skuld` extension the stem names the source itself.
     let fixture = Fixture::new("func main() {\n    print(1)\n}");
