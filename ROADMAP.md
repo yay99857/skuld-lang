@@ -1547,6 +1547,70 @@ three counts, each checkable, and each checked.
   enumeration of `ROOT` on an ordinary machine is not a handful of
   certificates that would fail to chain to most of the web.
 
+## M30 — A file held open, and the destructor that turned out not to be needed — Implemented
+
+M13 opened files by path and wrote the cost down: "streaming a file larger
+than memory is not possible yet, and it will need the handle question
+answered." This answers it, and the answer needed **no change to the compiler
+or the runtime**.
+
+- **Proposed as a language feature and withdrawn.** The first shape was a
+  destructor a user can write — a `deinit()` the runtime calls when the count
+  reaches zero — on the argument that three modules were paying for its
+  absence. Every part of that argument failed a check.
+- **It had already been rejected, here, with its reason.** M25's entry lists
+  under **Out**: "destructors a user can write, `Drop`-style traits, and
+  cleanup attached to a type rather than to a scope." The proposal walked past
+  a recorded decision, which is the failure this document's rejections exist to
+  prevent — read from the other side.
+- **The citation argued the opposite way.** It claimed to follow Zig, whose
+  `defer` semantics M25 adopted by name. But Zig's `deinit` is **never called
+  by the language** — it takes parameters, it is invoked by hand, and Zig's
+  stated reason is that the compiler may not insert code the author did not
+  write. The real precedent for an automatic `deinit` is Swift, which is
+  reference counted, restricts it to classes, and is emphatic that it is not a
+  method and cannot be called. That is the second time an analogy in this
+  project pointed backwards, and both times it was because the source was
+  recalled instead of read.
+- **It was unsound as designed, from safe Skuld.** `skuld_object_release` runs
+  `destroy` with `strong == 0` and then frees the header unconditionally. A
+  destructor body that stores `this` retains it back to 1; the field release
+  that follows drops it to 0 again, re-enters `destroy`, and frees a header
+  something still points at — a double free and a use-after-free with no
+  `unsafe` block anywhere, in a shape `tests/pass/option_recursive_class.skuld`
+  already has. Fixing it means a destruction state in the object header, as
+  Swift carries, plus a guard on `retain`, which is the hottest path in the
+  language and would have to be measured rather than asserted.
+- **And the consumers dissolved on inspection.** `std/http` and `std/https`
+  each closed a connection three times on three paths and used `defer` not
+  once, while `std/tls` — the module M25 closed against — uses it six times.
+  That was unadopted M25, not evidence for a new mechanism. Converting them is
+  the first commit of this milestone: six hand-written calls became two
+  deferred ones.
+- **Decision taken — a handle is a class the caller closes.** `std/fs` gains
+  `open`, `create`, and a `File` with `read`, `write` and `close`, over the
+  four `sk_file_*` declarations that were already there, shaped exactly like
+  `std/net`'s `Connection`. `read` answers at most so many bytes and answers
+  empty at the end, so a caller stops without asking how long the file is.
+  `read_file` and `read_text` stay what a document transformed whole wants.
+- **The discipline is one line and it is visible.** `defer file.close()` runs
+  on every way out, including a `?` that propagates. That visibility is the
+  point: a destructor would have put the second close of a double close where
+  nobody can read it, and every named consumer has a public `close()` — so a
+  `TlsConnection` closing its socket and then releasing its `Connection` field
+  would close the same descriptor twice, and each class would have needed a
+  `closed` flag to prevent it. Two mechanisms and two flags where there was one
+  of each.
+- **Closing marker: met.** A program writes a file and reads it back four
+  bytes at a time. The fixture uses 29 bytes rather than a length that divides
+  evenly, because only a short final block shows that the loop ends on an
+  empty read and not on a short one.
+- **Left open, and not selected.** If "a caller can forget `close()`" turns out
+  to be a real defect rather than a hypothetical one, the answer in this
+  language's character is a **diagnostic** — a span and a `Fix`, which the
+  compiler already knows how to carry — and not hidden control flow. Evidence
+  first: a program that leaks a handle.
+
 ## Open design questions
 
 These are not settled by this document and change the shape of the milestones

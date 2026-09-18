@@ -478,7 +478,14 @@ behind it. The obligations above are checkable, and a persona is not.
   M29 — a trust store on Windows — is complete: **OpenSSL everywhere, with the
   anchors supplied by the platform layer as PEM**, so a program on Windows now
   speaks HTTPS against the authorities the machine already holds and needs no
-  `SSL_CERT_FILE`. A
+  `SSL_CERT_FILE`. M30 — a file held open — is complete and changed neither
+  the compiler nor the runtime: `std/fs` gained `open`, `create` and a `File`
+  with `read`, `write` and `close`, over declarations that were already there
+  and in the shape `std/net`'s `Connection` already had. A destructor a user
+  can write was proposed for it and withdrawn twice over — M25 had already
+  ruled it out, and the design was unsound besides, since a body that stores
+  `this` revives an object the runtime is about to free. The rule stays the
+  one M25 set: `defer file.close()`, visible at the scope that opened it. A
   second TLS backend was proposed here and reversed: Go and Zig each implement
   the protocol once and vary only where trust comes from, the multi-backend
   shape is a facade whose surface is the intersection of its backends, and

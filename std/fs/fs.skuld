@@ -1,11 +1,17 @@
 // Reading and writing a whole file, over the libc calls the FFI can reach.
 //
-// The API is by path, not by handle: `read_file` and `write_file` open,
-// finish and close in one call. That is a decision, not a simplification.
-// A handle exposed to Skuld would need a lifetime rule — who closes it, and
-// what happens to one that is dropped — and Skuld has no destructors a user
-// can write. A path-shaped API needs none of that, and a file transformed
-// whole is what a command-line tool does anyway.
+// Two shapes, and the first is still the usual one. `read_file` and
+// `write_file` open, finish and close in one call, which is what a document
+// transformed whole wants and what a command-line tool does anyway. Reach for
+// them unless the file will not fit in memory.
+//
+// `open` and `create` answer with a `File` instead, for when it will not. A
+// handle needs a lifetime rule — who closes it, and what happens to one that
+// is dropped — and the rule here is the caller's: `defer file.close()` on the
+// line after it opens, which runs on every way out including a `?` that
+// propagates. Skuld has no destructor a user can write, and that is a
+// decision rather than a gap: cleanup belongs to a scope a reader can see,
+// not to a type where the second close of a double close is invisible.
 //
 // There is no `errno` here either, for the reason `std/net` records: reading
 // it means reading through a pointer, which the foreign boundary does not do.
