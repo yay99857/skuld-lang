@@ -23,8 +23,9 @@
  *
  *     clang -std=c11 -O2 program.c skuld_platform.c -o program
  *
- * and on Windows add `-lws2_32 -liphlpapi -lcrypt32`, where the sockets, the
- * adapter list and the certificate store live outside the C library. `skuld
+ * and on Windows add `-lws2_32 -liphlpapi -lcrypt32 -lbcrypt`, where the
+ * sockets, the adapter list, the certificate store and the random generator
+ * live outside the C library. `skuld
  * build` and `skuld run` pass those themselves; this list is the one a caller
  * compiling by hand has to keep up with, so it is kept correct here. */
 
