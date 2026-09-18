@@ -1710,7 +1710,12 @@ holds it. Generics remain out, and choosing a map did not authorize them.
 `connect`ed UDP socket, because every resolver in libc answers with a pointer
 and the foreign boundary does not read through one. Servers come from
 `/etc/resolv.conf`, a query times out after three seconds, and there is no
-cache.
+cache. An answer is matched against the question before any of it is believed —
+the query id, the question section and the bit that says this is a response —
+because a datagram arrives from whoever sent one, and `connect` fixes only the
+address and the port. The id is sixteen bits from the system's own generator,
+which is the only kind of randomness this library offers: there is no seedable
+one to reach for by mistake.
 
 **`std/tls` and `std/https`** are the one place the project takes a
 dependency, and it is opt-in: they bind OpenSSL, so a program that imports

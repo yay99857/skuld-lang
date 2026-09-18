@@ -307,8 +307,14 @@ fn sanitized_c(emitted: &[u8], expected: &[u8]) {
         // What the platform layer needs linked, which `skuld build` passes
         // itself. A consumer compiling emitted C by hand passes them too, and
         // the layer's own header comment says so.
+        //
+        // This list is `native.rs`'s `PLATFORM_LIBRARIES` written out a second
+        // time, because a test crate cannot see a binary crate's constant. It
+        // has gone stale twice, both times caught here rather than in
+        // production, which is the argument for leaving the duplication where
+        // a failing test points at it.
         .args(if cfg!(windows) {
-            &["-lws2_32", "-liphlpapi", "-lcrypt32"][..]
+            &["-lws2_32", "-liphlpapi", "-lcrypt32", "-lbcrypt"][..]
         } else {
             &[][..]
         })

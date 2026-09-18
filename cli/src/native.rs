@@ -199,7 +199,7 @@ pub fn capture(c_source: &str, link_flags: &[String]) -> Result<(u8, String, Str
 /// other two, so the choice above — pay a free import rather than invent a way
 /// to tie a link flag to an import — covers it unchanged.
 const PLATFORM_LIBRARIES: &[&str] = if cfg!(windows) {
-    &["-lws2_32", "-liphlpapi", "-lcrypt32"]
+    &["-lws2_32", "-liphlpapi", "-lcrypt32", "-lbcrypt"]
 } else {
     &[]
 };

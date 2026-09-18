@@ -23,8 +23,9 @@
  *
  *     clang -std=c11 -O2 program.c skuld_platform.c -o program
  *
- * and on Windows add `-lws2_32 -liphlpapi -lcrypt32`, where the sockets, the
- * adapter list and the certificate store live outside the C library. `skuld
+ * and on Windows add `-lws2_32 -liphlpapi -lcrypt32 -lbcrypt`, where the
+ * sockets, the adapter list, the certificate store and the random generator
+ * live outside the C library. `skuld
  * build` and `skuld run` pass those themselves; this list is the one a caller
  * compiling by hand has to keep up with, so it is kept correct here. */
 
@@ -42,6 +43,17 @@
  * below declare `read`, `write`, `open` and `close`, and a program is allowed
  * to declare those itself through `extern "C"` — as `tests/pass/extern_c_ffi`
  * does. Inlining this file would make the two collide. */
+
+/* `getentropy` is declared by glibc only under `_DEFAULT_SOURCE`, and this
+ * file is compiled with `-std=c11`, which defines `__STRICT_ANSI__` and so
+ * asks for nothing beyond ISO C plus POSIX. Everything else this file calls
+ * is POSIX and arrives without help; the random source is the one thing that
+ * does not, so it is requested here rather than by widening the standard the
+ * whole program is compiled against. It must precede every include, and it is
+ * a no-op where the header does not read it. */
+#ifndef _WIN32
+#define _DEFAULT_SOURCE
+#endif
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
@@ -62,6 +74,8 @@
 #include <io.h>
 #include <sys/stat.h>
 #include <windows.h>
+/* After <windows.h>, and not reached through it. */
+#include <bcrypt.h>
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -818,5 +832,42 @@ int64_t sk_trust_anchors_pem(unsigned char *out, uint64_t capacity) {
     (void)out;
     (void)capacity;
     return 0;
+#endif
+}
+
+/* Randomness.
+ *
+ * Bytes nobody can predict, which the language has no way to produce on its
+ * own: there is no instruction for it and no libc function the foreign
+ * boundary can reach that does not read through a pointer it refuses.
+ *
+ * Both of these are the system's own generator rather than a seeded one, and
+ * that is the only kind offered here. A seeded generator is what a simulation
+ * wants and what nobody should reach for when they need a number an attacker
+ * must not guess — and with one function to reach for, nobody can reach for
+ * the wrong one. Go shipped a cryptographic generator behind `math/rand`
+ * after finding people had used the fast one for key material; this avoids
+ * the choice rather than documenting it.
+ *
+ * `getentropy` rather than `getrandom`: the non-Windows branch of this file
+ * is written for Unix in general, and `getrandom` is Linux and FreeBSD while
+ * `getentropy` is in <unistd.h> on macOS and the BSDs as well. It takes at
+ * most 256 bytes at a time, hence the loop. */
+int64_t sk_random_bytes(unsigned char *out, uint64_t count) {
+    if (count == 0) return 0;
+#ifdef _WIN32
+    if (BCryptGenRandom(NULL, out, (ULONG)count, BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+        return -1;
+    }
+    return (int64_t)count;
+#else
+    uint64_t filled = 0;
+    while (filled < count) {
+        uint64_t left = count - filled;
+        size_t chunk = left > 256 ? 256 : (size_t)left;
+        if (getentropy(out + filled, chunk) != 0) return -1;
+        filled += chunk;
+    }
+    return (int64_t)count;
 #endif
 }
