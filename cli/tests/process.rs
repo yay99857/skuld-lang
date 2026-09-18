@@ -160,6 +160,9 @@ fn everything_after_a_double_dash_reaches_the_program_unchanged() {
 /// are the ones every POSIX system has, and none of them is a shell: `run`
 /// does no quoting, splitting or expansion, which is what the last case
 /// checks.
+// The program the Unix-only `run` test compiles. It goes with that test: with
+// `-D warnings` in CI an unused constant is an error rather than a warning.
+#[cfg(unix)]
 const RUNNER: &str = r#"
 import "std/os"
 
@@ -212,6 +215,15 @@ func main() {
 "#;
 
 #[test]
+// Unlike the rest of this suite's Unix gates, this one marks work that is
+// owed rather than a difference that is permanent. `os.run` is still a
+// `fork`/`execvp`/`waitpid` pipeline, and none of those exists on Windows;
+// moving it into the platform layer, onto `CreateProcess`, is what removes
+// this attribute. The program the test runs is POSIX too — `echo` is a `cmd`
+// builtin rather than an executable there, and 127 is not how that system
+// reports a missing program — so the fixture needs its own expectations on
+// the other side, not just a ported library.
+#[cfg(unix)]
 fn a_program_runs_another_and_reads_what_it_wrote() {
     if !clang_available() {
         eprintln!("skipping: clang is not on PATH");
