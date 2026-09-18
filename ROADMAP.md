@@ -1525,10 +1525,22 @@ three counts, each checkable, and each checked.
   a good certificate refused, never a bad one accepted — it is exactly what
   Zig's standard library ships, and it can be strengthened later without
   changing anything a Skuld program sees.
-- **Closing marker.** On Windows, with `SSL_CERT_FILE` unset, a program
-  fetches a document from a public host over a verified connection. The
-  existing six tests keep passing unmodified on both systems, because this
-  changes what is in the trust store and not how trust is established.
+- **Closing marker, corrected before it was used.** It was first written as a
+  program fetching from a public host with `SSL_CERT_FILE` unset. That
+  contradicts a rule this project already holds — network tests stay hermetic,
+  and nothing in the suite touches the network — so the marker, not the rule,
+  had to give. What is asserted instead, in `cli/tests/trust.rs`: a Skuld
+  program asks the platform layer for the anchors and they arrive, as PEM,
+  more than none of them, with the same length whenever it asks. On the
+  systems that need nothing the layer says so, and the answer is checked to be
+  exactly that rather than merely non-failing. The existing six HTTPS tests
+  keep passing unmodified on both systems, because this changes what is in the
+  trust store and not how trust is established.
+- **Measured on a real Windows machine.** The developer's own Windows 10 box
+  enumerates **45 anchors, 69,904 bytes of PEM**. That number is the answer to
+  the one question the review named as decision-relevant and unmeasured: an
+  enumeration of `ROOT` on an ordinary machine is not a handful of
+  certificates that would fail to chain to most of the web.
 
 ## Open design questions
 
