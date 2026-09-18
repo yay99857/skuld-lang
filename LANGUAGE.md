@@ -1662,11 +1662,17 @@ length-aware and not NUL-terminated, so `to_c(text) -> Result<[]u8,
 CStringError>` copies the bytes and appends the terminator, refusing a string
 that already contains a NUL, since a C string would end there.
 
-**`std/fs`** reads and writes a whole file, by path rather than by handle: a
-handle would need a lifetime rule, and Skuld has no destructor a user can
-write, while a file read or replaced whole needs none. `read_file`, `read_text`,
-`write_file` and `write_text` answer a `Result` whose error names the step and
-the path — there is no `errno`, for the reason `std/net` already records.
+**`std/fs`** reads and writes a whole file by path — `read_file`, `read_text`,
+`write_file`, `write_text` — which is what a document transformed whole wants,
+and answers a `Result` whose error names the step and the path; there is no
+`errno`, for the reason `std/net` already records. For a file that will not
+fit in memory, `open` and `create` answer a `File` with `read`, `write` and
+`close`, where `read` takes at most so many bytes and answers empty at the
+end. A handle needs a lifetime rule and Skuld has no destructor a user can
+write, so the rule is the caller's and it is one line: `defer file.close()`,
+which runs on every way out including a `?` that propagates. That is
+deliberate — cleanup belongs to a scope a reader can see rather than to a type
+where the second close of a double close would be invisible.
 
 **`std/os`** reaches the process itself: `arguments()` and `parameters()` (the
 same list without the program), `flush()` and `exit(code)`. Following `argv`

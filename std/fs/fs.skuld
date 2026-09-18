@@ -1,11 +1,17 @@
 // Reading and writing a whole file, over the libc calls the FFI can reach.
 //
-// The API is by path, not by handle: `read_file` and `write_file` open,
-// finish and close in one call. That is a decision, not a simplification.
-// A handle exposed to Skuld would need a lifetime rule — who closes it, and
-// what happens to one that is dropped — and Skuld has no destructors a user
-// can write. A path-shaped API needs none of that, and a file transformed
-// whole is what a command-line tool does anyway.
+// Two shapes, and the first is still the usual one. `read_file` and
+// `write_file` open, finish and close in one call, which is what a document
+// transformed whole wants and what a command-line tool does anyway. Reach for
+// them unless the file will not fit in memory.
+//
+// `open` and `create` answer with a `File` instead, for when it will not. A
+// handle needs a lifetime rule — who closes it, and what happens to one that
+// is dropped — and the rule here is the caller's: `defer file.close()` on the
+// line after it opens, which runs on every way out including a `?` that
+// propagates. Skuld has no destructor a user can write, and that is a
+// decision rather than a gap: cleanup belongs to a scope a reader can see,
+// not to a type where the second close of a double close is invisible.
 //
 // There is no `errno` here either, for the reason `std/net` records: reading
 // it means reading through a pointer, which the foreign boundary does not do.
@@ -114,4 +120,71 @@ func open_path(path: string, writing: i64) -> Result<int, FsError> {
         return Err(FsError.OpenFailed(os.failure("`${path}`")))
     }
     return Ok(int(handle))
+}
+
+// A file held open, for the times a whole one will not do.
+//
+// `read_file` and `write_file` stay the answer for a document transformed
+// whole, and they are still the shape a command-line tool wants. What they
+// cannot do is a file larger than memory, and that is the cost this module's
+// header records as accepted and owed.
+//
+// The rule for one of these is the rule `std/net`'s `Connection` already
+// has, and it is the caller's: close it. `defer file.close()` on the line
+// after it opens is the whole discipline, and it runs on every way out of
+// the block, including a `?` that propagates. The language has no destructor
+// a user can write — that was decided when `defer` arrived, on the grounds
+// that cleanup attached to a scope a reader can see is easier to reason
+// about than cleanup attached to a type — so nothing closes this for you.
+pub class File {
+    handle: int
+    // Which file, so a failure can name it rather than a number.
+    path: string = "the file"
+
+    // One read of at most `limit` bytes. An empty result means the end of the
+    // file, which is how a caller knows to stop without asking how long it is.
+    read(limit: int) -> Result<[]u8, FsError> {
+        var buffer: []u8 = []
+        var index = 0
+        while index < limit {
+            buffer.push(0)
+            index = index + 1
+        }
+        let got = sk_file_read(i64(this.handle), ptr(buffer), u64(limit))
+        if got < 0 {
+            return Err(FsError.ReadFailed(os.failure("`${this.path}`")))
+        }
+        return Ok(buffer[0..int(got)])
+    }
+
+    // Every byte given, however many writes that takes. A short write is not
+    // an error on its own; a write that reports nothing at all is.
+    write(bytes: []u8) -> Result<int, FsError> {
+        var written = 0
+        while written < bytes.len() {
+            let rest = bytes[written..bytes.len()]
+            let wrote = sk_file_write(i64(this.handle), ptr(rest), u64(rest.len()))
+            if wrote <= 0 {
+                return Err(FsError.WriteFailed(os.failure("`${this.path}`")))
+            }
+            written += int(wrote)
+        }
+        return Ok(written)
+    }
+
+    close() {
+        sk_file_close(i64(this.handle))
+    }
+}
+
+// Open a file to read it, one block at a time.
+pub func open(path: string) -> Result<File, FsError> {
+    let handle = open_path(path, 0)?
+    return Ok(new File(handle: handle, path: path))
+}
+
+// Open a file to write it, replacing whatever was there.
+pub func create(path: string) -> Result<File, FsError> {
+    let handle = open_path(path, 1)?
+    return Ok(new File(handle: handle, path: path))
 }

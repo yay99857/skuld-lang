@@ -1454,7 +1454,7 @@ so is in `AGENTS.md` because M27 paid for it.
   Schannel answers that at the cost of a second backend whose size and error
   taxonomy are now measured above.
 
-## M29 — A trust store on Windows — In progress
+## M29 — A trust store on Windows — Implemented
 
 M28 left exactly one thing between Windows and HTTPS: nothing tells OpenSSL
 what to believe there. This supplies it, from the platform layer, as the
@@ -1525,7 +1525,12 @@ three counts, each checkable, and each checked.
   a good certificate refused, never a bad one accepted — it is exactly what
   Zig's standard library ships, and it can be strengthened later without
   changing anything a Skuld program sees.
-- **Closing marker, corrected before it was used.** It was first written as a
+- **Closing marker: met.** Checked on `main` after the merge rather than on
+  the branch that produced it, and on the platform it claims: the Windows leg
+  runs both trust tests, builds the fixture under the address and
+  undefined-behaviour sanitizers, and the gate reports the HTTPS suite running
+  six tests rather than skipping them.
+- **What the marker says, and why it says that.** It was first written as a
   program fetching from a public host with `SSL_CERT_FILE` unset. That
   contradicts a rule this project already holds — network tests stay hermetic,
   and nothing in the suite touches the network — so the marker, not the rule,
@@ -1542,6 +1547,70 @@ three counts, each checkable, and each checked.
   enumeration of `ROOT` on an ordinary machine is not a handful of
   certificates that would fail to chain to most of the web.
 
+## M30 — A file held open, and the destructor that turned out not to be needed — Implemented
+
+M13 opened files by path and wrote the cost down: "streaming a file larger
+than memory is not possible yet, and it will need the handle question
+answered." This answers it, and the answer needed **no change to the compiler
+or the runtime**.
+
+- **Proposed as a language feature and withdrawn.** The first shape was a
+  destructor a user can write — a `deinit()` the runtime calls when the count
+  reaches zero — on the argument that three modules were paying for its
+  absence. Every part of that argument failed a check.
+- **It had already been rejected, here, with its reason.** M25's entry lists
+  under **Out**: "destructors a user can write, `Drop`-style traits, and
+  cleanup attached to a type rather than to a scope." The proposal walked past
+  a recorded decision, which is the failure this document's rejections exist to
+  prevent — read from the other side.
+- **The citation argued the opposite way.** It claimed to follow Zig, whose
+  `defer` semantics M25 adopted by name. But Zig's `deinit` is **never called
+  by the language** — it takes parameters, it is invoked by hand, and Zig's
+  stated reason is that the compiler may not insert code the author did not
+  write. The real precedent for an automatic `deinit` is Swift, which is
+  reference counted, restricts it to classes, and is emphatic that it is not a
+  method and cannot be called. That is the second time an analogy in this
+  project pointed backwards, and both times it was because the source was
+  recalled instead of read.
+- **It was unsound as designed, from safe Skuld.** `skuld_object_release` runs
+  `destroy` with `strong == 0` and then frees the header unconditionally. A
+  destructor body that stores `this` retains it back to 1; the field release
+  that follows drops it to 0 again, re-enters `destroy`, and frees a header
+  something still points at — a double free and a use-after-free with no
+  `unsafe` block anywhere, in a shape `tests/pass/option_recursive_class.skuld`
+  already has. Fixing it means a destruction state in the object header, as
+  Swift carries, plus a guard on `retain`, which is the hottest path in the
+  language and would have to be measured rather than asserted.
+- **And the consumers dissolved on inspection.** `std/http` and `std/https`
+  each closed a connection three times on three paths and used `defer` not
+  once, while `std/tls` — the module M25 closed against — uses it six times.
+  That was unadopted M25, not evidence for a new mechanism. Converting them is
+  the first commit of this milestone: six hand-written calls became two
+  deferred ones.
+- **Decision taken — a handle is a class the caller closes.** `std/fs` gains
+  `open`, `create`, and a `File` with `read`, `write` and `close`, over the
+  four `sk_file_*` declarations that were already there, shaped exactly like
+  `std/net`'s `Connection`. `read` answers at most so many bytes and answers
+  empty at the end, so a caller stops without asking how long the file is.
+  `read_file` and `read_text` stay what a document transformed whole wants.
+- **The discipline is one line and it is visible.** `defer file.close()` runs
+  on every way out, including a `?` that propagates. That visibility is the
+  point: a destructor would have put the second close of a double close where
+  nobody can read it, and every named consumer has a public `close()` — so a
+  `TlsConnection` closing its socket and then releasing its `Connection` field
+  would close the same descriptor twice, and each class would have needed a
+  `closed` flag to prevent it. Two mechanisms and two flags where there was one
+  of each.
+- **Closing marker: met.** A program writes a file and reads it back four
+  bytes at a time. The fixture uses 29 bytes rather than a length that divides
+  evenly, because only a short final block shows that the loop ends on an
+  empty read and not on a short one.
+- **Left open, and not selected.** If "a caller can forget `close()`" turns out
+  to be a real defect rather than a hypothetical one, the answer in this
+  language's character is a **diagnostic** — a span and a `Fix`, which the
+  compiler already knows how to carry — and not hidden control flow. Evidence
+  first: a program that leaks a handle.
+
 ## Open design questions
 
 These are not settled by this document and change the shape of the milestones
@@ -1550,6 +1619,39 @@ above.
 1. ~~Builtin `Result` or general generics?~~ Answered: M3 shipped `Result` as a
    builtin. Whether general generics ever enter the project, and how they would
    reconcile with the builtin `Option` and `Result`, remains open.
+
+   General generics were **proposed as a milestone and withdrawn**, and the
+   reasons are worth keeping so they are not reproposed on the same footing.
+   The case made for them was one of ordering: Skuld has built in three generic
+   types users cannot write — `Option`, `Result`, `[]T` — and building
+   concurrency first would add a fourth as a `Channel`, so generics should come
+   first. **That argument inverts when the sources are read instead of
+   recalled.** Ian Lance Taylor's "Why Generics?" names exactly two builtin
+   generic data structures, *slices and maps*; channels are not in it. And the
+   current Go specification carries both a `TypeParameters` production and a
+   `ChannelType` production, the latter a primitive composite type with its own
+   grammar, not defined in terms of type parameters. Go has had generics since
+   1.18 and `chan T` is still builtin, deliberately: a channel is a scheduling
+   primitive with statement-level syntax, not a container.
+
+   Two further objections stand on their own. Generics would not unblock
+   concurrency by an inch, because what stops a Skuld channel carrying a
+   managed value is the **non-atomic reference count**, not the spelling — the
+   prerequisite is the atomics milestone, which this roadmap already names.
+   And the evidence of demand is one consumer: `std/map`, in a header that
+   argues its concrete shape is the right one. `std/json`, `std/dns`, `std/net`
+   and `std/tls` are all written without generics and none of them complains.
+
+   The shape proposed also did not survive contact with the checker. Its
+   headline example, `func largest<T: Comparable>`, cannot be written: a
+   constraint would reuse M10's interfaces, and the checker refuses conformance
+   from anything that is not a class — "only a class implements an interface,
+   because an interface value is a counted reference" — so no scalar can ever
+   satisfy one. And leaving `Option` and `Result` builtin alongside user
+   generics would not answer this question; it would convert a deferred
+   question into a shipped inconsistency, with two things that look alike and
+   obey different rules in a language whose first stated priority is
+   predictability.
 2. ~~Do string slices retain their owner or copy?~~ Answered: they copy, except
    for slices of string literals, whose bytes are static. Whether a retaining
    slice earns its danger is a question for a benchmark, not for this document.
