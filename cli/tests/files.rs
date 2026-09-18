@@ -24,8 +24,19 @@ impl Scratch {
         path
     }
 
+    /// A path as a Skuld string literal would have to spell it.
+    ///
+    /// These tests write their programs as text, so the scratch path lands
+    /// inside a `"..."` literal, where a backslash opens an escape. A Windows
+    /// path is mostly backslashes, and `C:\Users\...` reads as the escapes
+    /// `\U` and `\A`, which the lexer rejects — so the separator is escaped
+    /// here rather than each caller remembering to. On a system whose paths
+    /// have no backslash in them this changes nothing.
     fn path(&self, name: &str) -> String {
-        self.directory.join(name).to_string_lossy().into_owned()
+        self.directory
+            .join(name)
+            .to_string_lossy()
+            .replace('\\', "\\\\")
     }
 }
 
