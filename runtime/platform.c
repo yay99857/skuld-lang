@@ -17,7 +17,15 @@
  *
  * These are not `static` and not prefixed with `skuld_`, because the standard
  * library declares them in an ordinary `unsafe extern "C"` block: a generated
- * name may not start with `skuld_`, and neither may a declared one. */
+ * name may not start with `skuld_`, and neither may a declared one.
+ *
+ * Compiling this by hand, beside the program `skuld emit-c` produced:
+ *
+ *     clang -std=c11 -O2 program.c skuld_platform.c -o program
+ *
+ * and on Windows add `-lws2_32 -liphlpapi`, where the sockets and the
+ * adapter list live outside the C library. `skuld build` and `skuld run`
+ * pass those themselves. */
 
 /* This file is compiled on its own, so it includes what it uses rather than
  * inheriting the program's prelude. That separation is the point: the headers

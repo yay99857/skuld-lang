@@ -242,6 +242,14 @@ fn sanitized_c(emitted: &[u8], expected: &[u8]) {
         ])
         .arg(&c)
         .arg(&platform)
+        // What the platform layer needs linked, which `skuld build` passes
+        // itself. A consumer compiling emitted C by hand passes them too, and
+        // the layer's own header comment says so.
+        .args(if cfg!(windows) {
+            &["-lws2_32", "-liphlpapi"][..]
+        } else {
+            &[][..]
+        })
         .arg("-o")
         .arg(&binary)
         .output()
