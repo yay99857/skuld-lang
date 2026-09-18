@@ -142,3 +142,60 @@ fn names_an_interface_and_a_function_type_instead_of_a_placeholder() {
     assert_eq!(named("shown"), "Printable");
     assert_eq!(named("pick"), "(int, int) -> int");
 }
+
+/// A module qualifier answers even where the cursor is on text the last good
+/// check never saw.
+///
+/// This is the ordinary case rather than an edge one: `strings.` does not
+/// parse, so the tables come from an older check, and the offset under the
+/// cursor holds something that check knew nothing about. Answering from the
+/// reference table alone meant answering nothing exactly when a member list is
+/// what somebody is asking for — which is what completing after a qualifier
+/// looked like in an editor until this.
+#[test]
+fn a_dot_after_a_qualifier_offers_its_exports_on_text_never_checked() {
+    let program = "import \"std/strings\"\n\nfunc main() {\n    print(\"x\")\n}\n";
+    let typed = checked(program);
+    // Typed inside the body, so every offset after it has moved and the one
+    // under `strings` is new.
+    let inserted = "    strings.";
+    let typing = program.replace(
+        "    print(\"x\")\n",
+        &format!("    print(\"x\")\n{inserted}"),
+    );
+    // The cursor sits after the dot rather than at the end of the document,
+    // which is where the editor puts it and where the first draft of this test
+    // did not.
+    let cursor = typing.find(inserted).expect("the typed line") + inserted.len();
+    let items = at(&typing, cursor, Some(&typed));
+    let found = labels(&items);
+    for expected in ["starts_with", "index_of", "trim", "split", "join"] {
+        assert!(
+            found.contains(&expected),
+            "`{expected}` missing from {found:?}"
+        );
+    }
+}
+
+/// The reference table still wins where it has an answer, so a local that
+/// shadows a qualifier offers the local's members and not the module's.
+#[test]
+fn a_binding_that_shadows_a_qualifier_keeps_its_own_members() {
+    let program = "import \"std/strings\"\n\nfunc main() {\n    let strings = \"text\"\n    print(strings)\n}\n";
+    let typed = checked(program);
+    // The dot goes after a `strings` the check did see, so that identifier
+    // keeps the offset the reference table recorded for it. That is the whole
+    // difference between this case and the one above.
+    let typing = program.replace("print(strings)", "print(strings.");
+    let cursor = typing.find("print(strings.").expect("the use") + "print(strings.".len();
+    let items = at(&typing, cursor, Some(&typed));
+    let found = labels(&items);
+    assert!(
+        found.contains(&"len"),
+        "a string's members were expected, got {found:?}"
+    );
+    assert!(
+        !found.contains(&"starts_with"),
+        "the module's exports leaked past the local that shadows it: {found:?}"
+    );
+}
