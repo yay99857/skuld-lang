@@ -31,6 +31,17 @@ jobs:
           rustup default stable
           rustup component add rustfmt clippy
 
+      # The i686 portability suite builds every `tests/pass` fixture as a
+      # 32-bit program and compares its output. It decides whether it can by
+      # asking clang to build one, and until now the answer here was no — the
+      # image carries no 32-bit libc — so the whole suite returned early and
+      # the claim that it runs every fixture on i686 was checked by nothing.
+      - name: Install a 32-bit libc for the portability suite
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib libc6-dev-i386
+
       # `run` and `trap` fixtures compile generated C, so clang is required
       # rather than optional: a missing clang must fail the suite, not skip it.
       # Both runner images ship one; this reports which, and fails here rather
@@ -115,6 +126,22 @@ jobs:
       # paid for once — a milestone recorded as met while the tests were green
       # because the failing one was gated. So it is asserted rather than
       # assumed, on both systems, since the same thing can happen on either.
+      # The same reasoning as the step below, for the same reason: this suite
+      # also reports `ok` when it has run nothing, and it is the only thing
+      # standing behind "every pass fixture runs identically on i686". It is
+      # Linux-only by design — the target it names is i686-linux-gnu — so it is
+      # asserted only there rather than pretended at everywhere.
+      - name: Fail if the portability suite skipped itself
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          output=$(cargo test -p skuld-cli --test portability -- --nocapture 2>&1)
+          echo "$output"
+          if echo "$output" | grep -q "skipping:"; then
+            echo "::error::the i686 suite skipped, so no fixture was checked on a 32-bit target"
+            exit 1
+          fi
+
       - name: Fail if the TLS suite skipped itself
         shell: bash
         run: |

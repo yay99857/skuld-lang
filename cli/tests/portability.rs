@@ -26,6 +26,10 @@ use std::{
 ///
 /// With M21 providing `usize` and `isize`, `extern_c_ffi` uses `usize`/`isize`
 /// matching C `size_t`/`ssize_t`, so every pass fixture runs identically on i686.
+///
+/// This list being empty is a claim, and it was an unchecked one for a while:
+/// the suite skips itself where clang cannot build a 32-bit program, and the
+/// Linux runner had no 32-bit libc, so nothing ran and nothing said so.
 const TARGET_SPECIFIC: &[&str] = &[];
 
 fn workspace(relative: &str) -> PathBuf {
@@ -114,6 +118,12 @@ fn every_pass_fixture_runs_the_same_on_a_32_bit_target() {
         let built = Command::new("clang")
             .args(["-m32", "-std=c11", "-O2", "-fno-fast-math"])
             .arg(&c_file)
+            // The platform layer, because this links rather than only
+            // compiling, and a fixture reaching `std/fs`, `std/net` or the
+            // trust anchors names a `sk_*` symbol that lives here. Without it
+            // those fixtures fail to link — which nobody saw, because the
+            // whole suite was skipping.
+            .arg(workspace("runtime/platform.c"))
             .arg("-o")
             .arg(&binary)
             .output()
