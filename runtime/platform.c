@@ -62,6 +62,8 @@
 #include <io.h>
 #include <sys/stat.h>
 #include <windows.h>
+/* After <windows.h>, and not reached through it. */
+#include <bcrypt.h>
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -818,5 +820,42 @@ int64_t sk_trust_anchors_pem(unsigned char *out, uint64_t capacity) {
     (void)out;
     (void)capacity;
     return 0;
+#endif
+}
+
+/* Randomness.
+ *
+ * Bytes nobody can predict, which the language has no way to produce on its
+ * own: there is no instruction for it and no libc function the foreign
+ * boundary can reach that does not read through a pointer it refuses.
+ *
+ * Both of these are the system's own generator rather than a seeded one, and
+ * that is the only kind offered here. A seeded generator is what a simulation
+ * wants and what nobody should reach for when they need a number an attacker
+ * must not guess — and with one function to reach for, nobody can reach for
+ * the wrong one. Go shipped a cryptographic generator behind `math/rand`
+ * after finding people had used the fast one for key material; this avoids
+ * the choice rather than documenting it.
+ *
+ * `getentropy` rather than `getrandom`: the non-Windows branch of this file
+ * is written for Unix in general, and `getrandom` is Linux and FreeBSD while
+ * `getentropy` is in <unistd.h> on macOS and the BSDs as well. It takes at
+ * most 256 bytes at a time, hence the loop. */
+int64_t sk_random_bytes(unsigned char *out, uint64_t count) {
+    if (count == 0) return 0;
+#ifdef _WIN32
+    if (BCryptGenRandom(NULL, out, (ULONG)count, BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+        return -1;
+    }
+    return (int64_t)count;
+#else
+    uint64_t filled = 0;
+    while (filled < count) {
+        uint64_t left = count - filled;
+        size_t chunk = left > 256 ? 256 : (size_t)left;
+        if (getentropy(out + filled, chunk) != 0) return -1;
+        filled += chunk;
+    }
+    return (int64_t)count;
 #endif
 }

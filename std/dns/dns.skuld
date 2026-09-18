@@ -53,7 +53,7 @@ unsafe extern "C" {
     func sk_dns_servers(out: *u8, capacity: u64) -> i64
     // Seconds since the epoch, written into the eight bytes handed to it. The
     // return value is the same number, which is the one this module uses.
-    func time(out: *u8) -> i64
+    func sk_random_bytes(out: *u8, count: u64) -> i64
 }
 
 pub enum DnsError {
@@ -72,6 +72,10 @@ pub enum DnsError {
     Mismatched(string),
     // The name resolved, but to nothing this module can use: no A record.
     NoAddress(string),
+    // The system would not give out random bytes, so there is no unguessable
+    // id to ask under. Asking under a guessable one instead would be a
+    // quieter failure than this.
+    NoEntropy,
 }
 
 pub func describe(error: DnsError) -> string {
@@ -83,6 +87,7 @@ pub func describe(error: DnsError) -> string {
         DnsError.Malformed(detail): return "the answer could not be read: ${detail}"
         DnsError.Mismatched(detail): return "the answer was not a reply to this query: ${detail}"
         DnsError.NoAddress(name): return "`${name}` has no IPv4 address"
+        DnsError.NoEntropy: return "the system would not supply random bytes"
     }
 }
 
@@ -165,7 +170,7 @@ pub func resolve_with(server: string, port: int, name: string) -> Result<string,
     if is_address(name) {
         return Ok(name)
     }
-    let id = query_id()
+    let id = query_id()?
     let question = query(name, id)?
     let answer = exchange(server, port, question)?
     return read_answer(answer, name, id, question)
@@ -216,19 +221,21 @@ func query(name: string, id: int) -> Result<[]u8, DnsError> {
 
 // The number this query is known by, which an answer has to carry back.
 //
-// It comes from the clock, which means an off-path attacker can guess it: the
-// value is the current second, and every query in that second shares it. That
-// is a weakness and it is named here rather than in a comment far from the
-// code, because the language has no random source to fix it with yet.
-func query_id() -> int {
-    var seconds: []u8 = []
-    var index = 0
-    while index < 8 {
-        seconds.push(0)
-        index += 1
+// Sixteen bits from the system's own generator. It used to be the current
+// second, which an off-path attacker knows and which every query in that
+// second shared; together with the ephemeral port that left about fifteen
+// bits to guess, and a spoofed answer is a few thousand datagrams away from
+// that. With the id unguessable *and* checked, a forger has to find one of
+// roughly two billion combinations inside the window the real answer takes.
+//
+// A failure here is a failure of the query. Falling back to the clock would
+// restore exactly the weakness this removes, and do it silently.
+func query_id() -> Result<int, DnsError> {
+    var bytes: []u8 = [0, 0]
+    if sk_random_bytes(ptr(bytes), u64(2)) != 2 {
+        return Err(DnsError.NoEntropy)
     }
-    let now = time(ptr(seconds))
-    return int(now % 65536)
+    return Ok(int(bytes[0]) * 256 + int(bytes[1]))
 }
 
 // Send one datagram and wait for one, with a timeout so an unreachable server

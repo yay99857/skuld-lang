@@ -368,3 +368,79 @@ fn a_message_that_is_not_a_response_is_refused() {
     }
     refuses_a_spoofed_answer("spoofqr", Spoof::NotAResponse);
 }
+
+/// Answer `count` queries and hand back the id each one carried.
+fn answer_many(socket: UdpSocket, address: [u8; 4], count: usize) -> JoinHandle<Vec<u16>> {
+    thread::spawn(move || {
+        let mut ids = Vec::new();
+        for _ in 0..count {
+            let mut query = [0u8; 512];
+            let (read, from) = socket.recv_from(&mut query).expect("a query");
+            let query = &query[..read];
+            ids.push(u16::from_be_bytes([query[0], query[1]]));
+
+            let mut reply = Vec::new();
+            reply.extend_from_slice(&query[0..2]);
+            reply.extend_from_slice(&[0x81, 0x80]);
+            reply.extend_from_slice(&[0, 1]);
+            reply.extend_from_slice(&[0, 1]);
+            reply.extend_from_slice(&[0, 0, 0, 0]);
+            reply.extend_from_slice(&query[12..]);
+            reply.extend_from_slice(&[0xC0, 0x0C]);
+            reply.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+            reply.extend_from_slice(&address);
+            socket.send_to(&reply, from).expect("send the answer");
+        }
+        ids
+    })
+}
+
+/// Every query asks under a different number.
+///
+/// This is the half that makes the matching worth having: an id that is
+/// checked but predictable leaves an attacker with only the ephemeral port to
+/// guess, which is about fifteen bits. It used to be the current second, so
+/// every query in that second shared one id — which this test would catch,
+/// since eight resolutions take far less than a second.
+#[test]
+fn every_query_asks_under_a_different_id() {
+    if !clang_available() {
+        eprintln!("skipping: clang is not on PATH");
+        return;
+    }
+    const ROUNDS: usize = 8;
+    let socket = UdpSocket::bind("127.0.0.1:0").expect("an ephemeral port");
+    let port = socket.local_addr().expect("address").port();
+    let server = answer_many(socket, [93, 184, 216, 34], ROUNDS);
+
+    let scratch = Scratch::new("ids");
+    let program = scratch.program(&format!(
+        r#"import "std/dns"
+
+func main() {{
+    var round = 0
+    while round < {ROUNDS} {{
+        match dns.resolve_with("127.0.0.1", {port}, "example.test") {{
+            Ok(address): print(address)
+            Err(problem): print(dns.describe(problem))
+        }}
+        round = round + 1
+    }}
+}}
+"#
+    ));
+    let (out, ok) = run(&program);
+    assert!(ok, "{out}");
+    assert_eq!(out.lines().count(), ROUNDS, "every round answered: {out}");
+
+    let ids = server.join().expect("the server thread");
+    let mut distinct = ids.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    // Two of eight sixteen-bit numbers colliding is possible; all eight being
+    // one number is not, unless the id is not random at all.
+    assert!(
+        distinct.len() > 1,
+        "all {ROUNDS} queries used the same id: {ids:?}"
+    );
+}
