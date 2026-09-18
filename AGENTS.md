@@ -469,7 +469,14 @@ behind it. The obligations above are checkable, and a persona is not.
   is one instruction rather than a value — and those are assembly declared
   through `extern "C"`, which is the boundary the FFI already was.
   M27 — Windows as a supported target — is complete. CI builds Linux and
-  Windows and the whole suite passes on both, which is the bar it set. It is
+  Windows and the whole suite passes on both, which is the bar it set. M28 —
+  TLS on Windows — is complete, and deliberately did not choose the Windows
+  backend: it made `std/tls` honest, linked it on the Windows runner and ran
+  the HTTPS suite there for the first time, where all six tests pass. So the
+  binding works on Windows; what Windows lacks is a trust store, and a
+  program there must point `SSL_CERT_FILE` at a bundle until one arrives.
+  Choosing between Schannel and OpenSSL-with-native-roots is M29's, and it is
+  not authorized. M27 is
   the one candidate below that has been selected; the rest — inline assembly,
   atomics and a memory model, threads, interrupt and naked calling
   conventions, linker sections, and any further target — are each a milestone
@@ -507,8 +514,12 @@ behind it. The obligations above are checkable, and a persona is not.
   not under mingw-w64, and the sanitizer suite is a guarantee worth keeping on
   both platforms. Leak detection is the exception and stays Linux-only:
   LeakSanitizer has no Windows implementation. TLS is out of M27 and keeps its
-  own milestone, since Windows has no Unix trust store and
-  `SSL_CTX_set_default_verify_paths` is the wrong call there. No `--target`
+  own milestone. The reason M27 recorded for that was imprecise and M28
+  corrects it: Windows does lack a Unix trust store, but nothing in `std/tls`
+  reaches the trust store there, because the system ships no OpenSSL to link
+  against and the flags the project documented do not resolve under this
+  toolchain. Which backend Windows gets is M29's, and M28 exists to measure
+  what M29 needs. No `--target`
   enters the compiler: the platform layer emits the same C everywhere, so
   nothing in the compiler branches, and cross-compilation stays a separate
   decision.
@@ -597,7 +608,9 @@ behind it. The obligations above are checkable, and a persona is not.
   `std/net` carry an `OsFailure` of what was attempted and the system's number.
   TLS is OpenSSL through the FFI, quarantined in `std/tls` and `std/https`:
   `std/http` still refuses `https://` and links nothing, and a program that
-  wants TLS imports it and passes `-lssl -lcrypto` itself. Verification cannot
+  wants TLS imports it and passes `-lssl -lcrypto` itself — `-llibssl
+  -llibcrypto` under the MSVC toolchain Windows builds use, because those are
+  the linker's names for the libraries and not the language's. Verification cannot
   be turned off from Skuld and there is no `insecure` flag. `std/ffi` adds the
   only two pointer operations that read no memory — `null()` and `is_null()` —
   because a library that allocates answers with NULL. Do not add a

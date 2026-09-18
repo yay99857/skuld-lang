@@ -245,6 +245,47 @@ fn a_module_linked_out_of_the_program_root_is_not_read() {
     let _ = fs::remove_dir_all(&base);
 }
 
+/// An entry named without a directory still has a program root, and it is the
+/// working directory. This is the shape every `cd` into a project produces —
+/// `skuld check main.skuld` — and it used to fail for any program with an
+/// import while the same file named `./main.skuld` compiled.
+#[test]
+fn a_bare_entry_name_still_resolves_its_imports() {
+    use std::{env, fs};
+
+    let root = env::temp_dir().join(format!("skuld-bare-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("greeting")).expect("module directory");
+    fs::write(
+        root.join("greeting").join("greeting.skuld"),
+        "pub func hello() -> string {
+    return \"hi\"
+}
+",
+    )
+    .expect("module source");
+    fs::write(
+        root.join("main.skuld"),
+        "import \"greeting\"
+func main() { print(greeting.hello()) }
+",
+    )
+    .expect("entry source");
+
+    let output = cli()
+        .current_dir(&root)
+        .args(["check", "main.skuld"])
+        .output()
+        .expect("start CLI");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "a bare entry name must resolve its imports, got:
+{stderr}"
+    );
+    let _ = fs::remove_dir_all(&root);
+}
+
 #[test]
 fn fmt_formats_in_place_and_check_detects_drift() {
     let path = std::env::temp_dir().join(format!("skuld-fmt-{}.skuld", std::process::id()));

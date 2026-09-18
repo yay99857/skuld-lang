@@ -9,6 +9,21 @@
 //
 //     skuld build fetch.skuld -lssl -lcrypto
 //
+// Those are the linker's names for the libraries rather than the language's,
+// so they follow the toolchain and not Skuld. Under clang's MSVC driver —
+// which is what a Windows build uses — a bare `-lssl` asks for `ssl.lib`,
+// while an OpenSSL built there installs `libssl.lib`; the flags are then
+// `-llibssl -llibcrypto` with a `-L` naming where it was installed. Windows
+// carries no OpenSSL of its own, so that install is the user's to provide.
+//
+// This module runs on Windows once it is linked — the whole HTTPS suite
+// passes there, certificates accepted and refused alike. What Windows does
+// not give it is a trust store: `SSL_CTX_set_default_verify_paths` finds
+// nothing, and reports success anyway, so a program reaches the handshake
+// and then refuses every certificate for want of an issuer. Until a native
+// trust store arrives, a program on Windows must say what to believe, by
+// pointing `SSL_CERT_FILE` at a certificate authority bundle.
+//
 // Verification is on and cannot be turned off from here. There is no
 // `insecure` flag, because the first thing anybody would do with one is reach
 // for it, and a verified connection is the only kind this module knows how to
@@ -220,6 +235,14 @@ pub func connect(address: string, port: int, host: string) -> Result<TlsConnecti
         if !handed_over {
             SSL_free(connection)
         }
+    }
+    // OpenSSL takes a descriptor as a C `int`, and on Windows a socket is a
+    // `SOCKET` — a machine word, which is why `std/net` carries it as one.
+    // The narrowing is checked here rather than left to `i32`, because a
+    // conversion that does not fit ends the process where this module owes
+    // the caller a `Result`.
+    if socket.handle < 0 || socket.handle > 2147483647 {
+        return Err(TlsError.Setup("the socket is too large to hand to OpenSSL"))
     }
     if SSL_set_fd(connection, i32(socket.handle)) != 1 {
         return Err(TlsError.Setup("the socket could not be attached"))

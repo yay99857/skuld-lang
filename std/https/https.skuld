@@ -8,6 +8,9 @@
 //
 //     skuld build fetch.skuld -lssl -lcrypto
 //
+// The flags are the linker's and follow the toolchain; `std/tls` says what
+// they spell on Windows, where they are not these.
+//
 // Everything about the message — the request line, the headers, the response
 // parsing — is `std/http`'s, unchanged. What is different is the connection
 // underneath it and the fact that the certificate was checked before a single

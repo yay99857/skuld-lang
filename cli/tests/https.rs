@@ -69,6 +69,41 @@ fn clang_available() -> bool {
         .is_ok_and(|output| output.status.success())
 }
 
+/// The libraries `std/tls` needs, spelled the way this platform's linker
+/// spells them, or nothing when there is no OpenSSL here to link against.
+///
+/// These are the linker's names rather than the language's. On Unix `-lssl`
+/// finds `libssl.so`. Under clang's MSVC driver — which is what a Windows
+/// build uses — a bare `-l` name is passed through with `.lib` appended, so
+/// `-lssl` asks for `ssl.lib`, while an OpenSSL built for that ABI installs
+/// `libssl.lib`; the name has to carry the prefix, and the install has to be
+/// pointed at.
+///
+/// Which build of it, of the four that installer ships, is not a guess:
+/// `clang --target=x86_64-pc-windows-msvc -###` passes `-defaultlib:libcmt`,
+/// the static C runtime, so the matching directory is `MT` and not `MD`.
+#[cfg(unix)]
+fn openssl_libraries() -> Option<Vec<String>> {
+    Some(vec!["-lssl".to_string(), "-lcrypto".to_string()])
+}
+
+#[cfg(not(unix))]
+fn openssl_libraries() -> Option<Vec<String>> {
+    let root = match env::var_os("OPENSSL_DIR") {
+        Some(named) => PathBuf::from(named),
+        None => PathBuf::from(r"C:\Program Files\OpenSSL"),
+    };
+    let libraries = root.join("lib").join("VC").join("x64").join("MT");
+    if !libraries.join("libssl.lib").is_file() {
+        return None;
+    }
+    Some(vec![
+        "-llibssl".to_string(),
+        "-llibcrypto".to_string(),
+        format!("-L{}", libraries.display()),
+    ])
+}
+
 fn openssl(arguments: &[&str]) {
     let output = Command::new("openssl")
         .args(arguments)
@@ -233,18 +268,39 @@ fn serve(scratch: &Scratch, certificate: &Path, name: &str) -> (Server, u16) {
 }
 
 /// Build and run a program with the test CA as the trust store.
-fn run(program: &Path, trust: Option<&Path>) -> (String, bool) {
+///
+/// Standard error comes back with standard output because the first thing
+/// that can go wrong here is the link, and the linker's complaint is the
+/// whole diagnosis. A failure that reports only an empty stdout says nothing,
+/// and on a platform only CI can reach that costs a round to learn.
+fn run(program: &Path, trust: Option<&Path>) -> (String, String, bool) {
     let mut command = Command::new(env!("CARGO_BIN_EXE_skuld"));
-    command.arg("run").arg(program).arg("-lssl").arg("-lcrypto");
+    command.arg("run").arg(program);
+    for library in openssl_libraries().expect("openssl, checked by skip()") {
+        command.arg(library);
+    }
     match trust {
         // OpenSSL reads this when the default verify paths are loaded, so the
-        // test's own CA is the whole trust store for that program.
+        // test's own CA is the whole trust store for that program. It is read
+        // on every platform: OpenSSL's `by_file.c` consults it with no
+        // `#ifdef` near it.
         Some(ca) => command.env("SSL_CERT_FILE", ca),
         None => command.env("SSL_CERT_FILE", "/nonexistent/trust.pem"),
     };
     let output = command.output().expect("run skuld");
+    let mut reported = String::from_utf8_lossy(&output.stderr).into_owned();
+    if !output.status.success() {
+        // The exit code, because one failure here says nothing without it: a
+        // program that links against an import library and cannot find the
+        // DLL at run time is stopped by the loader before `main`, so both
+        // streams are empty and only the status distinguishes it from a
+        // program that ran and printed nothing. That exact shape has cost
+        // this project two rounds of CI once already.
+        reported.push_str(&format!("[exit status: {}]\n", output.status));
+    }
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),
+        reported,
         output.status.success(),
     )
 }
@@ -264,18 +320,17 @@ func main() {{
 }
 
 fn skip() -> bool {
-    // TLS is deliberately outside M27, and the reason is not effort. Windows
-    // has no Unix trust store, so `SSL_CTX_set_default_verify_paths` — which
-    // `std/tls` calls to decide what to believe — finds nothing there, and a
-    // verified connection on a clean machine needs the CryptoAPI root store
-    // or a CA bundle shipped with the program. Choosing between those is a
-    // `std/tls` design with its own milestone, and doing it badly here would
-    // mean a program that appears to verify and does not.
+    // These tests never touch the system trust store: they hand OpenSSL their
+    // own certificate authority through `SSL_CERT_FILE`, which is read on
+    // every platform. So what gates them is only whether there is an OpenSSL
+    // to link against, which is a question about this machine and not about
+    // the operating system — hence a lookup rather than a `cfg`.
     //
-    // So these skip rather than fail: the library is unported, not broken,
-    // and the difference should be visible in the output.
-    if !cfg!(unix) {
-        eprintln!("skipping: TLS has no trust store on this system yet (M28)");
+    // Whether a *system* trust store exists is the separate question, and it
+    // is the one that decides whether `std/tls` keeps OpenSSL as its backend
+    // on Windows at all. Nothing here answers it.
+    if openssl_libraries().is_none() {
+        eprintln!("skipping: no OpenSSL development install was found (M28)");
         return true;
     }
     if !clang_available() {
@@ -298,8 +353,8 @@ fn a_program_fetches_over_a_verified_connection() {
     let (ca, certificate) = certificates(&scratch, "server", None);
     let (_server, port) = serve(&scratch, &certificate, "server");
     let program = scratch.program(&fetch_program(port));
-    let (out, ok) = run(&program, Some(&ca));
-    assert!(ok, "{out}");
+    let (out, err, ok) = run(&program, Some(&ca));
+    assert!(ok, "{out}{err}");
     assert_eq!(out, "status 200\n");
 }
 
@@ -313,8 +368,8 @@ fn a_certificate_nothing_trusts_is_refused() {
     let (_server, port) = serve(&scratch, &certificate, "server");
     let program = scratch.program(&fetch_program(port));
     // The trust store has nothing in it, so the chain cannot be built.
-    let (out, ok) = run(&program, None);
-    assert!(ok, "a refusal is a value, not a crash");
+    let (out, err, ok) = run(&program, None);
+    assert!(ok, "a refusal is a value, not a crash: {out}{err}");
     assert!(out.contains("the certificate was rejected"), "{out}");
 }
 
@@ -342,8 +397,8 @@ func main() {{
 }}
 "#
     ));
-    let (out, ok) = run(&program, Some(&ca));
-    assert!(ok, "{out}");
+    let (out, err, ok) = run(&program, Some(&ca));
+    assert!(ok, "{out}{err}");
     assert!(out.contains("it is for a different host name"), "{out}");
 }
 
@@ -360,8 +415,8 @@ fn an_expired_certificate_is_refused() {
     );
     let (_server, port) = serve(&scratch, &certificate, "server");
     let program = scratch.program(&fetch_program(port));
-    let (out, ok) = run(&program, Some(&ca));
-    assert!(ok, "{out}");
+    let (out, err, ok) = run(&program, Some(&ca));
+    assert!(ok, "{out}{err}");
     assert!(out.contains("it has expired"), "{out}");
 }
 
@@ -386,8 +441,8 @@ func main() {
 }
 "#,
     );
-    let (out, ok) = run(&program, None);
-    assert!(ok, "{out}");
+    let (out, err, ok) = run(&program, None);
+    assert!(ok, "{out}{err}");
     assert_eq!(
         out,
         "`http://localhost/` is plain http; use `std/http` for it\n\
@@ -464,7 +519,7 @@ func main() {{
 }}
 "#
     ));
-    let (out, ok) = run(&program, Some(&ca));
-    assert!(ok, "{out}");
+    let (out, err, ok) = run(&program, Some(&ca));
+    assert!(ok, "{out}{err}");
     assert_eq!(out, "\"skuld\"\n[\"native\",\"verified\"]\n");
 }

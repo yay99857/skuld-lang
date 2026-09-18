@@ -282,7 +282,8 @@ status and `errno`, `std/map` is a string-keyed index, `std/dns` resolves host
 names by speaking DNS over UDP, and `std/testing` holds the assertions
 `skuld test` runs. `std/tls` and `std/https` are the exception to the
 no-dependencies rule and are opt-in: a program that imports them links OpenSSL
-itself with `-lssl -lcrypto`, and verification cannot be turned off.
+itself — `-lssl -lcrypto`, or `-llibssl -llibcrypto` under the MSVC toolchain
+Windows builds use — and verification cannot be turned off.
 
 ```skuld
 import "std/strings"
