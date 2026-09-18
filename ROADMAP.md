@@ -1454,7 +1454,7 @@ so is in `AGENTS.md` because M27 paid for it.
   Schannel answers that at the cost of a second backend whose size and error
   taxonomy are now measured above.
 
-## M29 — A trust store on Windows — In progress
+## M29 — A trust store on Windows — Implemented
 
 M28 left exactly one thing between Windows and HTTPS: nothing tells OpenSSL
 what to believe there. This supplies it, from the platform layer, as the
@@ -1525,7 +1525,12 @@ three counts, each checkable, and each checked.
   a good certificate refused, never a bad one accepted — it is exactly what
   Zig's standard library ships, and it can be strengthened later without
   changing anything a Skuld program sees.
-- **Closing marker, corrected before it was used.** It was first written as a
+- **Closing marker: met.** Checked on `main` after the merge rather than on
+  the branch that produced it, and on the platform it claims: the Windows leg
+  runs both trust tests, builds the fixture under the address and
+  undefined-behaviour sanitizers, and the gate reports the HTTPS suite running
+  six tests rather than skipping them.
+- **What the marker says, and why it says that.** It was first written as a
   program fetching from a public host with `SSL_CERT_FILE` unset. That
   contradicts a rule this project already holds — network tests stay hermetic,
   and nothing in the suite touches the network — so the marker, not the rule,
