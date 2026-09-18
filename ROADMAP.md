@@ -1285,7 +1285,7 @@ One of them has since been selected: **a target that is not Linux**, as M27
 below. It was taken out of this list by an explicit decision rather than by
 drift, and the reasoning that put it here still holds for the rest.
 
-## M27 — Windows as a supported target — Active
+## M27 — Windows as a supported target — Implemented
 
 The bar is the one Rust sets for a Tier 1 target, chosen because it is a
 measurement rather than a claim: **CI builds Windows and every test passes
@@ -1319,6 +1319,19 @@ constants in `std/` are not absent so much as wrong.
 - Freestanding stays Linux: it is about a specific target, and a PE or UEFI
   freestanding mode is its own milestone. So does the i686 portability suite,
   which is i686-**linux**-gnu by definition.
+- **Closing marker: met.** The whole suite passes on `windows-latest` — 493
+  tests, including the compiler's 221, the language server's 191, and every
+  `tests/pass` fixture under the address and undefined-behaviour sanitizers.
+  A program built there reads and writes files, reads its arguments and its
+  environment, opens a socket, resolves a name through the machine's own
+  configured server, and fetches a document over HTTP. The three bugs the
+  port found that were never about Windows are worth remembering, since each
+  was invisible from the only system being tested: the working tree was never
+  pinned to LF, so a Windows checkout corrupted the expected side of every
+  golden comparison; the language server spoke a `file:` URI no client sends
+  and keyed open documents two different ways, so an unsaved module was read
+  from disk instead; and the platform layer, inlined, leaked its headers into
+  the program and broke every user's right to declare a POSIX function.
 
 ## Open design questions
 

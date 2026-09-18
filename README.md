@@ -36,7 +36,22 @@ for TypeScript/JavaScript compatibility. See the [design priorities](LANGUAGE.md
 
 Install Rust stable with Cargo, rustfmt and Clippy (via rustup), and install
 `clang` on PATH for native execution. `check` does not require clang.
-The current native path is tested on Linux x86_64; other platforms are unverified.
+
+| Platform | State |
+| --- | --- |
+| Linux x86_64 | Supported: CI builds it and the whole suite passes |
+| Windows x86_64 | Supported: CI builds it and the whole suite passes |
+| i686 Linux | Tested as a second target by `cli/tests/portability.rs` |
+| Anything else | Unverified |
+
+Two differences on Windows are worth knowing rather than discovering. TLS is
+not ported: `std/tls` and `std/https` need a trust store that system keeps
+somewhere else, so a verified connection is a milestone of its own. And leak
+detection is a Linux guarantee, because LeakSanitizer has no Windows
+implementation — address and undefined-behaviour checking run on both.
+
+Freestanding builds are Linux, deliberately: that mode is about a particular
+target, and a PE or UEFI equivalent would be its own milestone.
 
 ```bash
 cargo build

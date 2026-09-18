@@ -415,16 +415,17 @@ accurate; documenting a future feature is not a request to implement it.
   the language deliberately cannot spell — `syscall`, `in`/`out`, anything that
   is one instruction rather than a value — and those are assembly declared
   through `extern "C"`, which is the boundary the FFI already was.
-  M27 — Windows as a supported target — is active, authorized by the user in
-  the session that opened it. It is the one candidate below that has been
-  selected; the rest — inline assembly, atomics and a memory model, threads,
-  interrupt and naked calling conventions, linker sections, and any further
-  target — are each a milestone of its own and none is authorized. One older
+  M27 — Windows as a supported target — is complete. CI builds Linux and
+  Windows and the whole suite passes on both, which is the bar it set. It is
+  the one candidate below that has been selected; the rest — inline assembly,
+  atomics and a memory model, threads, interrupt and naked calling
+  conventions, linker sections, and any further target — are each a milestone
+  of its own and none is authorized. One older
   decision should not be reopened by accident either: M20's `const` does not
   replace `let`, since an immutable binding is what the backend reads to borrow
   a managed local instead of counting it.
   Do not infer authorization for further features without explicit decision.
-- M27's shape is decided and should not be reopened by accident. The bar is the
+- M27's shape should not be reopened by accident. The bar is the
   one Rust states for a Tier 1 target: **CI builds Windows and every test passes
   there**, which is a measurement rather than a claim. Platform differences live
   in a **C platform layer**, `runtime/platform.c`, behind names `std/` already
