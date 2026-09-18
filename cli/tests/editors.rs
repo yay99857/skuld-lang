@@ -141,3 +141,57 @@ fn the_grammar_is_well_formed_and_claims_both_extensions() {
     assert!(proposed.contains("tm_scope: source.skuld"));
     assert!(proposed.contains("#7a1515"));
 }
+
+/// The extension says it provides a language server. That sentence was false
+/// for as long as the extension existed: it registered a grammar and started
+/// nothing, so a reader who believed the description got highlighting and
+/// wondered why completion never came.
+///
+/// What is checked here is only what can rot without anyone noticing — a file
+/// renamed out from under `main`, a discovery module that stops being
+/// required. Whether the server then answers is the language server's own 191
+/// tests, and whether Visual Studio Code loads the result is something only
+/// Visual Studio Code can say.
+#[test]
+fn the_extension_starts_the_language_server_it_advertises() {
+    let package = read("editors/vscode/package.json");
+    assert!(
+        package.contains("\"main\": \"./extension.js\""),
+        "the extension declares no entry point, so nothing runs"
+    );
+    assert!(
+        package.contains("\"vscode-languageclient\""),
+        "the entry point needs a client to speak the protocol with"
+    );
+    assert!(
+        package.contains("\"skuld.server.path\""),
+        "a person whose server is somewhere unusual needs a way to say so"
+    );
+
+    let extension = read("editors/vscode/extension.js");
+    assert!(
+        extension.contains("require(\"./server.js\")"),
+        "the entry point no longer uses the discovery it was split out of"
+    );
+    assert!(
+        extension.contains("LanguageClient"),
+        "the entry point does not start a client"
+    );
+
+    // The discovery is its own file precisely so it can run outside an editor.
+    // If that stops being true, the only part of this that is testable stops
+    // being testable.
+    let server = read("editors/vscode/server.js");
+    assert!(
+        !server.contains("require(\"vscode\")"),
+        "the discovery reaches for the editor, so it can no longer be tested"
+    );
+    assert!(
+        server.contains("skuld-lsp.exe"),
+        "the discovery does not look for a Windows server"
+    );
+    // Release before debug: someone who built for release meant to use it.
+    let release = server.find("\"release\"").expect("a release profile");
+    let debug = server.find("\"debug\"").expect("a debug profile");
+    assert!(release < debug, "debug would be preferred over release");
+}
