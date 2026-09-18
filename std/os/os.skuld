@@ -16,6 +16,7 @@ unsafe extern "C" {
     func sk_errno() -> i64
     func sk_error_message(code: i64, out: *u8, capacity: u64) -> i64
     func sk_flush() -> void
+    func sk_sleep(milliseconds: i64) -> void
     func sk_exit(code: i64) -> void
     func sk_environment(name: *u8, out: *u8, capacity: u64) -> i64
     // Running another program is the platform layer's, and it had to be: the
@@ -178,6 +179,16 @@ pub func describe_failure(problem: OsFailure) -> string {
 // Write out what has been printed so far. Output is buffered, so a program
 // that is about to abort — or about to hand over to something else — flushes
 // first or loses it.
+// Wait, without spending a core to do it.
+//
+// A program that polls something — a service, a file, a port — wants to not
+// poll it continuously, and the two systems spell waiting differently enough
+// that neither name can be declared at the foreign boundary. A duration of
+// zero or less returns at once rather than meaning "forever".
+pub func sleep(milliseconds: int) {
+    sk_sleep(i64(milliseconds))
+}
+
 pub func flush() {
     sk_flush()
 }

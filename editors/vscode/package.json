@@ -2,7 +2,7 @@
   "name": "skuld",
   "displayName": "Skuld",
   "description": "Syntax highlighting and language server support for Skuld",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "publisher": "skuld",
   "repository": {
@@ -13,6 +13,11 @@
     "vscode": "^1.75.0"
   },
   "categories": ["Programming Languages"],
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:skuld"],
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
   "contributes": {
     "languages": [
       {
@@ -28,6 +33,16 @@
         "scopeName": "source.skuld",
         "path": "./syntaxes/skuld.tmLanguage.json"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Skuld",
+      "properties": {
+        "skuld.server.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Where `skuld-lsp` is. Empty looks for it on `PATH`, then in this checkout's `target/release` and `target/debug`."
+        }
+      }
+    }
   }
 }

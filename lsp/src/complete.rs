@@ -141,13 +141,30 @@ fn members(source: &str, receiver: &str, checked: Option<&TypedProgram>) -> Vec<
     // offset in the whole document — which is the key the tables use.
     let _ = source;
     let resolution = typed.resolution();
-    let Some(&symbol) = resolution.references.get(&(ENTRY, start)) else {
-        return Vec::new();
-    };
-    if let SymbolKind::Module(module) = resolution.symbols[symbol.0].kind {
+    if let Some(&symbol) = resolution.references.get(&(ENTRY, start)) {
+        if let SymbolKind::Module(module) = resolution.symbols[symbol.0].kind {
+            return exports(typed, module);
+        }
+        return members_of(typed, typed.symbol_type(symbol));
+    }
+    // No reference recorded here, which is the ordinary case while something
+    // is being typed: `twitch.` does not parse, so the check the tables come
+    // from is an older one, and this offset holds text it never saw.
+    //
+    // A qualifier can still be answered, because a qualifier is a name rather
+    // than a place — `module_in_file` asks the file's imports what it means,
+    // and the answer does not depend on where the cursor is. A local binding
+    // may shadow one, which is why this is reached only after the table has
+    // been asked: where the table knows, it is the one that knows about
+    // shadowing.
+    //
+    // A value's members cannot be answered this way. Its type comes from the
+    // binding, the binding is a place, and the place is exactly what is not
+    // known yet.
+    if let Some(module) = resolution.module_in_file(ENTRY, name) {
         return exports(typed, module);
     }
-    members_of(typed, typed.symbol_type(symbol))
+    Vec::new()
 }
 
 /// The members a value of this type has. Hover reads the same table, so a

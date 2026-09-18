@@ -246,3 +246,62 @@ fn a_program_runs_another_and_reads_what_it_wrote() {
         "status 0\n[count 3\n[one]\n[two three]\n[*]\n]\ntruncated false\nrefused says 3\nmissing says 127\nvariable a value with spaces\nabsent is nothing\n"
     );
 }
+
+/// `sleep` waits, rather than returning at once or spinning.
+///
+/// The bound is loose on purpose: a scheduler may wake a process late and a
+/// busy machine often does, so the test asserts that the time passed and not
+/// how closely it matched. What it would catch is the failure worth catching —
+/// a `sleep` that does nothing.
+#[test]
+fn sleeping_takes_the_time_it_was_asked_for() {
+    if !clang_available() {
+        eprintln!("skipping: clang is not on PATH");
+        return;
+    }
+    let directory = env::temp_dir().join(format!("skuld-sleep-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&directory);
+    fs::create_dir_all(&directory).expect("scratch directory");
+    let source = directory.join("sleep.skuld");
+    fs::write(
+        &source,
+        r#"import "std/os"
+
+func main() {
+    // Zero is not "forever": it returns at once, and a program that waits
+    // here rather than returning would hang this test rather than fail it.
+    os.sleep(0)
+    os.sleep(-5)
+    os.sleep(400)
+    print("awake")
+}
+"#,
+    )
+    .expect("program source");
+
+    // Built first, so the build is not counted as waiting.
+    let binary = directory.join("sleep.exe");
+    let built = Command::new(env!("CARGO_BIN_EXE_skuld"))
+        .arg("build")
+        .arg(&source)
+        .arg("-o")
+        .arg(&binary)
+        .output()
+        .expect("run skuld");
+    assert!(
+        built.status.success(),
+        "build failed: {}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let started = std::time::Instant::now();
+    let output = Command::new(&binary).output().expect("run the program");
+    let elapsed = started.elapsed();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "awake\n");
+    assert!(
+        elapsed >= std::time::Duration::from_millis(350),
+        "slept for only {elapsed:?}"
+    );
+    let _ = fs::remove_dir_all(&directory);
+}

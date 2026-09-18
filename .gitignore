@@ -2,3 +2,6 @@
 /.claude/
 CONVERSA_ENTRE_MODELOS.md
 
+# Installed by `npm install` in the extension; not project content.
+/editors/vscode/node_modules/
+/editors/vscode/package-lock.json
