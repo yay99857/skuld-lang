@@ -7,7 +7,9 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
         output: if freestanding {
             format!("{FREESTANDING_HEAD}{SHARED_CHECKS}{PRELUDE_TAIL}")
         } else {
-            format!("{PRELUDE_HEAD}{SHARED_CHECKS}{RUNTIME}{PRELUDE_TAIL}{PRELUDE_HOSTED}")
+            format!(
+                "{PRELUDE_HEAD}{SHARED_CHECKS}{RUNTIME}{PLATFORM}{PRELUDE_TAIL}{PRELUDE_HOSTED}"
+            )
         },
         indent: 0,
         next_temp: 0,
@@ -3031,6 +3033,13 @@ _Noreturn static inline void skuld_fail(const char *message, size_t byte) {
 /// The managed-memory runtime is real C in `runtime/`, embedded verbatim so
 /// there is one source of truth for retain and release.
 const RUNTIME: &str = include_str!("../../runtime/strings.c");
+
+/// The platform layer, also real C, and separate from the memory runtime
+/// because the two answer different questions: `strings.c` is about what a
+/// value costs, this is about what the operating system is called. Keeping
+/// them apart is what lets a second operating system arrive without the
+/// memory runtime learning it exists.
+const PLATFORM: &str = include_str!("../../runtime/platform.c");
 
 /// What a freestanding program starts with: the three headers C guarantees a
 /// freestanding implementation provides, and a trap that faults instead of
