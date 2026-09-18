@@ -41,6 +41,44 @@ jobs:
           cargo --version
           clang --version
 
+      # M28: `std/tls` has never executed on Windows, and the first thing the
+      # milestone needs to know is what there is to link against. The runner
+      # image lists OpenSSL under Tools and says nothing about headers or
+      # import libraries, which is not the same as saying it has none. So this
+      # reports instead of assuming, and it cannot fail the job: guessing twice
+      # at an opaque Windows failure has already cost this project two rounds
+      # of CI, and the rule written afterwards was to make the run say what it
+      # found.
+      - name: Report what OpenSSL is available here
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          echo "== openssl on PATH"
+          command -v openssl || echo "   (not on PATH)"
+          openssl version -a || true
+          echo "== install roots worth checking"
+          for root in "/c/Program Files/OpenSSL" "/c/Program Files/OpenSSL-Win64" "/c/Program Files/Git/mingw64" "/c/Strawberry/c" "/c/vcpkg/installed/x64-windows"; do
+            if [ ! -d "$root" ]; then
+              echo "-- $root (absent)"
+              continue
+            fi
+            echo "-- $root"
+            for pattern in "lib/*ssl*" "lib/*crypto*" "include/openssl/ssl.h"; do
+              found=$(ls -d "$root"/$pattern 2>/dev/null || true)
+              if [ -n "$found" ]; then
+                echo "$found" | sed 's/^/   /'
+              else
+                echo "   nothing matching $pattern"
+              fi
+            done
+          done
+          echo "== what this clang makes of -lssl"
+          echo 'int main(void){return 0;}' > openssl-probe.c
+          clang -### openssl-probe.c -o openssl-probe.exe -lssl 2>&1 | tr ' ' '\n' | grep -i ssl || true
+          rm -f openssl-probe.c
+          echo "== the target this clang defaults to"
+          clang -print-target-triple || true
+
       # Formatting is the same question on every system, so asking twice only
       # buys a second way to fail.
       - name: Check formatting
