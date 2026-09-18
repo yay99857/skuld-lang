@@ -57,15 +57,28 @@ fn emit_and_compile(
     link_flags: &[String],
 ) -> Result<(), String> {
     let source = directory.join("generated.c");
+    write_new(&source, c_source, "generated C")?;
+    // The platform layer is its own translation unit, so that the headers it
+    // needs for the system's own flags and widths do not reach the program
+    // and collide with what it declares for itself.
+    let platform = directory.join("skuld_platform.c");
+    write_new(
+        &platform,
+        skuld_compiler::codegen_c::platform_source(),
+        "platform layer",
+    )?;
+    compile(&[&source, &platform], executable, link_flags)
+}
+
+fn write_new(path: &Path, contents: &str, what: &str) -> Result<(), String> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(&source)
-        .map_err(|error| format!("cannot create generated C: {error}"))?;
-    file.write_all(c_source.as_bytes())
-        .map_err(|error| format!("cannot write generated C: {error}"))?;
-    drop(file);
-    compile(&source, executable, link_flags)
+        .open(path)
+        .map_err(|error| format!("cannot create {what}: {error}"))?;
+    file.write_all(contents.as_bytes())
+        .map_err(|error| format!("cannot write {what}: {error}"))?;
+    Ok(())
 }
 
 /// Compile to a persistent executable. Only the C stays in the temporary
@@ -171,8 +184,8 @@ pub fn capture(c_source: &str, link_flags: &[String]) -> Result<(u8, String, Str
 
 /// `link_flags` carries `-l`/`-L` arguments for libraries an `extern "C"`
 /// declaration needs; libc is linked by clang without asking.
-fn compile(source: &Path, executable: &Path, link_flags: &[String]) -> Result<(), String> {
-    let output = Command::new("clang").arg("-std=c11").arg("-O2").arg("-fno-fast-math").arg(source).arg("-o").arg(executable).args(link_flags).stdin(Stdio::null()).output().map_err(|error| {
+fn compile(sources: &[&Path], executable: &Path, link_flags: &[String]) -> Result<(), String> {
+    let output = Command::new("clang").arg("-std=c11").arg("-O2").arg("-fno-fast-math").args(sources).arg("-o").arg(executable).args(link_flags).stdin(Stdio::null()).output().map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound { "clang was not found; install clang and make it available on PATH to use `skuld run` (checking does not need clang)".into() }
         else { format!("cannot launch clang: {error}") }
     })?;

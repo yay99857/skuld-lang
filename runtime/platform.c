@@ -19,17 +19,25 @@
  * library declares them in an ordinary `unsafe extern "C"` block: a generated
  * name may not start with `skuld_`, and neither may a declared one. */
 
+/* This file is compiled on its own, so it includes what it uses rather than
+ * inheriting the program's prelude. That separation is the point: the headers
+ * below declare `read`, `write`, `open` and `close`, and a program is allowed
+ * to declare those itself through `extern "C"` — as `tests/pass/extern_c_ffi`
+ * does. Inlining this file would make the two collide. */
+#include <errno.h>
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
 #ifdef _WIN32
-/* `_setmode` is declared in <io.h>, and that header also declares `open`,
- * `read` and `write` — three names `std/fs` and `std/os` declare for
- * themselves, with widths that are right for POSIX and wrong here. Including
- * it turns those disagreements into `conflicting types` errors, which is the
- * right outcome and precisely what moving those calls into this file will
- * deliver. Until that lands, declaring the one function needed keeps this
- * change to the one thing it is about. `_fileno` comes from <stdio.h>, which
- * the prelude already includes. */
-int _setmode(int fd, int mode);
-#define SKULD_O_BINARY 0x8000
+#include <fcntl.h>
+#include <io.h>
+#include <sys/stat.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 /* Arguments.
@@ -52,12 +60,12 @@ static char **skuld_argument_values = NULL;
  * mode and Skuld's output is LF everywhere. This is what Go does too.
  *
  * Nothing is needed on any other system: there is no translation to undo. */
-static void skuld_start(int argc, char **argv) {
+void skuld_start(int argc, char **argv) {
     skuld_argument_count = argc;
     skuld_argument_values = argv;
 #ifdef _WIN32
-    _setmode(_fileno(stdout), SKULD_O_BINARY);
-    _setmode(_fileno(stderr), SKULD_O_BINARY);
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stderr), _O_BINARY);
 #endif
 }
 
@@ -118,4 +126,77 @@ void sk_flush(void) { fflush(stdout); }
 void sk_exit(int64_t code) {
     fflush(stdout);
     exit((int)code);
+}
+
+/* Files.
+ *
+ * `open`, `read` and `write` are POSIX spellings, and Windows numbers the
+ * same ideas differently: `O_CREAT` is 64 on Linux and 256 there, `O_TRUNC`
+ * agrees only by coincidence, and `O_BINARY` exists on one system and not the
+ * other — omitting it on Windows translates every `\n` written to or read
+ * from a file, which is precisely what a byte-exact API must not do. Written
+ * as Skuld declarations those numbers have to be one system's, and the other
+ * system has no header here to notice. Written here they are the header's.
+ *
+ * A handle crosses as an `i64` and a negative one means failure, which is
+ * true of both systems. The caller closes what it opened; nothing here keeps
+ * state between calls. */
+
+int64_t sk_file_open(unsigned char *path, int64_t writing) {
+#ifdef _WIN32
+    int flags = writing ? (_O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY) : (_O_RDONLY | _O_BINARY);
+    return (int64_t)_open((const char *)path, flags, _S_IREAD | _S_IWRITE);
+#else
+    int flags = writing ? (O_WRONLY | O_CREAT | O_TRUNC) : O_RDONLY;
+    return (int64_t)open((const char *)path, flags, 0644);
+#endif
+}
+
+/* Both return the count, 0 at end of file, and negative for failure. The
+ * Windows pair take an `unsigned int` rather than a `size_t`, so a request
+ * larger than that is clamped rather than truncated to its low bits — the
+ * caller loops anyway, and a short read is already part of the contract. */
+int64_t sk_file_read(int64_t handle, unsigned char *buffer, uint64_t capacity) {
+#ifdef _WIN32
+    unsigned int want = capacity > (uint64_t)UINT_MAX ? UINT_MAX : (unsigned int)capacity;
+    return (int64_t)_read((int)handle, buffer, want);
+#else
+    return (int64_t)read((int)handle, buffer, (size_t)capacity);
+#endif
+}
+
+int64_t sk_file_write(int64_t handle, unsigned char *buffer, uint64_t count) {
+#ifdef _WIN32
+    unsigned int want = count > (uint64_t)UINT_MAX ? UINT_MAX : (unsigned int)count;
+    return (int64_t)_write((int)handle, buffer, want);
+#else
+    return (int64_t)write((int)handle, buffer, (size_t)count);
+#endif
+}
+
+void sk_file_close(int64_t handle) {
+#ifdef _WIN32
+    _close((int)handle);
+#else
+    close((int)handle);
+#endif
+}
+
+/* One environment variable, copied into bytes the caller owns.
+ *
+ * `getenv` answers with a pointer into memory the program does not own, which
+ * is why `std/os` read `/proc/self/environ` instead — a file exists on Linux
+ * and the boundary can reach it. That workaround is no longer needed: the
+ * pointer is read here and the bytes are copied out, so the answer is the
+ * same on a system that has no `/proc`.
+ *
+ * -1 means unset, -2 means the buffer is too small; a caller can tell the two
+ * apart, which it could not if both were simply "no". */
+int64_t sk_environment(unsigned char *name, unsigned char *out, uint64_t capacity) {
+    const char *value = getenv((const char *)name);
+    if (value == NULL) return -1;
+    size_t len = strlen(value);
+    if ((uint64_t)len > capacity) return -2;
+    memcpy(out, value, len);
+    return (int64_t)len;
 }

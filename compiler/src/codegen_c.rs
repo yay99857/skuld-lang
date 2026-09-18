@@ -7,9 +7,7 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
         output: if freestanding {
             format!("{FREESTANDING_HEAD}{SHARED_CHECKS}{PRELUDE_TAIL}")
         } else {
-            format!(
-                "{PRELUDE_HEAD}{SHARED_CHECKS}{RUNTIME}{PLATFORM}{PRELUDE_TAIL}{PRELUDE_HOSTED}"
-            )
+            format!("{PRELUDE_HEAD}{SHARED_CHECKS}{RUNTIME}{PRELUDE_TAIL}{PRELUDE_HOSTED}")
         },
         indent: 0,
         next_temp: 0,
@@ -3043,6 +3041,22 @@ const RUNTIME: &str = include_str!("../../runtime/strings.c");
 /// memory runtime learning it exists.
 const PLATFORM: &str = include_str!("../../runtime/platform.c");
 
+/// The platform layer as its own translation unit, to be compiled beside the
+/// program rather than inside it.
+///
+/// It has to be separate, and the reason is a promise the language already
+/// makes: a program may declare any POSIX function the standard headers leave
+/// out, which is what `tests/pass/extern_c_ffi` demonstrates with `write`.
+/// This layer includes `<unistd.h>` and `<io.h>` so that its own flags and
+/// widths come from the system rather than from a number written down here —
+/// but those headers also declare `read`, `write`, `open` and `close`, and
+/// inlining them would turn every such user declaration into a conflicting
+/// prototype. Two translation units keep the checking on this side of the
+/// line and the promise on the other.
+pub fn platform_source() -> &'static str {
+    PLATFORM
+}
+
 /// What a freestanding program starts with: the three headers C guarantees a
 /// freestanding implementation provides, and a trap that faults instead of
 /// printing.
@@ -3239,6 +3253,9 @@ static inline uint32_t skuld_u_to_char(uint64_t v, size_t byte) {
 /// comparison and every `print`. A freestanding program has neither, and the
 /// checker has already refused the types that would reach these.
 const PRELUDE_HOSTED: &str = r#"
+/* Defined in the platform layer, which is compiled beside this file rather
+ * than inside it, so that the headers it needs stay out of the program's way. */
+void skuld_start(int argc, char **argv);
 static inline bool skuld_string_equal(skuld_string a, skuld_string b) {
     return a.len == b.len && memcmp(a.data, b.data, a.len) == 0;
 }

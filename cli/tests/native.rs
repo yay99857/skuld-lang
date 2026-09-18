@@ -215,6 +215,22 @@ fn sanitized_c(emitted: &[u8], expected: &[u8]) {
     let c = fixture.dir.join("generated.c");
     let binary = fixture.dir.join("standalone");
     fs::write(&c, emitted).expect("C source");
+    // The platform layer is a translation unit of its own, so C emitted by
+    // hand is two files rather than one. Compiling both is what a consumer of
+    // `emit-c` actually does, and it is what keeps the layer's headers out of
+    // the program, where they would collide with what it declares itself.
+    let platform = fixture.dir.join("skuld_platform.c");
+    let emitted_platform = fixture
+        .command("emit-c")
+        .arg("--platform")
+        .output()
+        .expect("emit the platform layer");
+    assert!(
+        emitted_platform.status.success(),
+        "{}",
+        String::from_utf8_lossy(&emitted_platform.stderr)
+    );
+    fs::write(&platform, &emitted_platform.stdout).expect("platform source");
     let status = Command::new("clang")
         .args([
             "-std=c11",
@@ -225,6 +241,7 @@ fn sanitized_c(emitted: &[u8], expected: &[u8]) {
             "-fno-omit-frame-pointer",
         ])
         .arg(&c)
+        .arg(&platform)
         .arg("-o")
         .arg(&binary)
         .output()
@@ -234,8 +251,20 @@ fn sanitized_c(emitted: &[u8], expected: &[u8]) {
         "{}",
         String::from_utf8_lossy(&status.stderr)
     );
+    // Leak detection is a Linux guarantee and only a Linux one: LeakSanitizer
+    // has no Windows implementation, and asking for it there aborts the run
+    // before the program prints anything. Address and undefined-behaviour
+    // checking still apply on both, so what is lost is one of the three rather
+    // than the harness.
     let output = Command::new(binary)
-        .env("ASAN_OPTIONS", "detect_leaks=1")
+        .env(
+            "ASAN_OPTIONS",
+            if cfg!(target_os = "linux") {
+                "detect_leaks=1"
+            } else {
+                "detect_leaks=0"
+            },
+        )
         .output()
         .expect("standalone program");
     assert!(
