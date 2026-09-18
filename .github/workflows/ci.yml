@@ -63,14 +63,22 @@ jobs:
               continue
             fi
             echo "-- $root"
-            for pattern in "lib/*ssl*" "lib/*crypto*" "include/openssl/ssl.h"; do
-              found=$(ls -d "$root"/$pattern 2>/dev/null || true)
-              if [ -n "$found" ]; then
-                echo "$found" | sed 's/^/   /'
-              else
-                echo "   nothing matching $pattern"
-              fi
-            done
+            # Deep rather than shallow, because a Windows OpenSSL does not
+            # put its import libraries where a Unix one does: the installer
+            # for `C:\Program Files\OpenSSL` files them under `lib\VC\<arch>`
+            # by runtime, and a first pass here looked only at `lib/*` and so
+            # reported none where there may be several.
+            found=$(find "$root" -maxdepth 5 \( -iname '*ssl*.lib' -o -iname '*crypto*.lib' -o -iname 'libssl.a' -o -iname 'libcrypto.a' \) 2>/dev/null || true)
+            if [ -n "$found" ]; then
+              echo "$found" | sed 's/^/   /'
+            else
+              echo "   no import or static libraries under it"
+            fi
+            if [ -f "$root/include/openssl/ssl.h" ]; then
+              echo "   headers: $root/include/openssl/ssl.h"
+            else
+              echo "   no headers"
+            fi
           done
           echo "== what this clang makes of -lssl"
           echo 'int main(void){return 0;}' > openssl-probe.c
