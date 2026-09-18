@@ -646,11 +646,13 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
     if let Some(entry) = program.entry.filter(|_| !freestanding) {
         emitter.line("");
         // The arguments are taken here and nowhere else: a Skuld program reaches
-        // them through the runtime bridge, since following `argv` is a pointer
-        // read the foreign boundary does not do.
+        // them through the platform layer, since following `argv` is a pointer
+        // read the foreign boundary does not do. The same call is where the
+        // platform is put into the state the language assumes — on Windows,
+        // the standard streams in binary mode, so `\n` stays one byte.
         emitter.line("int main(int argc, char **argv) {");
         emitter.indent += 1;
-        emitter.line("skuld_arguments_init(argc, argv);");
+        emitter.line("skuld_start(argc, argv);");
         emitter.line(&format!("{}();", emitter.function_name(entry)));
         emitter.line("return fflush(stdout) == 0 ? 0 : 1;");
         emitter.indent -= 1;

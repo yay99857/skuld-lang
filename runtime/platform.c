@@ -19,6 +19,19 @@
  * library declares them in an ordinary `unsafe extern "C"` block: a generated
  * name may not start with `skuld_`, and neither may a declared one. */
 
+#ifdef _WIN32
+/* `_setmode` is declared in <io.h>, and that header also declares `open`,
+ * `read` and `write` — three names `std/fs` and `std/os` declare for
+ * themselves, with widths that are right for POSIX and wrong here. Including
+ * it turns those disagreements into `conflicting types` errors, which is the
+ * right outcome and precisely what moving those calls into this file will
+ * deliver. Until that lands, declaring the one function needed keeps this
+ * change to the one thing it is about. `_fileno` comes from <stdio.h>, which
+ * the prelude already includes. */
+int _setmode(int fd, int mode);
+#define SKULD_O_BINARY 0x8000
+#endif
+
 /* Arguments.
  *
  * A Skuld program cannot reach its own through `extern "C"` alone, since
@@ -28,9 +41,24 @@
 static int skuld_argument_count = 0;
 static char **skuld_argument_values = NULL;
 
-static void skuld_arguments_init(int argc, char **argv) {
+/* Everything that has to happen before the program's own first statement.
+ *
+ * On Windows the C runtime opens the standard streams in text mode, which
+ * rewrites every `\n` a program prints as `\r\n` on the way out. Skuld prints
+ * bytes: `print` writes the string it was given and one newline, and a
+ * program that writes a file expects back exactly what it wrote. A translated
+ * stream would make the same source produce different bytes on two systems
+ * for no reason the language admits to, so the streams are put into binary
+ * mode and Skuld's output is LF everywhere. This is what Go does too.
+ *
+ * Nothing is needed on any other system: there is no translation to undo. */
+static void skuld_start(int argc, char **argv) {
     skuld_argument_count = argc;
     skuld_argument_values = argv;
+#ifdef _WIN32
+    _setmode(_fileno(stdout), SKULD_O_BINARY);
+    _setmode(_fileno(stderr), SKULD_O_BINARY);
+#endif
 }
 
 int64_t sk_arg_count(void) { return (int64_t)skuld_argument_count; }
