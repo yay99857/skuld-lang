@@ -1400,11 +1400,35 @@ so is in `AGENTS.md` because M27 paid for it.
 - **Left to M29 — Schannel, or OpenSSL with roots loaded from C.** Schannel
   needs no new build concept: its libraries are operating-system DLLs in the
   same category as `ws2_32` and `iphlpapi`, which every Windows binary already
-  links, and a shim for it includes no third-party header. Against it, the
-  cost in C is unmeasured, and Windows reports `CERT_TRUST_*` flags rather
-  than X509 verification codes, so `TlsError.Certificate(int)` — which already
-  leaks a raw OpenSSL number into a public API — would have to become a real
-  Skuld enum. That may be a gain rather than a cost.
+  links, and a shim for it includes no third-party header. The two things
+  held against it were both guesses, and M28 replaced them with measurements.
+- **Measured — what a Schannel shim would cost.** The guess was "several
+  hundred lines". curl's `lib/vtls/schannel.c` is about 2,400 lines, of which
+  the handshake and transport path — `schannel_connect_step1`, `step2`,
+  `step3`, `schannel_send`, `schannel_recv` — is roughly 1,210. That is an
+  overestimate here by a wide margin, because curl carries client
+  certificates, PKCS#12 import, ALPN, session reuse, revocation options and
+  its own buffering, and `std/tls` has none of them: its whole surface is
+  connect, send, receive, close. The entry points a shim actually needs are
+  `AcquireCredentialsHandle`, `InitializeSecurityContext`,
+  `QueryContextAttributes`, `EncryptMessage`, `DecryptMessage`,
+  `FreeContextBuffer`, `DeleteSecurityContext` and `FreeCredentialsHandle` —
+  eight, against the thirteen OpenSSL functions `std/tls` declares today.
+- **Measured — how much of the error taxonomy survives the crossing.** Of the
+  six verification results `std/tls` names, four have a distinct counterpart
+  in `CERT_TRUST_STATUS.dwErrorStatus`: an untrusted root is
+  `CERT_TRUST_IS_UNTRUSTED_ROOT` and an issuer that cannot be found is
+  `CERT_TRUST_IS_PARTIAL_CHAIN`. Two do not survive as written. **Expired and
+  not-yet-valid collapse into one flag**, `CERT_TRUST_IS_NOT_TIME_VALID`, so
+  telling them apart would mean reading the certificate's own validity dates;
+  and self-signed is reported in `dwInfoStatus` rather than in the error mask.
+  Host-name mismatch is not in that structure at all — it comes from
+  `CertVerifyCertificateChainPolicy` under `CERT_CHAIN_POLICY_SSL`, as
+  `CERT_E_CN_NO_MATCH`. So a Windows backend can say five of the six things
+  this library says today. Note which way this cuts: `TlsError.Certificate(int)`
+  already leaks a raw OpenSSL number into a public API, and `std/tls` says in
+  its own comment that it cannot interpret one, so replacing it with a Skuld
+  enum is a gain that this milestone would force rather than a cost it pays.
 - **Closing marker.** The Windows leg of CI links OpenSSL and runs the
   hermetic HTTPS tests — the four that hand OpenSSL their own certificate
   authority through `SSL_CERT_FILE` and never consult the system store. Green
