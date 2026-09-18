@@ -23,9 +23,10 @@
  *
  *     clang -std=c11 -O2 program.c skuld_platform.c -o program
  *
- * and on Windows add `-lws2_32 -liphlpapi`, where the sockets and the
- * adapter list live outside the C library. `skuld build` and `skuld run`
- * pass those themselves. */
+ * and on Windows add `-lws2_32 -liphlpapi -lcrypt32`, where the sockets, the
+ * adapter list and the certificate store live outside the C library. `skuld
+ * build` and `skuld run` pass those themselves; this list is the one a caller
+ * compiling by hand has to keep up with, so it is kept correct here. */
 
 /* The CRT marks its own POSIX-named functions deprecated in favour of the
  * `_s` variants. `_open` is the one used here, and it is used deliberately:
@@ -756,3 +757,66 @@ int64_t sk_process_run(unsigned char *program, unsigned char *arguments, unsigne
 }
 
 #endif
+
+/* Trust anchors.
+ *
+ * What a program should believe about a certificate is the one thing OpenSSL
+ * cannot work out for itself on Windows. `SSL_CTX_set_default_verify_paths`
+ * looks where a Unix installation keeps its bundle, finds nothing, clears the
+ * error and reports success, so a program there reaches the handshake and
+ * then refuses every certificate for want of an issuer. Windows does hold the
+ * answer; it just keeps it in a place OpenSSL does not look.
+ *
+ * So this hands it over. PEM rather than DER, for two reasons. The boundary
+ * carries bytes well and structures badly, and OpenSSL reads PEM from memory
+ * without being told a length in a C `long` — which is four bytes here and
+ * eight on Linux, a width Skuld has no way to spell once.
+ *
+ * The caller asks twice: once with no buffer to learn the length, then again
+ * with one. A short buffer is not an error, it is the first call.
+ *
+ * What this cannot do is what Windows does when it verifies a chain itself:
+ * fetch a root it does not have yet. An enumeration sees only what is already
+ * on the machine, so a certificate whose root has never been needed here is
+ * refused rather than fetched. That fails closed, which is the right
+ * direction to be wrong in, and it is what Zig's standard library ships. */
+int64_t sk_trust_anchors_pem(unsigned char *out, uint64_t capacity) {
+#ifdef _WIN32
+    HCERTSTORE store = CertOpenSystemStoreW(0, L"ROOT");
+    if (store == NULL) return -1;
+    uint64_t total = 0;
+    PCCERT_CONTEXT certificate = NULL;
+    while ((certificate = CertEnumCertificatesInStore(store, certificate)) != NULL) {
+        DWORD needed = 0;
+        if (!CryptBinaryToStringA(certificate->pbCertEncoded,
+                                  certificate->cbCertEncoded,
+                                  CRYPT_STRING_BASE64HEADER, NULL, &needed)) {
+            continue;
+        }
+        /* `needed` counts the terminator this never copies out. */
+        if (needed == 0) continue;
+        if (out == NULL || total + (uint64_t)(needed - 1) > capacity) {
+            total += (uint64_t)(needed - 1);
+            continue;
+        }
+        char *text = (char *)malloc(needed);
+        if (text == NULL) continue;
+        DWORD written = needed;
+        if (CryptBinaryToStringA(certificate->pbCertEncoded,
+                                 certificate->cbCertEncoded,
+                                 CRYPT_STRING_BASE64HEADER, text, &written)) {
+            memcpy(out + total, text, written);
+            total += (uint64_t)written;
+        }
+        free(text);
+    }
+    CertCloseStore(store, 0);
+    return (int64_t)total;
+#else
+    /* Every other system this builds for keeps a bundle where OpenSSL already
+     * looks, so there is nothing to add and saying so is the whole answer. */
+    (void)out;
+    (void)capacity;
+    return 0;
+#endif
+}

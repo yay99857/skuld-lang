@@ -102,6 +102,29 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      # A skipped test reports `ok`, so a green suite is not by itself evidence
+      # that anything ran. The TLS suite is the one that matters here, because
+      # it is the only place `std/tls` is exercised at all and it skips itself
+      # when it cannot find an OpenSSL to link against — which on Windows
+      # depends on the runner image carrying a development install.
+      #
+      # M28 established that the suite runs there by reading a job log once.
+      # That is an observation, not a gate: the day an image stops shipping
+      # that install, Windows TLS coverage would fall to zero and this workflow
+      # would stay green. That is precisely the failure this project already
+      # paid for once — a milestone recorded as met while the tests were green
+      # because the failing one was gated. So it is asserted rather than
+      # assumed, on both systems, since the same thing can happen on either.
+      - name: Fail if the TLS suite skipped itself
+        shell: bash
+        run: |
+          output=$(cargo test -p skuld-cli --test https -- --nocapture 2>&1)
+          echo "$output"
+          if echo "$output" | grep -q "skipping:"; then
+            echo "::error::the HTTPS suite skipped, so TLS is not being tested here"
+            exit 1
+          fi
+
       # The README tells readers these commands work; keep that honest. Three
       # examples are not plain demonstrations, and the loop says which:
       # `*_tests.skuld` holds `test_` functions and no entrypoint, so it is

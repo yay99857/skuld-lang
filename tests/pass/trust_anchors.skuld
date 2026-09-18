@@ -1,0 +1,60 @@
+// The platform layer's trust anchors, read the way `std/tls` reads them.
+//
+// This fixture exists for the sanitizer suite rather than for its output. The
+// anchors arrive as bytes the program has to size, allocate for and parse, and
+// that is the only allocating path in the platform layer that a `tests/pass`
+// fixture can reach — without one, it would be exercised on a Windows runner
+// and nowhere else, under no address or leak detection at all.
+//
+// What it prints has to be the same everywhere, because a fixture has one
+// expected output for every platform, and how many certificates a machine
+// trusts is the machine's business. So it prints what it *did*, not what it
+// found: a system with no store to read answers nothing and that is a pass,
+// while a system with one has to hand over well-formed PEM.
+import "std/strings"
+
+unsafe extern "C" {
+    func sk_trust_anchors_pem(out: *u8, capacity: u64) -> i64
+}
+
+// A null `*u8`: the layer is asked with no buffer to learn the length first.
+func no_bytes() -> *u8 {
+    unsafe {
+        return ptr_from(usize(0))
+    }
+}
+
+func main() {
+    let needed = sk_trust_anchors_pem(no_bytes(), u64(0))
+    if needed < 0 {
+        print("the store refused to open")
+        return
+    }
+    if needed == 0 {
+        print("ok")
+        return
+    }
+    var bundle: []u8 = []
+    var filled = 0
+    while filled < int(needed) {
+        bundle.push(0)
+        filled += 1
+    }
+    if sk_trust_anchors_pem(ptr(bundle), u64(needed)) != needed {
+        print("the second answer was a different length")
+        return
+    }
+    let text = bytes_to_string(bundle) else problem {
+        print("the anchors were not text")
+        return
+    }
+    if !strings.starts_with(text, "-----BEGIN CERTIFICATE-----") {
+        print("the anchors were not PEM")
+        return
+    }
+    if !strings.contains(text, "-----END CERTIFICATE-----") {
+        print("the PEM was not closed")
+        return
+    }
+    print("ok")
+}

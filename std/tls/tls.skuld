@@ -55,6 +55,21 @@ unsafe extern "C" {
     func SSL_read(connection: *void, buffer: *u8, length: i32) -> i32
     func SSL_write(connection: *void, buffer: *u8, length: i32) -> i32
     func SSL_shutdown(connection: *void) -> i32
+
+    // Reading the machine's own trust anchors, for the systems where
+    // `SSL_CTX_set_default_verify_paths` finds nothing. Every one of these
+    // takes pointers or an `int`; none takes a C `long`, whose width differs
+    // between the targets and which this language has no way to spell once.
+    func SSL_CTX_get_cert_store(context: *void) -> *void
+    func X509_STORE_add_cert(store: *void, certificate: *void) -> i32
+    func X509_free(certificate: *void) -> void
+    func BIO_new_mem_buf(bytes: *u8, length: i32) -> *void
+    func BIO_free(bio: *void) -> i32
+    func PEM_read_bio_X509(bio: *void, out: *void, password: *void, user: *void) -> *void
+
+    // The platform layer answers with the anchors as PEM, or with zero where
+    // the default paths are already the whole store.
+    func sk_trust_anchors_pem(out: *u8, capacity: u64) -> i64
 }
 
 pub enum TlsError {
@@ -227,6 +242,10 @@ pub func connect(address: string, port: int, host: string) -> Result<TlsConnecti
     if SSL_CTX_set_default_verify_paths(context) != 1 {
         return Err(TlsError.Setup("the trust store could not be loaded"))
     }
+    // That call reports success whether or not it found anything — it clears
+    // its own errors before returning 1 — so on a system with no bundle where
+    // OpenSSL looks, this is where the trust store actually comes from.
+    load_native_anchors(context)
     let connection = SSL_new(context)
     if ffi.is_null(connection) {
         return Err(TlsError.Setup("no connection"))
@@ -273,4 +292,66 @@ pub func connect(address: string, port: int, host: string) -> Result<TlsConnecti
     }
     handed_over = true
     return Ok(new TlsConnection(socket: socket, context: context, connection: connection, host: host))
+}
+
+// Put the certificates this machine already trusts into a context's store.
+//
+// Windows keeps them in its own certificate store, which OpenSSL does not
+// read; the platform layer enumerates it and hands them over as PEM. On the
+// systems where the default paths are the whole store, the layer answers with
+// nothing and this returns having done nothing.
+//
+// Nothing here can make verification weaker. It only ever adds anchors, and a
+// store that gains none leaves the connection exactly as strict as it was —
+// which is to say strict enough to refuse everything, since that is what an
+// empty store does.
+func load_native_anchors(context: *void) {
+    let needed = sk_trust_anchors_pem(no_bytes(), u64(0))
+    // A length that could not be narrowed is one no machine has; refusing it
+    // leaves the store empty, which fails closed.
+    if needed <= 0 || needed > 2147483647 {
+        return
+    }
+    // The bytes are gathered the way `std/fs` gathers a file, because the
+    // language grows an array the same way wherever it is filled from.
+    var bundle: []u8 = []
+    var filled = 0
+    while filled < int(needed) {
+        bundle.push(0)
+        filled += 1
+    }
+    if sk_trust_anchors_pem(ptr(bundle), u64(needed)) != needed {
+        return
+    }
+    // `BIO_new_mem_buf` reads the bytes where they are rather than copying
+    // them, so `bundle` has to outlive the BIO. It does: both are locals here
+    // and the BIO is freed before this returns.
+    let bio = BIO_new_mem_buf(ptr(bundle), i32(needed))
+    if ffi.is_null(bio) {
+        return
+    }
+    let store = SSL_CTX_get_cert_store(context)
+    if ffi.is_null(store) {
+        let ignored_bio = BIO_free(bio)
+        return
+    }
+    loop {
+        let certificate = PEM_read_bio_X509(bio, ffi.null(), ffi.null(), ffi.null())
+        if ffi.is_null(certificate) {
+            break
+        }
+        // A duplicate answers 0, which is not a failure worth reporting: the
+        // anchor is in the store either way, and that is all this wanted.
+        let ignored_add = X509_STORE_add_cert(store, certificate)
+        X509_free(certificate)
+    }
+    let ignored_free = BIO_free(bio)
+}
+
+// A null `*u8`, for asking the platform layer how much it has to say. `ffi`
+// answers with a `*void`, and a pointer widens to that rather than out of it.
+func no_bytes() -> *u8 {
+    unsafe {
+        return ptr_from(usize(0))
+    }
 }

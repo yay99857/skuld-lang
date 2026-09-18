@@ -1454,6 +1454,94 @@ so is in `AGENTS.md` because M27 paid for it.
   Schannel answers that at the cost of a second backend whose size and error
   taxonomy are now measured above.
 
+## M29 — A trust store on Windows — In progress
+
+M28 left exactly one thing between Windows and HTTPS: nothing tells OpenSSL
+what to believe there. This supplies it, from the platform layer, as the
+certificates Windows already trusts.
+
+**This entry reverses a decision taken in it, and the reversal is the point.**
+The first answer here was Schannel on Windows and OpenSSL on Unix, both behind
+the platform layer. An independent review found the argument for it unsound on
+three counts, each checkable, and each checked.
+
+- **Rejected — a second TLS backend, for now.** The peers argue against it,
+  read rather than recalled. Go implements the protocol once in `crypto/tls`
+  and varies only trust: `crypto/x509/root_windows.go` calls
+  `CertGetCertificateChain`. Zig implements it once in `std.crypto.tls` and
+  varies only trust: `Certificate/Bundle.zig`'s `rescanWindows` opens the
+  `ROOT` store and enumerates it. **One engine, several trust providers** is
+  the shape both chose. The multi-backend design is `native-tls`, and it is a
+  facade whose surface is the intersection of three libraries — M28 measured
+  that intersection in miniature when it found that five of six verification
+  results survive the crossing to `CERT_TRUST_*`. A project with one
+  maintainer should not volunteer for that tax.
+- **Rejected — and this is the cost nobody had priced.** Schannel does not
+  read `SSL_CERT_FILE`, which is how all six tests in `cli/tests/https.rs`
+  establish trust. Switching the backend stops five of them describing the
+  Windows path, and repairing them means one of two things: installing a
+  certificate authority into the machine's own trust store whenever anyone
+  runs `cargo test`, which nothing in this repository does and which
+  `SSL_CERT_FILE` never did because it dies with the process; or giving
+  `std/tls` a trust override, which is the mechanism whose absence is its
+  stated guarantee. `SSL_CERT_FILE` is OpenSSL's variable and Skuld is not
+  responsible for it; a `SKULD_TLS_TRUST_FILE` would be Skuld's, in the one
+  module that says it has no such thing.
+- **Rejected — the second opinion.** Asking `CertGetCertificateChain` when
+  OpenSSL answers `X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY` means
+  accepting after OpenSSL has refused. That is the exact shape of a path that
+  silently admits what it should turn away, and it is written down here so it
+  is not proposed again as a compromise.
+- **Corrected — M28's rejection of native roots was too broad.** It rested on
+  `d2i_X509` taking its length as a C `long`, which is 4 bytes under the MSVC
+  ABI and 8 on LP64 Linux. The measurement is right; the conclusion covered
+  the class when it only covered the function. DER is not the only door into
+  an `X509_STORE`. Read in the headers: `BIO_new_mem_buf(const void *, int)`
+  takes an `int`; `PEM_read_cb_fnsig` expands to
+  `X509 *PEM_read_bio_X509(BIO *, X509 **, pem_password_cb *, void *)`, four
+  pointers; `X509_STORE_add_cert(X509_STORE *, const X509 *)`, two. The PEM
+  path has no width that differs between the targets, and is spellable in
+  Skuld today.
+- **Corrected — the build-system objection was a misreading of this
+  repository.** M28 cited `cli/src/native.rs`'s note that "nothing today
+  connects an import to a link flag" as foreclosing a Windows-only addition.
+  It records the opposite: a deliberate choice *not to need* that, because
+  linking an operating-system DLL unconditionally is free — which is why
+  `-lws2_32` and `-liphlpapi` are already added to every Windows binary.
+  `crypt32` is in that same category, so it joins them and no new concept is
+  invented.
+- **Decision taken — the platform layer hands over PEM, not certificates.**
+  `sk_trust_anchors_pem` fills a caller's buffer and answers the length, the
+  two-call protocol the rest of the layer already uses. On Windows it opens
+  the `ROOT` system store, enumerates it and base64-encodes each certificate;
+  everywhere else it answers zero and `std/tls` keeps
+  `SSL_CTX_set_default_verify_paths`. Text rather than DER because the
+  boundary carries bytes well and structures badly, and because PEM is what
+  OpenSSL reads without being told a length. No third-party header enters
+  `runtime/platform.c`, which is the constraint that killed the other shapes.
+- **Known limitation, stated rather than discovered.** An enumeration of
+  `ROOT` sees only the roots already on the machine, because Windows fetches
+  missing ones on demand during `CertGetCertificateChain`. It fails closed —
+  a good certificate refused, never a bad one accepted — it is exactly what
+  Zig's standard library ships, and it can be strengthened later without
+  changing anything a Skuld program sees.
+- **Closing marker, corrected before it was used.** It was first written as a
+  program fetching from a public host with `SSL_CERT_FILE` unset. That
+  contradicts a rule this project already holds — network tests stay hermetic,
+  and nothing in the suite touches the network — so the marker, not the rule,
+  had to give. What is asserted instead, in `cli/tests/trust.rs`: a Skuld
+  program asks the platform layer for the anchors and they arrive, as PEM,
+  more than none of them, with the same length whenever it asks. On the
+  systems that need nothing the layer says so, and the answer is checked to be
+  exactly that rather than merely non-failing. The existing six HTTPS tests
+  keep passing unmodified on both systems, because this changes what is in the
+  trust store and not how trust is established.
+- **Measured on a real Windows machine.** The developer's own Windows 10 box
+  enumerates **45 anchors, 69,904 bytes of PEM**. That number is the answer to
+  the one question the review named as decision-relevant and unmeasured: an
+  enumeration of `ROOT` on an ordinary machine is not a handful of
+  certificates that would fail to chain to most of the web.
+
 ## Open design questions
 
 These are not settled by this document and change the shape of the milestones
