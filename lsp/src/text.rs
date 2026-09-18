@@ -85,13 +85,51 @@ pub fn uri_to_path(uri: &str) -> Option<String> {
         Some(0) => rest,
         _ => return None,
     };
-    Some(percent_decode(path))
+    let decoded = percent_decode(path);
+    // `/C:/src/main.skuld` is how a drive-rooted path is spelled in a URI: the
+    // leading slash belongs to the URI's empty authority, not to the path, and
+    // handing it back would name a file nothing can open. A path that is
+    // rooted rather than drive-rooted keeps every byte it had.
+    if is_drive_rooted(&decoded) {
+        return Some(decoded[1..].to_owned());
+    }
+    Some(decoded)
+}
+
+/// A path in the one spelling this server keys open documents by.
+///
+/// A path that came from a URI separates with `/`, because that is all a URI
+/// has; one read from the filesystem separates with whatever the platform
+/// writes, which on Windows is `\`. The two name the same file and must
+/// compare equal, or a module open and unsaved in the editor would not be
+/// recognised as the file on disk and its saved text would be read instead —
+/// the editor would answer about a version of the program nobody is looking
+/// at. Everywhere else this returns its argument unchanged.
+pub fn document_key(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+/// Whether this is `/C:/...` — a slash, a drive letter, a colon.
+fn is_drive_rooted(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b':'
 }
 
 /// Encode a filesystem path as a `file:` URI.
+///
+/// A path that starts at the root needs only the empty authority in front of
+/// it. A Windows path starts at a drive instead and separates with
+/// backslashes, and neither is what a URI says: `C:\src\main.skuld` is
+/// `file:///C%3A/src/main.skuld`, with a slash supplied in front and the
+/// separators turned round. Both halves are no-ops on a path that already
+/// begins with `/` and contains no backslash.
 pub fn path_to_uri(path: &str) -> String {
     let mut out = String::from("file://");
+    if !path.starts_with('/') {
+        out.push('/');
+    }
     for byte in path.bytes() {
+        let byte = if byte == b'\\' { b'/' } else { byte };
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
                 out.push(byte as char);
