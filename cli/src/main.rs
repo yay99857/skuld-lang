@@ -324,8 +324,16 @@ fn main() -> ExitCode {
     };
     // Import paths are relative to the directory the entry file lives in.
     // That directory is the program root; a module is a directory under it.
+    //
+    // An entry written without a directory has a parent, and it is the empty
+    // path rather than nothing: `Path::new("main.skuld").parent()` answers
+    // `Some("")`. Nothing can be canonicalised against that, so the working
+    // directory has to be named for it.
     let mut loader = Directories {
-        root: entry.parent().unwrap_or(Path::new(".")).to_path_buf(),
+        root: match entry.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+            _ => PathBuf::from("."),
+        },
     };
     let source = SourceFile::new(entry.to_string_lossy(), text);
     let result = match action {
