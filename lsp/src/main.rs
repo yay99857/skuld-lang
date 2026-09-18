@@ -26,6 +26,7 @@ skuld-lsp — a language server for Skuld
 
 Usage:
   skuld-lsp            speak LSP over stdin and stdout
+  skuld-lsp --stdio    the same, said out loud for clients that ask for it
   skuld-lsp --help     print this message
   skuld-lsp --version  print the version
 
@@ -48,6 +49,14 @@ fn decide(arguments: &[String]) -> Startup {
     match arguments {
         [] => Startup::Serve,
         [only] => match only.as_str() {
+            // Stdin and stdout are the only transport this server has, so
+            // `--stdio` asks for what it was going to do anyway. It is
+            // accepted because that is what a client passes when it is told
+            // to use stdio, and refusing it means refusing the convention
+            // rather than refusing a mode — Visual Studio Code's client sends
+            // it, and the server exited with a usage error five times before
+            // the editor gave up on it.
+            "--stdio" => Startup::Serve,
             "-h" | "--help" => Startup::Print(USAGE.to_string()),
             "-V" | "--version" => {
                 Startup::Print(format!("skuld-lsp {}\n", env!("CARGO_PKG_VERSION")))
@@ -106,12 +115,23 @@ mod tests {
         assert!(version.ends_with('\n'));
     }
 
+    /// `--stdio` names the only transport there is, so it starts the server.
+    ///
+    /// This test was the opposite of itself: it used `--stdio` as its example
+    /// of an argument nobody would pass, and Visual Studio Code passes it to
+    /// every server it is told to reach over stdio. The server exited with a
+    /// usage error five times and the editor stopped trying.
+    #[test]
+    fn stdio_starts_the_server() {
+        assert_eq!(decide_on(&["--stdio"]), Startup::Serve);
+    }
+
     #[test]
     fn rejects_an_unknown_argument() {
-        let Startup::Misuse(message) = decide_on(&["--stdio"]) else {
+        let Startup::Misuse(message) = decide_on(&["--socket=7"]) else {
             panic!("an unknown argument is a misuse");
         };
-        assert!(message.contains("--stdio"), "{message}");
+        assert!(message.contains("--socket=7"), "{message}");
     }
 
     #[test]
