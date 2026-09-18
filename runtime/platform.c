@@ -27,6 +27,15 @@
  * adapter list live outside the C library. `skuld build` and `skuld run`
  * pass those themselves. */
 
+/* The CRT marks its own POSIX-named functions deprecated in favour of the
+ * `_s` variants. `_open` is the one used here, and it is used deliberately:
+ * the `_s` forms take different arguments on one system and do not exist on
+ * the other, which is the divergence this file exists to absorb rather than
+ * spread. The warning is turned off rather than answered. */
+#ifdef _WIN32
+#define _CRT_SECURE_NO_WARNINGS 1
+#endif
+
 /* This file is compiled on its own, so it includes what it uses rather than
  * inheriting the program's prelude. That separation is the point: the headers
  * below declare `read`, `write`, `open` and `close`, and a program is allowed

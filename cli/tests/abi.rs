@@ -27,6 +27,15 @@ impl Drop for Scratch {
     }
 }
 
+/// Whether the clang on PATH builds for the MSVC ABI, which decides how a
+/// static library has to be named for `-l` to find it.
+fn targets_msvc() -> bool {
+    Command::new("clang")
+        .arg("-print-target-triple")
+        .output()
+        .is_ok_and(|output| String::from_utf8_lossy(&output.stdout).contains("msvc"))
+}
+
 fn clang_available() -> bool {
     Command::new("clang")
         .arg("--version")
@@ -115,7 +124,15 @@ fn an_extern_struct_crosses_the_boundary_by_value_in_both_directions() {
     );
     // A static library, because `-l` is the only way a program names something
     // to link and the CLI forwards nothing else.
-    let archive = scratch.directory.join("libskuldabi.a");
+    // `-l<name>` is spelled out by the target, not by the host: a GNU driver
+    // looks for `libskuldabi.a` and an MSVC one for `skuldabi.lib`, and
+    // clang on Windows is usually the second. Asking which it is beats
+    // guessing from the operating system, since both exist there.
+    let archive = scratch.directory.join(if targets_msvc() {
+        "skuldabi.lib"
+    } else {
+        "libskuldabi.a"
+    });
     // `llvm-ar` ships with the clang this test already needs, and is the one
     // archiver present on both systems; GNU `ar` is not on a stock Windows
     // machine. Both accept the same arguments here.
