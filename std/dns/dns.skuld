@@ -8,11 +8,21 @@
 // reaches. A UDP socket is `connect`ed to the server, so `send` and `recv`
 // are enough and `recvfrom`'s address-out parameter is never needed.
 //
-// What this is not: a caching resolver, a full DNS client, or a defence
-// against an off-path attacker. There is no random source in the language, so
-// the query id comes from the clock and the socket's ephemeral port is the
-// only other thing an answer has to match. It is meant for the nameserver the
-// machine is already configured to trust, on a local network.
+// An answer is matched against the question before it is believed: the query
+// id, the question section, and that the message claims to be a response at
+// all. A UDP datagram arrives from whoever sent one, and `connect` on the
+// socket only fixes the address and the port, so those three are what RFC 5452
+// asks a resolver to check and what stands between a caller and a forged
+// reply. They were absent once: the id was written into the question and then
+// discarded, so a spoofed answer to a different name was accepted.
+//
+// What remains weak is the id itself, which comes from the clock because the
+// language has no random source — the current second, shared by every query
+// in it. Checking it is what makes it worth randomising, and randomising it
+// without checking would have been worth nothing.
+//
+// What this is not: a caching resolver or a full DNS client. It is meant for
+// the nameserver the machine is already configured to trust.
 
 import "std/net"
 import "std/os"
@@ -55,8 +65,11 @@ pub enum DnsError {
     Transport(os.OsFailure),
     // The server answered with a non-zero RCODE. 2 is SERVFAIL, 3 is NXDOMAIN.
     Refused(int),
-    // The answer was not a reply to this query, or could not be read.
+    // The answer could not be read as a DNS message.
     Malformed(string),
+    // The answer was well formed and was not a reply to this query: a
+    // different id, a different question, or not a response at all.
+    Mismatched(string),
     // The name resolved, but to nothing this module can use: no A record.
     NoAddress(string),
 }
@@ -68,6 +81,7 @@ pub func describe(error: DnsError) -> string {
         DnsError.Transport(problem): return "dns query failed: ${os.describe_failure(problem)}"
         DnsError.Refused(code): return "the nameserver answered with code ${code}${rcode_hint(code)}"
         DnsError.Malformed(detail): return "the answer could not be read: ${detail}"
+        DnsError.Mismatched(detail): return "the answer was not a reply to this query: ${detail}"
         DnsError.NoAddress(name): return "`${name}` has no IPv4 address"
     }
 }
@@ -151,9 +165,10 @@ pub func resolve_with(server: string, port: int, name: string) -> Result<string,
     if is_address(name) {
         return Ok(name)
     }
-    let question = query(name)?
+    let id = query_id()
+    let question = query(name, id)?
     let answer = exchange(server, port, question)?
-    return read_answer(answer, name)
+    return read_answer(answer, name, id, question)
 }
 
 // Four decimal octets: `net.parse_address` already knows, and its error is
@@ -165,16 +180,8 @@ pub func is_address(text: string) -> bool {
     }
 }
 
-// One question for one A record, with the id taken from the clock.
-func query(name: string) -> Result<[]u8, DnsError> {
-    var seconds: []u8 = []
-    var index = 0
-    while index < 8 {
-        seconds.push(0)
-        index += 1
-    }
-    let now = time(ptr(seconds))
-    let id = int(now % 65536)
+// One question for one A record, under the id the caller will match against.
+func query(name: string, id: int) -> Result<[]u8, DnsError> {
     var message: []u8 = []
     message.push(u8(id / 256))
     message.push(u8(id % 256))
@@ -205,6 +212,23 @@ func query(name: string) -> Result<[]u8, DnsError> {
     message.push(0)
     message.push(1)
     return Ok(message)
+}
+
+// The number this query is known by, which an answer has to carry back.
+//
+// It comes from the clock, which means an off-path attacker can guess it: the
+// value is the current second, and every query in that second shares it. That
+// is a weakness and it is named here rather than in a comment far from the
+// code, because the language has no random source to fix it with yet.
+func query_id() -> int {
+    var seconds: []u8 = []
+    var index = 0
+    while index < 8 {
+        seconds.push(0)
+        index += 1
+    }
+    let now = time(ptr(seconds))
+    return int(now % 65536)
 }
 
 // Send one datagram and wait for one, with a timeout so an unreachable server
@@ -246,9 +270,25 @@ func address_bytes(server: string) -> Result<[]u8, DnsError> {
 }
 
 // The first A record in the answer section, as four decimal octets.
-func read_answer(message: []u8, name: string) -> Result<string, DnsError> {
+func read_answer(message: []u8, name: string, id: int, question: []u8) -> Result<string, DnsError> {
     if message.len() < 12 {
         return Err(DnsError.Malformed("the answer is shorter than a header"))
+    }
+    // Three checks before anything in the answer is believed, because a UDP
+    // datagram arrives from whoever sent one and the socket being `connect`ed
+    // only fixes the address and the port. RFC 5452 names the rest: the id,
+    // the question, and that this is a response at all. Without them the only
+    // thing an attacker has to guess is the ephemeral port.
+    let answered = int(message[0]) * 256 + int(message[1])
+    if answered != id {
+        return Err(DnsError.Mismatched("it carries a different query id"))
+    }
+    // The high bit of the third byte is QR, set on a response.
+    if int(message[2]) / 128 == 0 {
+        return Err(DnsError.Mismatched("it is a query rather than a response"))
+    }
+    if !echoes_question(message, question) {
+        return Err(DnsError.Mismatched("it repeats a different question"))
     }
     // The low four bits of the last flag byte are the response code.
     let rcode = int(message[3]) % 16
@@ -288,6 +328,33 @@ func read_answer(message: []u8, name: string) -> Result<string, DnsError> {
         seen += 1
     }
     return Err(DnsError.NoAddress(name))
+}
+
+// Whether the answer repeats the question that was asked, byte for byte from
+// the end of the header onwards — the name, the type and the class together.
+//
+// Case is ignored. A server is free to change the case of a letter in the name
+// it echoes, which is the property 0x20 encoding is built on, and a byte-exact
+// comparison would reject a perfectly good answer from one that does.
+func echoes_question(message: []u8, question: []u8) -> bool {
+    if message.len() < question.len() {
+        return false
+    }
+    var at = 12
+    while at < question.len() {
+        if lowered(message[at]) != lowered(question[at]) {
+            return false
+        }
+        at += 1
+    }
+    return true
+}
+
+func lowered(byte: u8) -> u8 {
+    if byte >= 65 && byte <= 90 {
+        return byte + 32
+    }
+    return byte
 }
 
 // Step over a name without expanding it. A label whose length byte is 192 or

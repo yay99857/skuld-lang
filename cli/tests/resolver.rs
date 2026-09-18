@@ -259,3 +259,112 @@ func main() {{
     dns.join().expect("the dns thread");
     http.join().expect("the http thread");
 }
+
+/// What a spoofed answer gets wrong. A datagram arrives from whoever sent
+/// one, so each of these is something an off-path attacker would have to get
+/// right, and each was accepted before RFC 5452's checks went in.
+enum Spoof {
+    /// A different query id.
+    Id,
+    /// A well-formed answer to a name nobody asked about.
+    Question,
+    /// The QR bit clear, so the message claims to be a query.
+    NotAResponse,
+}
+
+/// Answer once, deliberately wrong in one respect and correct in every other.
+fn answer_once_spoofed(socket: UdpSocket, address: [u8; 4], spoof: Spoof) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let mut query = [0u8; 512];
+        let (read, from) = socket.recv_from(&mut query).expect("one query");
+        let query = &query[..read];
+
+        let mut reply = Vec::new();
+        match spoof {
+            // One more than was asked, which is the cheapest possible miss.
+            Spoof::Id => {
+                let sent = u16::from_be_bytes([query[0], query[1]]);
+                reply.extend_from_slice(&sent.wrapping_add(1).to_be_bytes());
+            }
+            _ => reply.extend_from_slice(&query[0..2]),
+        }
+        match spoof {
+            Spoof::NotAResponse => reply.push(0x01),
+            _ => reply.push(0x81),
+        }
+        reply.push(0x80);
+        reply.extend_from_slice(&[0, 1]);
+        reply.extend_from_slice(&[0, 1]);
+        reply.extend_from_slice(&[0, 0, 0, 0]);
+        match spoof {
+            // A different name, encoded the way the question would have been.
+            Spoof::Question => {
+                reply.push(9);
+                reply.extend_from_slice(b"elsewhere");
+                reply.push(4);
+                reply.extend_from_slice(b"test");
+                reply.push(0);
+                reply.extend_from_slice(&[0, 1, 0, 1]);
+            }
+            _ => reply.extend_from_slice(&query[12..]),
+        }
+        reply.extend_from_slice(&[0xC0, 0x0C]);
+        reply.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
+        reply.extend_from_slice(&address);
+        socket.send_to(&reply, from).expect("send the answer");
+    })
+}
+
+fn refuses_a_spoofed_answer(name: &str, spoof: Spoof) {
+    let socket = UdpSocket::bind("127.0.0.1:0").expect("an ephemeral port");
+    let port = socket.local_addr().expect("address").port();
+    let server = answer_once_spoofed(socket, [10, 0, 0, 1], spoof);
+
+    let scratch = Scratch::new(name);
+    let program = scratch.program(&resolver_program(port, "example.test"));
+    let (out, ok) = run(&program);
+    assert!(ok, "a refusal is a value, not a crash: {out}");
+    assert!(
+        out.contains("was not a reply to this query"),
+        "the answer should have been refused, got: {out}"
+    );
+    assert!(
+        !out.contains("10.0.0.1"),
+        "the spoofed address must not reach the caller: {out}"
+    );
+    server.join().expect("the server thread");
+}
+
+/// An answer carrying someone else's id is not this query's answer. Before
+/// these checks the id was written into the question and then discarded — the
+/// resolver never read the two bytes back — so the only thing an attacker had
+/// to guess was the ephemeral port the kernel picked.
+#[test]
+fn an_answer_with_the_wrong_id_is_refused() {
+    if !clang_available() {
+        eprintln!("skipping: clang is not on PATH");
+        return;
+    }
+    refuses_a_spoofed_answer("spoofid", Spoof::Id);
+}
+
+/// An answer that repeats a different question is not this query's answer
+/// either, however well formed the records after it are.
+#[test]
+fn an_answer_about_another_name_is_refused() {
+    if !clang_available() {
+        eprintln!("skipping: clang is not on PATH");
+        return;
+    }
+    refuses_a_spoofed_answer("spoofname", Spoof::Question);
+}
+
+/// And a message that does not claim to be a response is not one.
+#[test]
+fn a_message_that_is_not_a_response_is_refused() {
+    if !clang_available() {
+        eprintln!("skipping: clang is not on PATH");
+        return;
+    }
+    refuses_a_spoofed_answer("spoofqr", Spoof::NotAResponse);
+}
