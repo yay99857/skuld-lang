@@ -199,3 +199,38 @@ fn a_binding_that_shadows_a_qualifier_keeps_its_own_members() {
         "the module's exports leaked past the local that shadows it: {found:?}"
     );
 }
+
+/// A value's members answer while the use is still being typed.
+///
+/// This is the case the qualifier fix left open, and the one somebody actually
+/// runs into: a line that did not exist a moment ago, so the reference table
+/// has nothing at that offset. The binding above it did exist, and typing does
+/// not move what precedes it.
+#[test]
+fn a_dot_after_a_value_answers_on_a_line_that_is_new() {
+    let program = "class Stream {\n    login: string\n    viewers: int = 0\n\n    link() -> string {\n        return this.login\n    }\n}\n\nfunc main() {\n    let stream = new Stream(login: \"a\")\n    print(stream.login)\n}\n";
+    let typed = checked(program);
+    let inserted = "    stream.";
+    let typing = program.replace("    print(stream.login)\n", &format!("{inserted}\n"));
+    let cursor = typing.find(inserted).expect("the typed line") + inserted.len();
+    let items = at(&typing, cursor, Some(&typed));
+    assert_eq!(labels(&items), ["login", "viewers", "link"]);
+    assert_eq!(detail_of(&items, "viewers"), Some("int"));
+}
+
+/// A binding in a function that has already ended is not in scope, however
+/// near it looks, so nothing is offered rather than the wrong thing.
+#[test]
+fn a_binding_from_an_earlier_function_is_not_offered() {
+    let program = "class Stream {\n    login: string\n}\n\nfunc first() {\n    let stream = new Stream(login: \"a\")\n    print(stream.login)\n}\n\nfunc main() {\n    print(\"x\")\n}\n";
+    let typed = checked(program);
+    // Typed inside `main`, where `stream` was never declared. The nearest
+    // declaration of that name is in `first`, above and out of reach.
+    let inserted = "    stream.";
+    let typing = program.replace("    print(\"x\")\n", &format!("{inserted}\n"));
+    let cursor = typing.find(inserted).expect("the typed line") + inserted.len();
+    assert!(
+        at(&typing, cursor, Some(&typed)).is_empty(),
+        "a binding from a function that ended was offered"
+    );
+}

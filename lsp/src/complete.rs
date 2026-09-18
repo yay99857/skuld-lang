@@ -141,7 +141,18 @@ fn members(source: &str, receiver: &str, checked: Option<&TypedProgram>) -> Vec<
     // offset in the whole document — which is the key the tables use.
     let _ = source;
     let resolution = typed.resolution();
-    if let Some(&symbol) = resolution.references.get(&(ENTRY, start)) {
+    // An entry here is only about this receiver if it names it. Typing lands
+    // new text on offsets the last good check had recorded for something else,
+    // and the table answers those as confidently as it answers a real one —
+    // `stream.` on a fresh line found a reference belonging to whatever had
+    // occupied that column before, and listed its members. Comparing the name
+    // costs one string and is the difference between an answer and a
+    // plausible-looking wrong one.
+    let recorded = resolution
+        .references
+        .get(&(ENTRY, start))
+        .filter(|symbol| resolution.symbols[symbol.0].name == name);
+    if let Some(&symbol) = recorded {
         if let SymbolKind::Module(module) = resolution.symbols[symbol.0].kind {
             return exports(typed, module);
         }
@@ -158,13 +169,55 @@ fn members(source: &str, receiver: &str, checked: Option<&TypedProgram>) -> Vec<
     // been asked: where the table knows, it is the one that knows about
     // shadowing.
     //
-    // A value's members cannot be answered this way. Its type comes from the
-    // binding, the binding is a place, and the place is exactly what is not
-    // known yet.
+    // A value can be answered too, and the reason rests on where an edit moves
+    // things. Typing shifts every offset after the cursor and none before it,
+    // so the binding this receiver names — declared above, in text that
+    // already checked — still sits where the tables recorded it. Only the use
+    // being typed is new.
     if let Some(module) = resolution.module_in_file(ENTRY, name) {
         return exports(typed, module);
     }
-    Vec::new()
+    match binding_before(typed, name, start) {
+        Some(symbol) => members_of(typed, typed.symbol_type(symbol)),
+        None => Vec::new(),
+    }
+}
+
+/// The binding a name refers to just before `offset`, judged by position.
+///
+/// This is a narrower question than resolution answers, and it is asked only
+/// where the reference table has nothing — which is while something is being
+/// typed. The nearest declaration of the name above the cursor is the one
+/// meant, because a nearer one would have to be in a block that has since
+/// closed, and a block that closed cannot contain the cursor.
+///
+/// It gives up rather than guesses where a function begins between the two.
+/// The binding would then belong to a function that has already ended, and
+/// answering from it would list the members of something else entirely.
+/// Nothing is better than wrong here: a member list is read as a fact.
+fn binding_before(typed: &TypedProgram, name: &str, offset: usize) -> Option<SymbolId> {
+    let resolution = typed.resolution();
+    let mut found: Option<(usize, SymbolId)> = None;
+    let mut function_after = None;
+    for (&(file, at), &symbol) in &resolution.declarations {
+        if file != ENTRY || at >= offset {
+            continue;
+        }
+        let declared = &resolution.symbols[symbol.0];
+        if matches!(declared.kind, SymbolKind::Function) {
+            function_after = Some(at);
+        }
+        if declared.name == name {
+            found = Some((at, symbol));
+        }
+    }
+    let (at, symbol) = found?;
+    match function_after {
+        // A function opened after the binding and before the cursor, so the
+        // binding is not in scope here however close it looks.
+        Some(start) if start > at => None,
+        _ => Some(symbol),
+    }
 }
 
 /// The members a value of this type has. Hover reads the same table, so a
