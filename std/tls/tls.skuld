@@ -221,6 +221,14 @@ pub func connect(address: string, port: int, host: string) -> Result<TlsConnecti
             SSL_free(connection)
         }
     }
+    // OpenSSL takes a descriptor as a C `int`, and on Windows a socket is a
+    // `SOCKET` — a machine word, which is why `std/net` carries it as one.
+    // The narrowing is checked here rather than left to `i32`, because a
+    // conversion that does not fit ends the process where this module owes
+    // the caller a `Result`.
+    if socket.handle < 0 || socket.handle > 2147483647 {
+        return Err(TlsError.Setup("the socket is too large to hand to OpenSSL"))
+    }
     if SSL_set_fd(connection, i32(socket.handle)) != 1 {
         return Err(TlsError.Setup("the socket could not be attached"))
     }
