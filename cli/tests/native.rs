@@ -193,6 +193,26 @@ fn invalid_source_never_reaches_clang() {
         }
     }
 }
+/// `PATH` for a sanitized program: the existing one, plus the directory
+/// clang keeps its runtime libraries in.
+///
+/// Only Windows needs this — elsewhere the sanitizer runtime is linked into
+/// the executable rather than loaded beside it — but prepending a directory
+/// that exists is harmless anywhere, and asking clang beats hard-coding a
+/// path that moves with every release.
+fn sanitizer_path() -> String {
+    let existing = std::env::var("PATH").unwrap_or_default();
+    let Ok(output) = Command::new("clang").arg("-print-runtime-dir").output() else {
+        return existing;
+    };
+    let directory = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if directory.is_empty() {
+        return existing;
+    }
+    let separator = if cfg!(windows) { ";" } else { ":" };
+    format!("{directory}{separator}{existing}")
+}
+
 /// Build one program's generated C under the sanitizers and run it.
 /// Address and leak detection matter as soon as the runtime allocates: a leak
 /// or a double free must fail the suite, not pass quietly.
@@ -265,6 +285,12 @@ fn sanitized_c(emitted: &[u8], expected: &[u8]) {
     // checking still apply on both, so what is lost is one of the three rather
     // than the harness.
     let output = Command::new(binary)
+        // On Windows the address sanitizer is a DLL rather than something
+        // linked in, and a program built with it will not start unless
+        // `clang_rt.asan_dynamic-*.dll` is findable. Nothing is printed when
+        // it is missing: the loader fails before `main`, so the test would
+        // report an empty error. clang knows where its own runtime lives.
+        .env("PATH", sanitizer_path())
         .env(
             "ASAN_OPTIONS",
             if cfg!(target_os = "linux") {
