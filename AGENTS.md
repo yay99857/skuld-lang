@@ -618,8 +618,13 @@ behind it. The obligations above are checkable, and a persona is not.
   decision recorded in `ROADMAP.md`, and none of them by a read primitive at
   the foreign boundary. Name resolution is `std/dns`, a DNS client written in
   Skuld over a `connect`ed UDP socket: IPv4 A records, servers from
-  `/etc/resolv.conf`, a three-second timeout, no cache, and a query id from the
-  clock, since the language has no random source. Error detail is a runtime
+  `/etc/resolv.conf`, a three-second timeout and no cache. An answer is matched
+  against the question before it is believed — the id, the question section and
+  the QR bit, which is what RFC 5452 asks of a resolver — and the id comes from
+  the system's own generator through `sk_random_bytes`. Those two are one
+  feature: an id that nothing checks is worth nothing however it was made, and
+  before M31 nothing checked it. The generator is not seedable and there is no
+  second one, so nobody can reach for the wrong kind. Error detail is a runtime
   bridge like M13's — `sk_errno` and `sk_error_message` — so `std/fs` and
   `std/net` carry an `OsFailure` of what was attempted and the system's number.
   TLS is OpenSSL through the FFI, quarantined in `std/tls` and `std/https`:

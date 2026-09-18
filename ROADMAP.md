@@ -1610,6 +1610,69 @@ or the runtime**.
   language's character is a **diagnostic** — a span and a `Fix`, which the
   compiler already knows how to carry — and not hidden control flow. Evidence
   first: a program that leaks a handle.
+## M31 — An answer that has to match, and an id nobody can guess — Implemented
+
+`std/dns` wrote a query id into every question and then threw it away. Nothing
+read the two bytes back, nothing compared the question section, and nothing
+checked that the message claimed to be a response — so the only thing between
+a caller and a forged answer was the ephemeral port the kernel picked. The
+module's own header said the port was "the only *other* thing an answer has to
+match", which was wrong about its own code in the worse direction.
+
+- **The order is the whole point, and it was nearly got backwards.** This began
+  as "add a random source", on the grounds that the id came from the clock. It
+  did — but **randomising an id nothing checks buys exactly zero bits**. The
+  free half, pure Skuld and no platform layer at all, is the load-bearing one;
+  the random source is worth something only after it. Stated as numbers: the
+  Linux ephemeral range is 28,232 ports and the Windows one 16,384, so today's
+  space was about 2^14.8. A checked clock id is still 2^14.8, because the
+  attacker knows the second. Both together are ~2^30.8, which RFC 5452 puts at
+  roughly the same four billion — the difference between a few thousand
+  spoofed datagrams and terabits per second inside the same window.
+- **Decision taken — three checks, from RFC 5452.** The id, the question
+  section, and the QR bit. The question is compared byte for byte from the end
+  of the header, ignoring case, because a server may change the case of a
+  letter in the name it echoes — the property 0x20 encoding is built on, and
+  one a byte-exact comparison would reject a good answer over.
+- **Decision taken — the system's generator, and no other kind.** A seeded
+  generator is what a simulation wants and what nobody should reach for when
+  they need a number an attacker must not guess. Go shipped a cryptographic
+  generator behind `math/rand` in 1.22 after finding people had used the fast
+  one for key material, and said so; Rust's unstable `std::random` offers a
+  system source and no seedable engine, and warns against `%` for ranges; Zig
+  leaves the choice to the programmer but has a package manager, which this
+  project deliberately does not. With one function to reach for, nobody can
+  reach for the wrong one.
+- **Rejected — a `std/random` module.** The milestone was proposed with one,
+  citing M29's shape. M29's actual shape is the opposite: `sk_trust_anchors_pem`
+  is declared in `std/tls`, its one consumer, and no `std/trust` exists. Every
+  platform entry point in this project is declared by the module that uses it.
+  A `std/random` would have had one caller needing two bytes — the same
+  one-consumer bar that withdrew general generics one milestone earlier.
+- **Rejected — seeding `std/map`'s hash with it.** Nothing in `std/` imports
+  `std/map`, so there is no path from attacker-controlled bytes to that table,
+  and its hash is DJB2: seeding a multiplicative hash does not stop flooding,
+  which needs a keyed hash. It would have been theatre.
+- **Decision taken — `getentropy`, not `getrandom`.** The non-Windows branch of
+  `runtime/platform.c` is written for Unix in general; `getrandom` is Linux and
+  FreeBSD while `getentropy` is in `<unistd.h>` on macOS and the BSDs too. It
+  takes 256 bytes at a time, hence the loop.
+- **Decision taken — `BCryptGenRandom`, not `RtlGenRandom`.** The latter has no
+  import library and is reached as `SystemFunction036`, which means
+  hand-declaring a prototype with no header to check it against — the mistake
+  the platform layer exists to prevent. `-lbcrypt` joins the three
+  operating-system libraries every Windows binary already links, on the
+  reasoning recorded beside them.
+- **Decision taken — no fallback.** If the system will not supply random bytes
+  the query fails. Falling back to the clock would restore the weakness this
+  removes, and do it silently.
+- **Closing marker: met, and each test was checked against the old code.** An
+  answer with a different id, an answer about a name nobody asked about, and a
+  message with the QR bit clear are each refused; against the previous
+  `std/dns` all three were accepted and the forged address reached the caller.
+  Eight consecutive queries ask under different ids; with a fixed id that test
+  fails and prints the repeated number. A real name still resolves through the
+  machine's own nameserver.
 
 ## Open design questions
 
