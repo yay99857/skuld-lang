@@ -1555,6 +1555,39 @@ above.
 1. ~~Builtin `Result` or general generics?~~ Answered: M3 shipped `Result` as a
    builtin. Whether general generics ever enter the project, and how they would
    reconcile with the builtin `Option` and `Result`, remains open.
+
+   General generics were **proposed as a milestone and withdrawn**, and the
+   reasons are worth keeping so they are not reproposed on the same footing.
+   The case made for them was one of ordering: Skuld has built in three generic
+   types users cannot write — `Option`, `Result`, `[]T` — and building
+   concurrency first would add a fourth as a `Channel`, so generics should come
+   first. **That argument inverts when the sources are read instead of
+   recalled.** Ian Lance Taylor's "Why Generics?" names exactly two builtin
+   generic data structures, *slices and maps*; channels are not in it. And the
+   current Go specification carries both a `TypeParameters` production and a
+   `ChannelType` production, the latter a primitive composite type with its own
+   grammar, not defined in terms of type parameters. Go has had generics since
+   1.18 and `chan T` is still builtin, deliberately: a channel is a scheduling
+   primitive with statement-level syntax, not a container.
+
+   Two further objections stand on their own. Generics would not unblock
+   concurrency by an inch, because what stops a Skuld channel carrying a
+   managed value is the **non-atomic reference count**, not the spelling — the
+   prerequisite is the atomics milestone, which this roadmap already names.
+   And the evidence of demand is one consumer: `std/map`, in a header that
+   argues its concrete shape is the right one. `std/json`, `std/dns`, `std/net`
+   and `std/tls` are all written without generics and none of them complains.
+
+   The shape proposed also did not survive contact with the checker. Its
+   headline example, `func largest<T: Comparable>`, cannot be written: a
+   constraint would reuse M10's interfaces, and the checker refuses conformance
+   from anything that is not a class — "only a class implements an interface,
+   because an interface value is a counted reference" — so no scalar can ever
+   satisfy one. And leaving `Option` and `Result` builtin alongside user
+   generics would not answer this question; it would convert a deferred
+   question into a shipped inconsistency, with two things that look alike and
+   obey different rules in a language whose first stated priority is
+   predictability.
 2. ~~Do string slices retain their owner or copy?~~ Answered: they copy, except
    for slices of string literals, whose bytes are static. Whether a retaining
    slice earns its danger is a question for a benchmark, not for this document.
