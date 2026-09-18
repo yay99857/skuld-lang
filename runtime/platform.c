@@ -47,6 +47,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* `wcslen` and `wmemcpy`, for the wide command line Windows takes. */
+#include <wchar.h>
 
 #ifdef _WIN32
 /* <winsock2.h> must precede <windows.h>, which <io.h> may pull in. */
@@ -58,12 +60,14 @@
 #include <fcntl.h>
 #include <io.h>
 #include <sys/stat.h>
+#include <windows.h>
 #else
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -474,3 +478,281 @@ int64_t sk_dns_servers(unsigned char *out, uint64_t capacity) {
 #endif
     return (int64_t)written;
 }
+
+/* Running another program, and reading what it wrote.
+ *
+ * This is the one place where the two systems disagree about the shape of the
+ * idea rather than about a name or a width. POSIX splits a launch into `fork`
+ * and `execvp`: a copy of this process that then becomes the other program,
+ * with the pipe wired up in between. Windows has no such copy — `CreateProcess`
+ * starts the other program directly, and the handles it should inherit are
+ * described up front. Neither can be written in terms of the other, which is
+ * why `std/os` cannot hold both and this function exists.
+ *
+ * One consequence is worth stating rather than discovering. On Windows the
+ * command line reaches the child as a single string and the *child* splits it,
+ * so the caller's arguments have to be quoted on the way in. The quoting
+ * implemented here is the algorithm `CommandLineToArgvW` documents, which is
+ * what the C runtime startup uses, so it round-trips for any child that parses
+ * its arguments the ordinary way. A child that reads `GetCommandLineW` and
+ * splits it by hand can still see something else, and no caller-side quoting
+ * can prevent that. On POSIX the arguments are handed over as an array and the
+ * question does not arise.
+ *
+ * `arguments` is the program's arguments, NUL-separated, ending in an empty
+ * one. Answers the number of bytes the child wrote — which may exceed
+ * `capacity`, meaning the rest was read and discarded — or -1 if it could not
+ * be started at all. `status` receives the exit status, 127 for a program that
+ * was not found, the way a shell reports it, and -1 for one killed by a signal.
+ */
+
+#ifdef _WIN32
+
+/* UTF-8 in, UTF-16 out, allocated. Windows takes wide strings and Skuld has
+ * only UTF-8, so every path and argument crosses here. */
+static wchar_t *skuld_widen(const char *text) {
+    int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, NULL, 0);
+    if (length <= 0) return NULL;
+    wchar_t *wide = (wchar_t *)malloc((size_t)length * sizeof(wchar_t));
+    if (wide == NULL) return NULL;
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, wide, length) <= 0) {
+        free(wide);
+        return NULL;
+    }
+    return wide;
+}
+
+/* Append one argument to a command line, quoted the way the runtime startup
+ * will unquote it. An argument with no space, tab or quote in it needs none of
+ * this and is appended as it stands. */
+static int skuld_quote(wchar_t *out, size_t *at, size_t capacity, const wchar_t *argument) {
+    size_t length = wcslen(argument);
+    int plain = length > 0;
+    for (size_t i = 0; i < length; i++) {
+        if (argument[i] == L' ' || argument[i] == L'\t' || argument[i] == L'"') plain = 0;
+    }
+    if (plain) {
+        if (*at + length + 1 >= capacity) return 0;
+        wmemcpy(out + *at, argument, length);
+        *at += length;
+        return 1;
+    }
+    if (*at + 1 >= capacity) return 0;
+    out[(*at)++] = L'"';
+    for (size_t i = 0; i < length; i++) {
+        size_t slashes = 0;
+        while (i < length && argument[i] == L'\\') {
+            slashes++;
+            i++;
+        }
+        if (i == length) {
+            /* Trailing backslashes precede the closing quote, so each has to
+             * be doubled or the quote would be escaped by them. */
+            if (*at + slashes * 2 + 1 >= capacity) return 0;
+            for (size_t n = 0; n < slashes * 2; n++) out[(*at)++] = L'\\';
+            break;
+        }
+        if (argument[i] == L'"') {
+            if (*at + slashes * 2 + 2 >= capacity) return 0;
+            for (size_t n = 0; n < slashes * 2; n++) out[(*at)++] = L'\\';
+            out[(*at)++] = L'\\';
+            out[(*at)++] = L'"';
+        } else {
+            if (*at + slashes + 1 + 1 >= capacity) return 0;
+            for (size_t n = 0; n < slashes; n++) out[(*at)++] = L'\\';
+            out[(*at)++] = argument[i];
+        }
+    }
+    if (*at + 1 >= capacity) return 0;
+    out[(*at)++] = L'"';
+    return 1;
+}
+
+/* A batch file is refused rather than run. `cmd.exe` applies its own quoting
+ * rules to what it is given, and they are not the ones quoted for above — an
+ * argument containing `&` or `|` would be read as a command separator. There
+ * is no safe caller-side escaping for that, so it is not offered. */
+static int skuld_is_batch(const char *program) {
+    size_t length = strlen(program);
+    if (length < 4) return 0;
+    const char *tail = program + length - 4;
+    return _stricmp(tail, ".bat") == 0 || _stricmp(tail, ".cmd") == 0;
+}
+
+int64_t sk_process_run(unsigned char *program, unsigned char *arguments, unsigned char *out,
+                       uint64_t capacity, int64_t *status) {
+    *status = -1;
+    if (skuld_is_batch((const char *)program)) return -1;
+
+    wchar_t *wide_program = skuld_widen((const char *)program);
+    if (wide_program == NULL) return -1;
+
+    /* The command line begins with the program itself, quoted like any other
+     * argument, because that is where the child expects to find `argv[0]`. */
+    size_t line_capacity = 32768;
+    wchar_t *line = (wchar_t *)malloc(line_capacity * sizeof(wchar_t));
+    if (line == NULL) {
+        free(wide_program);
+        return -1;
+    }
+    size_t at = 0;
+    int ok = skuld_quote(line, &at, line_capacity, wide_program);
+    for (unsigned char *argument = arguments; ok && *argument != 0;) {
+        size_t length = strlen((const char *)argument);
+        wchar_t *wide = skuld_widen((const char *)argument);
+        if (wide == NULL) {
+            ok = 0;
+            break;
+        }
+        if (at + 1 < line_capacity) {
+            line[at++] = L' ';
+            ok = skuld_quote(line, &at, line_capacity, wide);
+        } else {
+            ok = 0;
+        }
+        free(wide);
+        argument += length + 1;
+    }
+    if (!ok) {
+        free(line);
+        free(wide_program);
+        return -1;
+    }
+    line[at] = 0;
+
+    /* Only the write end is inherited, and only standard output is redirected:
+     * a program that complains still complains where a person can see it. */
+    SECURITY_ATTRIBUTES inheritable;
+    inheritable.nLength = sizeof inheritable;
+    inheritable.lpSecurityDescriptor = NULL;
+    inheritable.bInheritHandle = TRUE;
+    HANDLE readable = NULL;
+    HANDLE writable = NULL;
+    if (!CreatePipe(&readable, &writable, &inheritable, 0)) {
+        free(line);
+        free(wide_program);
+        return -1;
+    }
+    SetHandleInformation(readable, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW startup;
+    memset(&startup, 0, sizeof startup);
+    startup.cb = sizeof startup;
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdOutput = writable;
+    startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    PROCESS_INFORMATION started;
+    memset(&started, 0, sizeof started);
+
+    /* The program is looked up the way the system looks one up, which includes
+     * PATHEXT: `skuld run` finds `skuld.exe`. */
+    BOOL launched = CreateProcessW(NULL, line, NULL, NULL, TRUE, 0, NULL, NULL, &startup, &started);
+    free(line);
+    free(wide_program);
+    CloseHandle(writable);
+    if (!launched) {
+        CloseHandle(readable);
+        /* A program that is not there is 127, as a shell would report it,
+         * rather than an error the caller has to tell apart from a crash. */
+        *status = 127;
+        return 0;
+    }
+
+    uint64_t written = 0;
+    uint64_t total = 0;
+    for (;;) {
+        char block[4096];
+        DWORD got = 0;
+        if (!ReadFile(readable, block, sizeof block, &got, NULL) || got == 0) break;
+        total += got;
+        if (written < capacity) {
+            uint64_t room = capacity - written;
+            uint64_t take = got < room ? got : room;
+            memcpy(out + written, block, (size_t)take);
+            written += take;
+        }
+    }
+    CloseHandle(readable);
+    WaitForSingleObject(started.hProcess, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(started.hProcess, &code);
+    CloseHandle(started.hProcess);
+    CloseHandle(started.hThread);
+    *status = (int64_t)code;
+    return (int64_t)total;
+}
+
+#else
+
+int64_t sk_process_run(unsigned char *program, unsigned char *arguments, unsigned char *out,
+                       uint64_t capacity, int64_t *status) {
+    *status = -1;
+    int handles[2];
+    if (pipe(handles) != 0) return -1;
+
+    /* Everything the child needs is built before the fork: after it, only
+     * async-signal-safe work is allowed, and allocating is not. */
+    size_t count = 1;
+    for (unsigned char *argument = arguments; *argument != 0;) {
+        count++;
+        argument += strlen((const char *)argument) + 1;
+    }
+    char **argv = (char **)malloc((count + 1) * sizeof(char *));
+    if (argv == NULL) {
+        close(handles[0]);
+        close(handles[1]);
+        return -1;
+    }
+    argv[0] = (char *)program;
+    size_t index = 1;
+    for (unsigned char *argument = arguments; *argument != 0;) {
+        argv[index++] = (char *)argument;
+        argument += strlen((const char *)argument) + 1;
+    }
+    argv[index] = NULL;
+
+    pid_t child = fork();
+    if (child < 0) {
+        free(argv);
+        close(handles[0]);
+        close(handles[1]);
+        return -1;
+    }
+    if (child == 0) {
+        dup2(handles[1], 1);
+        close(handles[0]);
+        close(handles[1]);
+        execvp((const char *)program, argv);
+        /* `_exit` rather than `exit`: a failed start must not flush the
+         * buffers this process inherited a copy of. 127 is what a shell
+         * reports for a program that is not there. */
+        _exit(127);
+    }
+    free(argv);
+    close(handles[1]);
+
+    uint64_t written = 0;
+    uint64_t total = 0;
+    for (;;) {
+        char block[4096];
+        ssize_t got = read(handles[0], block, sizeof block);
+        if (got <= 0) break;
+        total += (uint64_t)got;
+        if (written < capacity) {
+            uint64_t room = capacity - written;
+            uint64_t take = (uint64_t)got < room ? (uint64_t)got : room;
+            memcpy(out + written, block, (size_t)take);
+            written += take;
+        }
+    }
+    close(handles[0]);
+    int raw = 0;
+    waitpid(child, &raw, 0);
+    /* `WIFSIGNALED`/`WEXITSTATUS` as the bit layout rather than the macros,
+     * so this reads the same as the status word it decodes. */
+    *status = (raw & 127) != 0 ? -1 : (int64_t)((raw >> 8) & 255);
+    return (int64_t)total;
+}
+
+#endif

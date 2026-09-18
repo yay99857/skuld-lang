@@ -491,7 +491,18 @@ behind it. The obligations above are checkable, and a persona is not.
   not — a generator, official metadata, or `comptime` — so the analogy does
   not carry. This is the layer `sk_errno`, `sk_error_message` and `sk_arg_*`
   already are, for the same reason: the foreign boundary cannot express
-  `errno`, a macro, or a pointer to a pointer. The C toolchain is **clang
+  `errno`, a macro, or a pointer to a pointer. `os.run` is there too, and it
+  had to be: POSIX splits a launch into `fork` and `execvp` — a copy of this
+  process that then becomes the other program — while Windows has no such
+  copy and `CreateProcess` starts the other program directly. Neither is
+  expressible in terms of the other. One promise narrows there and says so:
+  the arguments reach a Windows child as a single string that the *child*
+  splits, so they are quoted with the algorithm `CommandLineToArgvW`
+  documents, which round-trips for any child parsing its arguments the
+  ordinary way and cannot bind one that reads `GetCommandLineW` itself. A
+  `.bat` or `.cmd` is refused rather than run, since `cmd.exe` applies its
+  own rules to what it is handed and no caller-side quoting survives them.
+  The C toolchain is **clang
   targeting the MSVC ABI**, because `-fsanitize=address` works there and does
   not under mingw-w64, and the sanitizer suite is a guarantee worth keeping on
   both platforms. Leak detection is the exception and stays Linux-only:
