@@ -19,7 +19,14 @@ function activate(context) {
   const configured = vscode.workspace
     .getConfiguration("skuld")
     .get("server.path");
-  const command = locate(configured);
+  // The open folders too: someone working on the language itself has the
+  // server built in the checkout they are looking at, and the extension may
+  // have been copied rather than linked, in which case its own location says
+  // nothing about where the repository is.
+  const workspaces = (vscode.workspace.workspaceFolders ?? []).map(
+    (folder) => folder.uri.fsPath,
+  );
+  const command = locate(configured, { workspaces });
   if (command === undefined) {
     // Said once, with what to do about it. Highlighting still works, so the
     // extension is not broken — it is doing half of its job, and silence

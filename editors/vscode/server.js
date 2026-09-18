@@ -23,7 +23,6 @@ const path = require("node:path");
 function locate(configured, options) {
   const settings = options ?? {};
   const platform = settings.platform ?? process.platform;
-  const root = settings.root ?? path.join(__dirname, "..", "..");
   const exists = settings.exists ?? fs.existsSync;
   const installed = settings.installed ?? onPath;
 
@@ -34,10 +33,22 @@ function locate(configured, options) {
   if (installed(name, platform)) {
     return name;
   }
-  for (const profile of ["release", "debug"]) {
-    const built = path.join(root, "target", profile, name);
-    if (exists(built)) {
-      return built;
+  // Two checkouts to consider, and they are rarely the same one. The
+  // extension's own, which is the repository when the folder is linked and is
+  // `~/.vscode` when it was copied instead — a copy is what a machine without
+  // permission to make links ends up with, and the search has to survive it.
+  // And the open folder, which is the repository whenever someone is working
+  // on the language itself.
+  const roots = settings.roots ?? [
+    path.join(__dirname, "..", ".."),
+    ...(settings.workspaces ?? []),
+  ];
+  for (const root of roots) {
+    for (const profile of ["release", "debug"]) {
+      const built = path.join(root, "target", profile, name);
+      if (exists(built)) {
+        return built;
+      }
     }
   }
   return undefined;
