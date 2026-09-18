@@ -1,3 +1,17 @@
+# Line endings are LF in the working tree, on every platform, and that is a
+# correctness rule here rather than a preference. A `tests/pass/*.out` file is
+# compared to a program's stdout byte for byte, and `*.err` and `*.skuld` are
+# read the same way — by the golden suite, by the sanitizer suite, and by the
+# formatter's idempotency test. A checkout that rewrote them to CRLF would put
+# the wrong bytes on the expected side of every one of those comparisons, and
+# the failure would look like a runtime bug rather than a checkout artefact.
+#
+# Git for Windows sets `core.autocrlf=true` in its system configuration, so
+# without these lines that rewrite is the default, not the exception.
+#
+# Existing clones need `git add --renormalize .` once after this lands.
+* text=auto eol=lf
+
 # Skuld is not a language GitHub's Linguist knows, and an override naming one
 # it does not know is ignored — so `.skuld` and `.sk` files counted as nothing
 # at all, and the language bar of this repository described everything except

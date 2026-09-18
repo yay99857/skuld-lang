@@ -11,8 +11,16 @@ env:
 
 jobs:
   check:
-    name: Format, lint and test
-    runs-on: ubuntu-latest
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # A failure on one system must not hide the other's result.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        include:
+          - { os: ubuntu-latest, name: Linux }
+          - { os: windows-latest, name: Windows }
     steps:
       - uses: actions/checkout@v4
 
@@ -25,30 +33,48 @@ jobs:
 
       # `run` and `trap` fixtures compile generated C, so clang is required
       # rather than optional: a missing clang must fail the suite, not skip it.
+      # Both runner images ship one; this reports which, and fails here rather
+      # than inside a test if an image ever stops.
       - name: Report tool versions
         run: |
           rustc --version
           cargo --version
           clang --version
 
+      # Formatting is the same question on every system, so asking twice only
+      # buys a second way to fail.
       - name: Check formatting
+        if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all -- --check
 
+      # Linting is not: `cfg` decides what exists, so each system lints code
+      # the other never compiles. With `-D warnings` a constant used only by a
+      # gated test is an error, and that is worth catching on both.
       - name: Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Test
         run: cargo test --workspace
 
-      # The README tells readers these commands work; keep that honest. Two
+      # The README tells readers these commands work; keep that honest. Three
       # examples are not plain demonstrations, and the loop says which:
       # `*_tests.skuld` holds `test_` functions and no entrypoint, so it is
-      # `skuld test`'s to run, and `jsontool.skuld` is an application that
-      # exits 2 when handed no file to read. A `run:` block executes under
-      # `bash -e`, so either one ends the step and the job with it.
+      # `skuld test`'s to run; `jsontool.skuld` is an application that exits 2
+      # when handed no file to read; and `barmodule.skuld` reads `/proc` and
+      # runs `uname`, so it demonstrates reading a Linux machine's state and is
+      # not meant to be portable. A `run:` block executes under `bash -e`, so
+      # any of them ends the step and the job with it.
       - name: Run the documented examples
+        shell: bash
         run: |
           for example in examples/*.skuld; do
+            case "$example" in
+              */barmodule.skuld)
+                if [ "$RUNNER_OS" = "Windows" ]; then
+                  echo "== $example (skipped: reads /proc and runs uname)"
+                  continue
+                fi ;;
+            esac
             echo "== $example"
             case "$example" in
               *_tests.skuld)

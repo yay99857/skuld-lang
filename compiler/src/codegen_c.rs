@@ -644,11 +644,13 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
     if let Some(entry) = program.entry.filter(|_| !freestanding) {
         emitter.line("");
         // The arguments are taken here and nowhere else: a Skuld program reaches
-        // them through the runtime bridge, since following `argv` is a pointer
-        // read the foreign boundary does not do.
+        // them through the platform layer, since following `argv` is a pointer
+        // read the foreign boundary does not do. The same call is where the
+        // platform is put into the state the language assumes — on Windows,
+        // the standard streams in binary mode, so `\n` stays one byte.
         emitter.line("int main(int argc, char **argv) {");
         emitter.indent += 1;
-        emitter.line("skuld_arguments_init(argc, argv);");
+        emitter.line("skuld_start(argc, argv);");
         emitter.line(&format!("{}();", emitter.function_name(entry)));
         emitter.line("return fflush(stdout) == 0 ? 0 : 1;");
         emitter.indent -= 1;
@@ -3032,6 +3034,29 @@ _Noreturn static inline void skuld_fail(const char *message, size_t byte) {
 /// there is one source of truth for retain and release.
 const RUNTIME: &str = include_str!("../../runtime/strings.c");
 
+/// The platform layer, also real C, and separate from the memory runtime
+/// because the two answer different questions: `strings.c` is about what a
+/// value costs, this is about what the operating system is called. Keeping
+/// them apart is what lets a second operating system arrive without the
+/// memory runtime learning it exists.
+const PLATFORM: &str = include_str!("../../runtime/platform.c");
+
+/// The platform layer as its own translation unit, to be compiled beside the
+/// program rather than inside it.
+///
+/// It has to be separate, and the reason is a promise the language already
+/// makes: a program may declare any POSIX function the standard headers leave
+/// out, which is what `tests/pass/extern_c_ffi` demonstrates with `write`.
+/// This layer includes `<unistd.h>` and `<io.h>` so that its own flags and
+/// widths come from the system rather than from a number written down here —
+/// but those headers also declare `read`, `write`, `open` and `close`, and
+/// inlining them would turn every such user declaration into a conflicting
+/// prototype. Two translation units keep the checking on this side of the
+/// line and the promise on the other.
+pub fn platform_source() -> &'static str {
+    PLATFORM
+}
+
 /// What a freestanding program starts with: the three headers C guarantees a
 /// freestanding implementation provides, and a trap that faults instead of
 /// printing.
@@ -3228,6 +3253,9 @@ static inline uint32_t skuld_u_to_char(uint64_t v, size_t byte) {
 /// comparison and every `print`. A freestanding program has neither, and the
 /// checker has already refused the types that would reach these.
 const PRELUDE_HOSTED: &str = r#"
+/* Defined in the platform layer, which is compiled beside this file rather
+ * than inside it, so that the headers it needs stay out of the program's way. */
+void skuld_start(int argc, char **argv);
 static inline bool skuld_string_equal(skuld_string a, skuld_string b) {
     return a.len == b.len && memcmp(a.data, b.data, a.len) == 0;
 }

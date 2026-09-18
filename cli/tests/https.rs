@@ -264,6 +264,20 @@ func main() {{
 }
 
 fn skip() -> bool {
+    // TLS is deliberately outside M27, and the reason is not effort. Windows
+    // has no Unix trust store, so `SSL_CTX_set_default_verify_paths` — which
+    // `std/tls` calls to decide what to believe — finds nothing there, and a
+    // verified connection on a clean machine needs the CryptoAPI root store
+    // or a CA bundle shipped with the program. Choosing between those is a
+    // `std/tls` design with its own milestone, and doing it badly here would
+    // mean a program that appears to verify and does not.
+    //
+    // So these skip rather than fail: the library is unported, not broken,
+    // and the difference should be visible in the output.
+    if !cfg!(unix) {
+        eprintln!("skipping: TLS has no trust store on this system yet (M28)");
+        return true;
+    }
     if !clang_available() {
         eprintln!("skipping: clang is not on PATH");
         return true;

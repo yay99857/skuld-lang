@@ -43,6 +43,8 @@ options:
     -l<library>      link a library, e.g. -lm            (build and run)
     -L<directory>    add a library search directory      (build and run)
     --check          only check if formatting would change the file (fmt)
+    --platform       print the platform layer, which is compiled
+                     beside the program rather than inside it    (emit-c)
     --               read every later argument as a path, never a flag
     -h, --help       print this help
     -V, --version    print the version
@@ -110,6 +112,10 @@ struct Invocation {
     /// `--freestanding`: no runtime, no libc, no entry point, and an object
     /// file rather than an executable.
     freestanding: bool,
+    /// `--platform`: print the platform layer instead of the program. It is a
+    /// translation unit of its own rather than part of the program, so
+    /// emitting C by hand takes two commands, and this is the other one.
+    platform: bool,
     /// Everything after `--args`, handed to the program `run` executes.
     program_arguments: Vec<OsString>,
 }
@@ -131,6 +137,7 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
     let mut link_flags = Vec::new();
     let mut output: Option<PathBuf> = None;
     let mut check_only = false;
+    let mut platform = false;
     let mut freestanding = false;
     let mut flags_over = false;
     let mut pending_output = false;
@@ -165,6 +172,7 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
             }
             "--check" => check_only = true,
             "--freestanding" => freestanding = true,
+            "--platform" => platform = true,
             "-o" | "--output" => pending_output = true,
             _ if flag.starts_with("-o") => output = Some(PathBuf::from(&flag[2..])),
             _ if (flag.starts_with("-l") || flag.starts_with("-L")) && flag.len() > 2 => {
@@ -172,7 +180,7 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
             }
             _ => {
                 return Command::Misuse(format!(
-                    "unknown option `{flag}`\n{USAGE}\nonly `-o`, `-l<library>`, `-L<directory>`, `--check` and `--freestanding` are accepted"
+                    "unknown option `{flag}`\n{USAGE}\nonly `-o`, `-l<library>`, `-L<directory>`, `--check`, `--freestanding` and `--platform` are accepted"
                 ));
             }
         }
@@ -251,12 +259,24 @@ fn parse_arguments(arguments: &[OsString]) -> Command {
             "a freestanding build links nothing; it writes an object file for your own linker\n{USAGE}"
         ));
     }
+    if platform && action != Action::EmitC {
+        return Command::Misuse(format!(
+            "`--platform` is only meaningful for `emit-c`, which is the one command that hands over C\n{USAGE}"
+        ));
+    }
+    // A freestanding program has no platform layer: it has no runtime at all.
+    if platform && freestanding {
+        return Command::Misuse(format!(
+            "a freestanding program has no platform layer; it is given no runtime to need one\n{USAGE}"
+        ));
+    }
     Command::Invoke(Box::new(Invocation {
         action,
         file: PathBuf::from(file),
         link_flags,
         output,
         check_only,
+        platform,
         freestanding,
         program_arguments,
     }))
@@ -286,6 +306,13 @@ fn main() -> ExitCode {
         Command::Invoke(invocation) => *invocation,
     };
     let action = invocation.action;
+    // The platform layer is the same C for every program, so it is answered
+    // before anything is read or checked. It is separate from the program
+    // because the headers it needs declare `read`, `write` and `open`, which
+    // a program is free to declare for itself.
+    if invocation.platform {
+        return write_output(skuld_compiler::codegen_c::platform_source());
+    }
     let link_flags = invocation.link_flags;
     let entry = invocation.file;
     let text = match fs::read_to_string(&entry) {
@@ -662,11 +689,45 @@ mod tests {
             output: None,
             check_only: false,
             freestanding: false,
+            platform: false,
             program_arguments: Vec::new(),
         };
         assert_eq!(invocation(&["run", "program.skuld", "-lm"]), expected);
         assert_eq!(invocation(&["run", "-lm", "program.skuld"]), expected);
         assert_eq!(invocation(&["-lm", "run", "program.skuld"]), expected);
+    }
+
+    #[test]
+    fn the_platform_layer_is_emitted_by_the_command_that_hands_over_c() {
+        let expected = Invocation {
+            action: Action::EmitC,
+            file: PathBuf::from("program.skuld"),
+            link_flags: Vec::new(),
+            output: None,
+            check_only: false,
+            freestanding: false,
+            platform: true,
+            program_arguments: Vec::new(),
+        };
+        assert_eq!(
+            invocation(&["emit-c", "--platform", "program.skuld"]),
+            expected
+        );
+        // Every other command either compiles the layer itself or has no use
+        // for it, so asking there is a misuse rather than a silent no-op.
+        assert!(
+            misuse(&["run", "--platform", "program.skuld"])
+                .contains("only meaningful for `emit-c`")
+        );
+        assert!(
+            misuse(&["build", "--platform", "program.skuld"])
+                .contains("only meaningful for `emit-c`")
+        );
+        // A freestanding program is given no runtime, so there is no layer.
+        assert!(
+            misuse(&["emit-c", "--freestanding", "--platform", "kernel.skuld"])
+                .contains("no platform layer")
+        );
     }
 
     #[test]
@@ -678,6 +739,7 @@ mod tests {
             output: Some(PathBuf::from("kernel.o")),
             check_only: false,
             freestanding: true,
+            platform: false,
             program_arguments: Vec::new(),
         };
         assert_eq!(
@@ -700,6 +762,7 @@ mod tests {
             output: None,
             check_only: true,
             freestanding: false,
+            platform: false,
             program_arguments: Vec::new(),
         };
         assert_eq!(invocation(&["fmt", "--check", "program.skuld"]), expected);
@@ -712,6 +775,7 @@ mod tests {
             output: None,
             check_only: false,
             freestanding: false,
+            platform: false,
             program_arguments: Vec::new(),
         };
         assert_eq!(invocation(&["fmt", "program.skuld"]), uncheck);

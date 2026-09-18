@@ -193,6 +193,68 @@ fn invalid_source_never_reaches_clang() {
         }
     }
 }
+/// Where clang keeps the sanitizer runtime libraries, as far as can be told.
+///
+/// `-print-runtime-dir` names the per-target layout, and the LLVM builds
+/// shipped for Windows use the older one — the directory clang names is
+/// `lib/clang/20/lib/x86_64-pc-windows-msvc` and the libraries are in
+/// `lib/clang/20/lib/windows`. Both are offered and only the ones that exist
+/// are kept, since believing clang alone is how this went wrong once.
+fn runtime_dirs() -> Vec<PathBuf> {
+    let Ok(output) = Command::new("clang").arg("-print-runtime-dir").output() else {
+        return Vec::new();
+    };
+    let named = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let legacy = named.parent().map(|parent| parent.join("windows"));
+    [Some(named), legacy]
+        .into_iter()
+        .flatten()
+        .filter(|directory| directory.is_dir())
+        .collect()
+}
+
+/// What those directories hold, for a failure that would otherwise say
+/// nothing at all.
+fn runtime_report() -> String {
+    let found = runtime_dirs();
+    if found.is_empty() {
+        return "no directory clang named exists".into();
+    }
+    found
+        .iter()
+        .map(|directory| {
+            let listing = fs::read_dir(directory)
+                .map(|entries| {
+                    entries
+                        .filter_map(|entry| {
+                            Some(entry.ok()?.file_name().to_string_lossy().into_owned())
+                        })
+                        .filter(|name| name.contains("asan"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            format!("{} [{listing}]", directory.display())
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn sanitizer_path() -> String {
+    let existing = std::env::var("PATH").unwrap_or_default();
+    let separator = if cfg!(windows) { ";" } else { ":" };
+    let found = runtime_dirs();
+    if found.is_empty() {
+        return existing;
+    }
+    let prefix = found
+        .iter()
+        .map(|directory| directory.display().to_string())
+        .collect::<Vec<_>>()
+        .join(separator);
+    format!("{prefix}{separator}{existing}")
+}
+
 /// Build one program's generated C under the sanitizers and run it.
 /// Address and leak detection matter as soon as the runtime allocates: a leak
 /// or a double free must fail the suite, not pass quietly.
@@ -215,6 +277,22 @@ fn sanitized_c(emitted: &[u8], expected: &[u8]) {
     let c = fixture.dir.join("generated.c");
     let binary = fixture.dir.join("standalone");
     fs::write(&c, emitted).expect("C source");
+    // The platform layer is a translation unit of its own, so C emitted by
+    // hand is two files rather than one. Compiling both is what a consumer of
+    // `emit-c` actually does, and it is what keeps the layer's headers out of
+    // the program, where they would collide with what it declares itself.
+    let platform = fixture.dir.join("skuld_platform.c");
+    let emitted_platform = fixture
+        .command("emit-c")
+        .arg("--platform")
+        .output()
+        .expect("emit the platform layer");
+    assert!(
+        emitted_platform.status.success(),
+        "{}",
+        String::from_utf8_lossy(&emitted_platform.stderr)
+    );
+    fs::write(&platform, &emitted_platform.stdout).expect("platform source");
     let status = Command::new("clang")
         .args([
             "-std=c11",
@@ -225,6 +303,15 @@ fn sanitized_c(emitted: &[u8], expected: &[u8]) {
             "-fno-omit-frame-pointer",
         ])
         .arg(&c)
+        .arg(&platform)
+        // What the platform layer needs linked, which `skuld build` passes
+        // itself. A consumer compiling emitted C by hand passes them too, and
+        // the layer's own header comment says so.
+        .args(if cfg!(windows) {
+            &["-lws2_32", "-liphlpapi"][..]
+        } else {
+            &[][..]
+        })
         .arg("-o")
         .arg(&binary)
         .output()
@@ -234,14 +321,41 @@ fn sanitized_c(emitted: &[u8], expected: &[u8]) {
         "{}",
         String::from_utf8_lossy(&status.stderr)
     );
+    // Leak detection is a Linux guarantee and only a Linux one: LeakSanitizer
+    // has no Windows implementation, and asking for it there aborts the run
+    // before the program prints anything. Address and undefined-behaviour
+    // checking still apply on both, so what is lost is one of the three rather
+    // than the harness.
     let output = Command::new(binary)
-        .env("ASAN_OPTIONS", "detect_leaks=1")
+        // On Windows the address sanitizer is a DLL rather than something
+        // linked in, and a program built with it will not start unless
+        // `clang_rt.asan_dynamic-*.dll` is findable. Nothing is printed when
+        // it is missing: the loader fails before `main`, so the test would
+        // report an empty error. clang knows where its own runtime lives.
+        .env("PATH", sanitizer_path())
+        .env(
+            "ASAN_OPTIONS",
+            if cfg!(target_os = "linux") {
+                "detect_leaks=1"
+            } else {
+                "detect_leaks=0"
+            },
+        )
         .output()
         .expect("standalone program");
+    // A sanitized program that cannot start prints nothing at all, so the
+    // status and where its runtime was looked for are the only evidence
+    // there is. Reporting them beats an empty assertion message.
     assert!(
         output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
+        "sanitized program exited {:?}
+stderr: {}
+stdout: {}
+runtime dir: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout),
+        runtime_report()
     );
     assert_eq!(output.stdout, expected);
     assert!(
@@ -254,6 +368,29 @@ fn sanitized_c(emitted: &[u8], expected: &[u8]) {
 #[test]
 fn emitted_c_compiles_and_runs_independently() {
     sanitized(include_str!("../../examples/functions.skuld"), b"42\n");
+}
+
+/// Fixtures that only run on one kind of system, and why.
+///
+/// A fixture lands here when the program it holds names something the other
+/// system genuinely does not have, rather than something not ported yet. The
+/// shape follows `portability.rs`'s `TARGET_SPECIFIC`: an opt-out list with
+/// the reason written beside each entry, so that a fixture is never skipped
+/// quietly and the list can be read as a statement about the language.
+const POSIX_ONLY: &[&str] = &[
+    // Declares `pipe` and `close` to demonstrate `ptr()` over a fixed array.
+    // `pipe` is POSIX and has no Windows equivalent — `_pipe` takes three
+    // arguments and a different contract — so the fixture cannot link there.
+    "fixed_arrays",
+];
+
+/// Whether this fixture runs on the system the tests are running on.
+fn runs_here(source: &Path) -> bool {
+    if cfg!(unix) {
+        return true;
+    }
+    let stem = source.file_stem().unwrap_or_default().to_string_lossy();
+    !POSIX_ONLY.contains(&stem.as_ref())
 }
 
 #[test]
@@ -274,6 +411,9 @@ fn every_language_fixture_is_sanitizer_clean() {
     sources.sort();
     assert!(!sources.is_empty(), "no fixtures found");
     for source in sources {
+        if !runs_here(&source) {
+            continue;
+        }
         let expected = fs::read(source.with_extension("out")).expect("expected output");
         // Emitted from the fixture's own directory, so that a program made of
         // modules resolves its imports against the real tree.
@@ -376,6 +516,11 @@ fn build_rejects_invalid_source_without_writing_an_executable() {
 }
 
 #[test]
+// The collision this guards against needs the executable to be named exactly
+// like its source, which only happens where an executable carries no
+// extension. On Windows `build` writes `noextension.exe`, so the source is
+// never in danger and there is nothing here to refuse.
+#[cfg(unix)]
 fn build_refuses_to_overwrite_the_source() {
     // Without a `.skuld` extension the stem names the source itself.
     let fixture = Fixture::new("func main() {\n    print(1)\n}");

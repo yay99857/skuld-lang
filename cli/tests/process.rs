@@ -20,9 +20,14 @@ impl Scratch {
 
     /// Build a program and answer with the executable's path.
     fn build(&self, source: &str) -> std::path::PathBuf {
-        let program = self.directory.join("main.skuld");
+        self.build_named("main", source)
+    }
+
+    /// The same, where more than one program has to exist at once.
+    fn build_named(&self, name: &str, source: &str) -> std::path::PathBuf {
+        let program = self.directory.join(format!("{name}.skuld"));
         fs::write(&program, source).expect("program source");
-        let binary = self.directory.join("main");
+        let binary = self.directory.join(name);
         let output = Command::new(env!("CARGO_BIN_EXE_skuld"))
             .arg("build")
             .arg(&program)
@@ -156,33 +161,38 @@ fn everything_after_a_double_dash_reaches_the_program_unchanged() {
     );
 }
 
-/// Running another program and reading what it wrote. The programs used here
-/// are the ones every POSIX system has, and none of them is a shell: `run`
-/// does no quoting, splitting or expansion, which is what the last case
-/// checks.
-const RUNNER: &str = r#"
-import "std/os"
+/// Running another program and reading what it wrote.
+///
+/// The program it runs is the one this test compiled a moment ago, rather
+/// than something the system is assumed to provide. That is what makes the
+/// case portable: `echo` is an executable on one system and a `cmd` builtin
+/// on the other, and `false` exists on only one of them — but a Skuld
+/// program built here behaves the same on both, and prints its arguments
+/// back so the no-shell promise can be checked.
+const RUNNER: &str = r#"import "std/os"
 
 func main() {
-    let hello = os.run("echo", ["one", "two three"]) else problem {
+    let echoed = os.run("PROGRAM", ["one", "two three", "*"]) else problem {
         print(os.describe_run(problem))
         os.exit(1)
         return
     }
-    print("status ${hello.status}")
-    print("[${hello.text}]")
-    print("truncated ${hello.truncated}")
+    print("status ${echoed.status}")
+    print("[${echoed.text}]")
+    print("truncated ${echoed.truncated}")
 
     // A status other than zero comes back as itself rather than as a failure:
-    // a program that answers "no" has still run.
-    let refused = os.run("false", []) else problem {
+    // a program that answers "no" has still run. This one exits 3 when given
+    // nothing to say.
+    let refused = os.run("PROGRAM", []) else problem {
         print(os.describe_run(problem))
         os.exit(1)
         return
     }
-    print("false says ${refused.status}")
+    print("refused says ${refused.status}")
 
-    // A program that does not exist is the shell's 127, not a crash.
+    // A program that does not exist is 127, the way a shell reports it, on
+    // both systems.
     let missing = os.run("skuld-no-such-program", []) else problem {
         print(os.describe_run(problem))
         os.exit(1)
@@ -190,16 +200,8 @@ func main() {
     }
     print("missing says ${missing.status}")
 
-    // No shell means no expansion: the asterisk is a character, not a glob.
-    let literal = os.run("echo", ["*"]) else problem {
-        print(os.describe_run(problem))
-        os.exit(1)
-        return
-    }
-    print("[${literal.text}]")
-
-    if let home = os.environment("SKULD_TEST_VARIABLE") {
-        print("variable ${home}")
+    if let value = os.environment("SKULD_TEST_VARIABLE") {
+        print("variable ${value}")
     } else {
         print("variable missing")
     }
@@ -218,7 +220,14 @@ fn a_program_runs_another_and_reads_what_it_wrote() {
         return;
     }
     let scratch = Scratch::new("run");
-    let binary = scratch.build(RUNNER);
+    // The program being run, and then the program that runs it. The second
+    // names the first by path, so nothing here depends on what the system
+    // happens to have installed.
+    let echoed = scratch.build_named("echoed", PROGRAM);
+    // The path lands inside a Skuld string literal, where a backslash opens
+    // an escape and a Windows path is mostly backslashes.
+    let quoted = echoed.display().to_string().replace('\\', "\\\\");
+    let binary = scratch.build_named("runner", &RUNNER.replace("PROGRAM", &quoted));
     let output = Command::new(&binary)
         .env("SKULD_TEST_VARIABLE", "a value with spaces")
         .env_remove("SKULD_TEST_ABSENT")
@@ -230,8 +239,10 @@ fn a_program_runs_another_and_reads_what_it_wrote() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    // `two three` stays one argument and `*` stays an asterisk: there is no
+    // shell in between on either system.
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "status 0\n[one two three\n]\ntruncated false\nfalse says 1\nmissing says 127\n[*\n]\nvariable a value with spaces\nabsent is nothing\n"
+        "status 0\n[count 3\n[one]\n[two three]\n[*]\n]\ntruncated false\nrefused says 3\nmissing says 127\nvariable a value with spaces\nabsent is nothing\n"
     );
 }

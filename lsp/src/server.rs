@@ -1710,7 +1710,9 @@ impl ModuleLoader for OpenFirst<'_> {
                 continue;
             }
             let name = format!("{path}/{}", entry.file_name().to_string_lossy());
-            let key = file.to_string_lossy().into_owned();
+            // The map is keyed the way a URI spells a path; this one came from
+            // the filesystem, which on some platforms spells it differently.
+            let key = crate::text::document_key(&file.to_string_lossy());
             let text = match self.open.get(&key) {
                 Some(open) => open.clone(),
                 None => std::fs::read_to_string(&file)
@@ -1764,14 +1766,17 @@ fn file_path(document: &str, typed: &TypedProgram, file: FileId) -> Option<Strin
     if file.0 == 0 {
         return Some(document.to_string());
     }
-    Some(
-        Path::new(document)
+    // `document` came from a URI and separates with `/`; `join` separates the
+    // way the platform does. Left alone the two meet in the middle of one
+    // path, and the result compares equal to nothing — `file_in` would not
+    // find the file it just named.
+    Some(crate::text::document_key(
+        &Path::new(document)
             .parent()
             .unwrap_or(Path::new("."))
             .join(&loaded.name)
-            .to_string_lossy()
-            .into_owned(),
-    )
+            .to_string_lossy(),
+    ))
 }
 
 /// Which file of a program is the one at `path`, if it has it at all.

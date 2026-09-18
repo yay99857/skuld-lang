@@ -10,6 +10,12 @@
 //! It needs `clang` and a 32-bit libc (`glibc-devel.i686`, `gcc-multilib` or
 //! the distribution's equivalent); without them the test skips, the way the
 //! rest of the native suite does without clang.
+//!
+//! The whole file is Linux-only, and not as a concession: the target it names
+//! is i686-**linux**-gnu, so on another system there is nothing here to run
+//! rather than something that happens not to work. A second target for
+//! Windows would be a different file with its own evidence behind it.
+#![cfg(target_os = "linux")]
 use std::{
     env, fs,
     path::{Path, PathBuf},

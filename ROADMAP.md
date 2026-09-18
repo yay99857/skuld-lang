@@ -1275,11 +1275,63 @@ recursive enum boxing, escaping closures, interface inheritance/downcasts,
 self-hosting have no implementation authorization. The systems sequence adds
 its own candidates that it deliberately does not include: inline assembly,
 atomics and a memory model, threads with an atomic reference count, interrupt
-and naked calling conventions, linker sections, and a target that is not
-Linux. Each is a milestone of its own, after M26 has shown what a program
-without a runtime actually needs. Revisit them after the CLI
-application and measurements expose a need, rather than adding them to every
-milestone. No package registry, GC or borrow checker is proposed.
+and naked calling conventions, and linker sections. Each is a milestone of its
+own, after M26 has shown what a program without a runtime actually needs.
+Revisit them after the CLI application and measurements expose a need, rather
+than adding them to every milestone. No package registry, GC or borrow checker
+is proposed.
+
+One of them has since been selected: **a target that is not Linux**, as M27
+below. It was taken out of this list by an explicit decision rather than by
+drift, and the reasoning that put it here still holds for the rest.
+
+## M27 — Windows as a supported target — Implemented
+
+The bar is the one Rust sets for a Tier 1 target, chosen because it is a
+measurement rather than a claim: **CI builds Windows and every test passes
+there**. Skuld already compiles and runs there by accident — a linkage fix
+stopped the linker being handed code `main` cannot reach, and what was already
+present became reachable — but accident is not support, and several platform
+constants in `std/` are not absent so much as wrong.
+
+- **Where platform differences live: `runtime/platform.c`, not per-platform
+  Skuld files.** The backend emits every foreign declaration as its own
+  prototype, so there is no header to disagree with and a wrong declaration
+  links and mis-calls in silence. A definition compiled by clang against the
+  real `<fcntl.h>` and `<winsock2.h>` turns the same mistake into a compile
+  error on the Windows leg of CI. Go, Rust and Zig all declare the system in
+  their own language, but each has something this project does not — a
+  generator, vendor metadata, or `comptime` — so their example does not carry
+  here. This extends the layer `sk_errno`, `sk_error_message` and `sk_arg_*`
+  already are, and for the same stated reason: the foreign boundary refuses
+  `errno`, a macro, and a pointer to a pointer.
+- **The toolchain is clang targeting the MSVC ABI.** `-fsanitize=address` works
+  there and does not under mingw-w64, and the sanitizer suite covers every
+  `tests/pass` fixture; a port that silently drops it is not Tier 1. Leak
+  detection is the one accepted exception and stays Linux-only, because
+  LeakSanitizer has no Windows implementation.
+- **No `--target` enters the compiler.** The platform layer emits identical C
+  everywhere, so nothing in the compiler branches. Cross-compilation is a
+  separate decision with its own CI shape.
+- **TLS is not in M27.** Windows has no Unix trust store, so HTTPS on a clean
+  machine needs the CryptoAPI root store or a bundled CA set. That is a
+  `std/tls` design with its own milestone; welding it here would delay both.
+- Freestanding stays Linux: it is about a specific target, and a PE or UEFI
+  freestanding mode is its own milestone. So does the i686 portability suite,
+  which is i686-**linux**-gnu by definition.
+- **Closing marker: met.** The whole suite passes on `windows-latest` — 493
+  tests, including the compiler's 221, the language server's 191, and every
+  `tests/pass` fixture under the address and undefined-behaviour sanitizers.
+  A program built there reads and writes files, reads its arguments and its
+  environment, opens a socket, resolves a name through the machine's own
+  configured server, and fetches a document over HTTP. The three bugs the
+  port found that were never about Windows are worth remembering, since each
+  was invisible from the only system being tested: the working tree was never
+  pinned to LF, so a Windows checkout corrupted the expected side of every
+  golden comparison; the language server spoke a `file:` URI no client sends
+  and keyed open documents two different ways, so an unsaved module was read
+  from disk instead; and the platform layer, inlined, leaked its headers into
+  the program and broke every user's right to declare a POSIX function.
 
 ## Open design questions
 

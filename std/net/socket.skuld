@@ -9,43 +9,35 @@
 // either a read primitive at the boundary or a resolver written in Skuld over
 // UDP; both are decisions of their own.
 //
-// A failure does say why: `std/os` reads `errno` through the runtime, since
-// `errno` is a macro over a function returning a pointer and cannot cross the
-// boundary itself.
+// A failure does say why, and it asks the platform layer rather than `errno`:
+// a socket error is reported somewhere else entirely on Windows, in a range
+// of numbers of its own, so reading `errno` after a socket call would answer
+// about whatever happened before it.
 //
-// The address is a declared type rather than hand-packed bytes: `SockaddrIn`
-// below is an `extern struct`, so the C compiler lays it out and `size_of`
-// answers how long it is on the target being built for. `htons` and `htonl`
-// put the port and the address in network order, which is what makes this
-// file say nothing about the machine's own byte order.
+// The address crosses as its four octets and the layer builds the structure
+// the system wants from them. That is deliberate: `struct sockaddr_in` agrees
+// between the two systems by luck rather than by rule, and the arithmetic
+// that puts a port in network order is the kind of thing that is wrong in
+// exactly one place and silent about it.
 
 import "std/os"
 
-pub const AF_INET: i32 = 2
-
-pub const SOCK_STREAM: i32 = 1
-
-pub const IPPROTO_IP: i32 = 0
-
-pub const MSG_NOSIGNAL: i32 = 16384
-
-// `struct sockaddr_in`: the family in host order, the port and the address in
-// network order, then the padding that makes it as long as `struct sockaddr`.
-pub extern struct SockaddrIn {
-    family: u16
-    port: u16
-    address: u32
-    zero: [8]u8
-}
-
+// Connecting, reading and writing go through the platform layer, and the
+// numbers that used to be written here went with them. Nearly every
+// difference between two systems lives in this one area: a socket is an `int`
+// on POSIX and a pointer-wide `SOCKET` elsewhere, failure is -1 on one and
+// all-bits-set on the other, writing to a closed connection needs a flag on
+// one and rejects it on the other, and a receive timeout is a `struct
+// timeval` here and a count of milliseconds there. None of that can be
+// written down once and be right twice, so it is not written down here at
+// all: a handle is an `int`, a timeout is milliseconds, an address is four
+// octets, and the layer knows what those mean where it is compiled.
 unsafe extern "C" {
-    func socket(domain: i32, kind: i32, protocol: i32) -> i32
-    func connect(handle: i32, address: *void, length: u32) -> i32
-    func htons(value: u16) -> u16
-    func htonl(value: u32) -> u32
-    func send(handle: i32, buffer: *u8, length: u64, flags: i32) -> i64
-    func recv(handle: i32, buffer: *u8, length: u64, flags: i32) -> i64
-    func close(handle: i32) -> i32
+    func sk_socket_connect(octets: *u8, port: i64, datagram: i64) -> i64
+    func sk_socket_send(handle: i64, buffer: *u8, length: u64) -> i64
+    func sk_socket_recv(handle: i64, buffer: *u8, capacity: u64) -> i64
+    func sk_socket_close(handle: i64) -> void
+    func sk_socket_error() -> i64
 }
 
 pub enum NetError {
@@ -119,9 +111,9 @@ pub class Connection {
         var sent = 0
         while sent < bytes.len() {
             let rest = bytes[sent..bytes.len()]
-            let wrote = send(i32(this.handle), ptr(rest), u64(rest.len()), MSG_NOSIGNAL)
+            let wrote = sk_socket_send(i64(this.handle), ptr(rest), u64(rest.len()))
             if wrote <= 0 {
-                return Err(NetError.SendFailed(os.failure(this.peer)))
+                return Err(NetError.SendFailed(failure(this.peer)))
             }
             sent = sent + int(wrote)
         }
@@ -137,9 +129,9 @@ pub class Connection {
             buffer.push(0)
             index = index + 1
         }
-        let got = recv(i32(this.handle), ptr(buffer), u64(limit), 0)
+        let got = sk_socket_recv(i64(this.handle), ptr(buffer), u64(limit))
         if got < 0 {
-            return Err(NetError.ReceiveFailed(os.failure(this.peer)))
+            return Err(NetError.ReceiveFailed(failure(this.peer)))
         }
         return Ok(buffer[0..int(got)])
     }
@@ -150,9 +142,9 @@ pub class Connection {
         var all: []u8 = []
         var buffer: [4096]u8 = [0; 4096]
         loop {
-            let got = recv(i32(this.handle), ptr(buffer), u64(4096), 0)
+            let got = sk_socket_recv(i64(this.handle), ptr(buffer), u64(4096))
             if got < 0 {
-                return Err(NetError.ReceiveFailed(os.failure(this.peer)))
+                return Err(NetError.ReceiveFailed(failure(this.peer)))
             }
             if got == 0 {
                 break
@@ -165,7 +157,7 @@ pub class Connection {
     }
 
     close() {
-        let ignored = close(i32(this.handle))
+        sk_socket_close(i64(this.handle))
     }
 }
 
@@ -180,23 +172,20 @@ pub func open(address: string, port: int) -> Result<Connection, NetError> {
         return Err(NetError.Port(port))
     }
     let octets = parse_address(address)?
-    let handle = socket(AF_INET, SOCK_STREAM, IPPROTO_IP)
+    let handle = sk_socket_connect(ptr(octets), i64(port), 0)
     if handle < 0 {
-        return Err(NetError.OpenFailed(os.failure("a socket")))
+        return Err(NetError.ConnectFailed(failure("${address}:${port}")))
     }
-    // The handle belongs to this function until the connection is built from
-    // it. A `defer` says that once, instead of the close being repeated on
-    // every way out that is added later.
-    var handed_over = false
-    defer {
-        if !handed_over {
-            let ignored = close(i32(handle))
-        }
-    }
-    let sockaddr = SockaddrIn { family: u16(AF_INET), port: htons(u16(port)), address: htonl(packed_address(octets)), zero: [0; 8] }
-    if connect(i32(handle), ptr(sockaddr), u32(size_of(SockaddrIn))) < 0 {
-        return Err(NetError.ConnectFailed(os.failure("${address}:${port}")))
-    }
-    handed_over = true
     return Ok(new Connection(handle: int(handle), peer: "${address}:${port}"))
+}
+
+// A socket failure the way `std/os` shapes every other one, but read from
+// where the system actually left it: Winsock never touches `errno`, and its
+// numbers are a range of their own, so asking `os.last_error()` after a
+// socket call answers about something else entirely.
+//
+// Exported because `std/dns` speaks to sockets too, and a resolver reporting
+// a connection failure has the same question to ask.
+pub func failure(subject: string) -> os.OsFailure {
+    return new os.OsFailure(subject: subject, code: int(sk_socket_error()))
 }

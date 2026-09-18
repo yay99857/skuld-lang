@@ -14,37 +14,17 @@
 import "std/cstring"
 import "std/os"
 
+// Opening a file goes through the platform layer rather than naming `open`
+// here, and the flags went with it. They were written down as the Linux
+// numbers — `O_CREAT` is 64 there and 256 on Windows, and `O_BINARY` exists
+// on one system and not the other — so a declaration here has to pick one
+// system and be quietly wrong on the rest. The layer asks the header of the
+// system being built for, which is the only place those numbers are known.
 unsafe extern "C" {
-    func open(path: *u8, flags: i32, mode: u32) -> i32
-    func read(handle: i32, buffer: *u8, count: u64) -> i64
-    func write(handle: i32, buffer: *u8, count: u64) -> i64
-    func close(handle: i32) -> i32
-}
-
-// The flags this module uses, spelled out rather than imported from a header
-// the compiler never reads. They are the Linux values.
-pub const O_RDONLY: i32 = 0
-
-pub const O_WRONLY: i32 = 1
-
-pub const O_CREAT: i32 = 64
-
-pub const O_TRUNC: i32 = 512
-
-pub const MODE_0644: u32 = 0o644
-
-func read_only() -> i32 {
-    return O_RDONLY
-}
-
-// O_WRONLY | O_CREAT | O_TRUNC
-func write_only() -> i32 {
-    return O_WRONLY | O_CREAT | O_TRUNC
-}
-
-// 0644, as an octal constant would be written in C.
-func user_readable() -> u32 {
-    return MODE_0644
+    func sk_file_open(path: *u8, writing: i64) -> i64
+    func sk_file_read(handle: i64, buffer: *u8, capacity: u64) -> i64
+    func sk_file_write(handle: i64, buffer: *u8, count: u64) -> i64
+    func sk_file_close(handle: i64) -> void
 }
 
 pub enum FsError {
@@ -70,14 +50,14 @@ pub func describe(error: FsError) -> string {
 
 // Every byte of a file, read in blocks until the end.
 pub func read_file(path: string) -> Result<[]u8, FsError> {
-    let handle = open_path(path, read_only(), 0)?
+    let handle = open_path(path, 0)?
     var all: []u8 = []
     var block: [4096]u8 = [0; 4096]
     loop {
-        let got = read(i32(handle), ptr(block), u64(4096))
+        let got = sk_file_read(i64(handle), ptr(block), u64(4096))
         if got < 0 {
             let problem = os.failure("`${path}`")
-            let ignored = close(i32(handle))
+            sk_file_close(i64(handle))
             return Err(FsError.ReadFailed(problem))
         }
         if got == 0 {
@@ -87,7 +67,7 @@ pub func read_file(path: string) -> Result<[]u8, FsError> {
             all.push(byte)
         }
     }
-    let ignored = close(i32(handle))
+    sk_file_close(i64(handle))
     return Ok(all)
 }
 
@@ -102,19 +82,19 @@ pub func read_text(path: string) -> Result<string, FsError> {
 
 // Replace a file with these bytes, creating it if it is not there.
 pub func write_file(path: string, bytes: []u8) -> Result<int, FsError> {
-    let handle = open_path(path, write_only(), user_readable())?
+    let handle = open_path(path, 1)?
     var written = 0
     while written < bytes.len() {
         let rest = bytes[written..bytes.len()]
-        let wrote = write(i32(handle), ptr(rest), u64(rest.len()))
+        let wrote = sk_file_write(i64(handle), ptr(rest), u64(rest.len()))
         if wrote <= 0 {
             let problem = os.failure("`${path}`")
-            let ignored = close(i32(handle))
+            sk_file_close(i64(handle))
             return Err(FsError.WriteFailed(problem))
         }
         written += int(wrote)
     }
-    let ignored = close(i32(handle))
+    sk_file_close(i64(handle))
     return Ok(written)
 }
 
@@ -123,12 +103,13 @@ pub func write_text(path: string, text: string) -> Result<int, FsError> {
 }
 
 // Opening is the one step both halves share, and the only one that needs the
-// path as a C string.
-func open_path(path: string, flags: i32, mode: u32) -> Result<int, FsError> {
+// path as a C string. `writing` is 1 to replace the file and 0 to read it;
+// which flags that means is the platform layer's to decide.
+func open_path(path: string, writing: i64) -> Result<int, FsError> {
     let terminated = cstring.to_c(path) else problem {
         return Err(FsError.Path(path))
     }
-    let handle = open(ptr(terminated), flags, mode)
+    let handle = sk_file_open(ptr(terminated), writing)
     if handle < 0 {
         return Err(FsError.OpenFailed(os.failure("`${path}`")))
     }

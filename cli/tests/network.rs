@@ -203,9 +203,16 @@ func main() {{
         .output()
         .expect("run skuld");
     assert!(output.status.success(), "a refusal is a value, not a crash");
-    // The failure now says why, not just which step failed.
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        format!("could not connect to 127.0.0.1:{port}: Connection refused\n")
+    // The failure says why, and the why is the system's own words: POSIX
+    // answers "Connection refused" and Windows "No connection could be made
+    // because the target machine actively refused it". Asserting one system's
+    // sentence would be asserting that the other is wrong, so what is checked
+    // is that the peer is named and a reason was appended at all.
+    let printed = String::from_utf8_lossy(&output.stdout);
+    let prefix = format!("could not connect to 127.0.0.1:{port}: ");
+    assert!(printed.starts_with(&prefix), "{printed}");
+    assert!(
+        printed.len() > prefix.len() + 1,
+        "the failure named no reason: {printed}"
     );
 }

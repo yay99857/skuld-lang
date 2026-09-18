@@ -17,32 +17,18 @@ unsafe extern "C" {
     func sk_error_message(code: i64, out: *u8, capacity: u64) -> i64
     func sk_flush() -> void
     func sk_exit(code: i64) -> void
-    // Running a program is POSIX rather than C, and none of these is declared
-    // by a header the generated program includes, so each one is asserted
-    // here like any other foreign signature. The declarations match the ones
-    // `std/fs` makes of the same functions, byte for byte: two modules of one
-    // program declare one C function, and C accepts a repeated declaration
-    // only when it says the same thing.
-    func open(path: *u8, flags: i32, mode: u32) -> i32
-    func read(handle: i32, buffer: *u8, count: u64) -> i64
-    func close(handle: i32) -> i32
-    func pipe(handles: *i32) -> i32
-    func fork() -> i32
-    func dup2(from: i32, to: i32) -> i32
-    func execvp(file: *u8, argv: *void) -> i32
-    func waitpid(child: i32, status: *i32, options: i32) -> i32
-    func _exit(code: i32) -> void
-    func malloc(size: usize) -> *void
-    func free(block: *void) -> void
+    func sk_environment(name: *u8, out: *u8, capacity: u64) -> i64
+    // Running another program is the platform layer's, and it had to be: the
+    // two systems disagree about the shape of the idea, not about a name.
+    // POSIX splits a launch into `fork` and `execvp`, a copy of this process
+    // that then becomes the other program. Windows has no such copy —
+    // `CreateProcess` starts the other program directly. Neither can be
+    // written in terms of the other, so neither is written here.
+    func sk_process_run(program: *u8, arguments: *u8, out: *u8, capacity: u64, status: *i64) -> i64
+    func sk_file_read(handle: i64, buffer: *u8, capacity: u64) -> i64
+    func sk_file_close(handle: i64) -> void
 }
 
-// One slot of the `argv` array, which is the one shape the foreign boundary
-// refuses to describe: a pointer to a pointer. Declaring the cell is how this
-// module asks the C compiler how wide one is, on whatever target it is being
-// built for.
-extern struct PointerCell {
-    value: *void
-}
 
 pub enum OsError {
     // An argument that is not UTF-8. Skuld strings are UTF-8, and a command
@@ -248,93 +234,52 @@ pub func describe_run(error: RunError) -> string {
 // asking for a machine's state should not be a place where quoting can go
 // wrong.
 pub func run(program: string, arguments: []string) -> Result<Output, RunError> {
-    // The C strings have to outlive the array of addresses built from them,
-    // so they are all made first and none is touched afterwards.
-    var owned: [][]u8 = []
     let program_bytes = cstring.to_c(program) else problem {
         return Err(RunError.NotPassable(program))
     }
-    owned.push(program_bytes)
+    // The arguments cross as one buffer of NUL-separated strings ending in an
+    // empty one. An array of addresses is the shape the foreign boundary
+    // refuses, and it is also the shape only one of the two systems wants:
+    // Windows takes a single command line and lets the child split it.
+    var packed: []u8 = []
     for argument in arguments {
         let bytes = cstring.to_c(argument) else problem {
             return Err(RunError.NotPassable(argument))
         }
-        owned.push(bytes)
-    }
-    var handles: [2]i32 = [0, 0]
-    if pipe(ptr(handles)) != 0 {
-        return Err(RunError.Failed(failure("a pipe")))
-    }
-    let cell = size_of(PointerCell)
-    let argv = malloc(cell * usize(owned.len() + 1))
-    unsafe {
-        let slots: *usize = ptr_from(addr(argv))
-        var index = 0
-        while index < owned.len() {
-            store(offset(slots, index), addr(ptr(owned[index])))
-            index += 1
+        for byte in bytes {
+            packed.push(byte)
         }
-        // The array ends in a null address, which is how `execvp` knows where
-        // the arguments stop.
-        store(offset(slots, owned.len()), usize(0))
     }
-    let child = fork()
-    if child < 0 {
-        free(argv)
-        let ignored_read = close(handles[0])
-        let ignored_write = close(handles[1])
+    packed.push(0)
+
+    var collected: []u8 = []
+    var index = 0
+    while index < CAPTURE_LIMIT {
+        collected.push(0)
+        index += 1
+    }
+    // The status comes back through a pointer to a local, which is the one
+    // place this function needs `unsafe`: a pointer can always write, so the
+    // language asks for the block rather than inferring that this one does not.
+    var status: i64 = 0
+    var total: i64 = 0
+    unsafe {
+        total = sk_process_run(ptr(program_bytes), ptr(packed), ptr(collected), u64(CAPTURE_LIMIT), ptr(status))
+    }
+    if total < 0 {
         return Err(RunError.Failed(failure(program)))
     }
-    if child == 0 {
-        // The child: its standard output becomes the pipe, and then it is
-        // replaced by the program. `_exit` rather than `exit`, so a failed
-        // start does not flush this program's buffers a second time.
-        let ignored_out = dup2(handles[1], 1)
-        let ignored_read = close(handles[0])
-        let ignored_write = close(handles[1])
-        let ignored_exec = execvp(ptr(owned[0]), argv)
-        _exit(127)
+    // More than fitted was read and dropped, so the child never blocked on a
+    // pipe nobody was draining.
+    let truncated = total > i64(CAPTURE_LIMIT)
+    var kept = int(total)
+    if truncated {
+        kept = CAPTURE_LIMIT
     }
-    free(argv)
-    let ignored_write = close(handles[1])
-    var collected: []u8 = []
-    var buffer: [4096]u8 = [0; 4096]
-    var truncated = false
-    loop {
-        let got = read(handles[0], ptr(buffer), u64(4096))
-        if got <= 0 {
-            break
-        }
-        var index = 0
-        while i64(index) < got {
-            // Reading continues past the limit and the rest is dropped: a
-            // child whose pipe nobody drains stops rather than finishes.
-            if collected.len() < CAPTURE_LIMIT {
-                collected.push(buffer[index])
-            } else {
-                truncated = true
-            }
-            index += 1
-        }
-    }
-    let ignored_read = close(handles[0])
-    var status: i32 = 0
-    unsafe {
-        let ignored_wait = waitpid(child, ptr(status), 0)
-    }
-    let text = bytes_to_string(collected) else invalid {
+    let text = bytes_to_string(collected[0..kept]) else invalid {
         return Err(RunError.NotText(program))
     }
-    return Ok(new Output(status: exit_status(int(status)), text: text, truncated: truncated))
-}
-
-// The status `waitpid` leaves behind, as the number the program exited with.
-// A program killed by a signal did not exit, and says so with -1.
-func exit_status(raw: int) -> int {
-    if (raw & 127) != 0 {
-        return -1
-    }
-    return (raw >> 8) & 255
+    return Ok(new Output(status: int(status), text: text, truncated: truncated))
 }
 
 // The value of an environment variable, or nothing when it is unset.
@@ -344,50 +289,18 @@ func exit_status(raw: int) -> int {
 // is a Unicode scalar and not a byte. The file is the same information, and
 // reading it needs nothing the boundary refuses.
 pub func environment(name: string) -> Option<string> {
-    let path = cstring.to_c("/proc/self/environ") else problem {
+    let wanted = cstring.to_c(name) else problem {
         return null
     }
-    let handle = open(ptr(path), 0, 0)
-    if handle < 0 {
-        return null
-    }
-    var bytes: []u8 = []
     var buffer: [4096]u8 = [0; 4096]
-    loop {
-        let got = read(handle, ptr(buffer), u64(4096))
-        if got <= 0 {
-            break
-        }
-        var index = 0
-        while i64(index) < got {
-            bytes.push(buffer[index])
-            index += 1
-        }
+    let got = sk_environment(ptr(wanted), ptr(buffer), u64(4096))
+    if got < 0 {
+        return null
     }
-    let ignored = close(handle)
-    // The file is `NAME=value` entries separated by NUL bytes.
-    var start = 0
-    var index = 0
-    while index <= bytes.len() {
-        if index == bytes.len() || bytes[index] == 0 {
-            if index > start {
-                let entry = bytes[start..index]
-                let text = bytes_to_string(entry) else invalid {
-                    start = index + 1
-                    index += 1
-                    continue
-                }
-                if let at = index_of_byte(text, 61) {
-                    if text[0..at] == name {
-                        return text[at + 1..text.len()]
-                    }
-                }
-            }
-            start = index + 1
-        }
-        index += 1
+    let text = bytes_to_string(buffer[0..int(got)]) else invalid {
+        return null
     }
-    return null
+    return text
 }
 
 func index_of_byte(text: string, byte: u8) -> Option<int> {
