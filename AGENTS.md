@@ -220,6 +220,10 @@ behind it. The obligations above are checkable, and a persona is not.
   string error side is provisional and awaits a standard library to own a real
   error type.
 - Enums are user-declared sum types with unit and payload variants: `enum Name { Variant, Variant(Type) }`.
+  A variant marked `indirect` (M32) keeps its payload in a counted, shared box
+  so the enum may contain itself; the marker is written, never inferred, since
+  inferring it would silently make an enum managed. It is a contextual word
+  like `packed`, refused without a payload or where nothing recurses.
   Where an enum is expected, a variant is written `.Pending` or `.Active(v)`
   without naming it (M32); patterns name it bare, `Pending:`, and never dotted.
   Pattern matching uses `match value { Pattern: stmt, Pattern: { ... }, _: ... }` with exhaustiveness

@@ -121,6 +121,9 @@ pub struct VariantDecl {
     /// left out continues from the variant before it.
     pub value: Option<Expr>,
     pub span: Span,
+    /// `indirect Cons(Node)`: the payload lives behind a counted box, which
+    /// is what lets it contain the enum again.
+    pub indirect: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

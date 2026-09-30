@@ -662,6 +662,18 @@ impl Parser<'_> {
         self.expect(&TokenKind::LeftBrace, "`{` to begin the enum body")?;
         let mut variants = Vec::new();
         while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
+            // `indirect` is an ordinary identifier read as a marker only when
+            // another name follows it on the same line, the way `packed` and
+            // `align` are read on an `extern struct`: no attribute syntax
+            // enters the language, and a variant may still be called
+            // `indirect`.
+            let marker_start = self.current().span.start;
+            let indirect = matches!(&self.current().kind, TokenKind::Identifier(word) if word == "indirect")
+                && matches!(self.peek_kind(1), TokenKind::Identifier(_))
+                && !self.newline_after(0);
+            if indirect {
+                self.bump();
+            }
             let variant_name = self.name("a variant name")?;
             let payload = if self.take(&TokenKind::LeftParen).is_some() {
                 let ty = self.type_ref()?;
@@ -674,12 +686,13 @@ impl Parser<'_> {
                 Some(_) => Some(self.nested(Parser::expression)?),
                 None => None,
             };
-            let span = Span::new(variant_name.span.start, self.previous_end());
+            let span = Span::new(marker_start, self.previous_end());
             variants.push(VariantDecl {
                 name: variant_name,
                 payload,
                 value,
                 span,
+                indirect,
             });
             let has_comma = self.take(&TokenKind::Comma).is_some();
             if !has_comma

@@ -1675,7 +1675,7 @@ match", which was wrong about its own code in the worse direction.
   fails and prints the repeated number. A real name still resolves through the
   machine's own nameserver.
 
-## M32 — One spelling for each thing, and the shorthands that earned one — In progress
+## M32 — One spelling for each thing, and the shorthands that earned one — Implemented
 
 The user read the website's documentation with an agent, asked what it would
 change about the language, and then asked for all of it. The proposal had six
@@ -1792,9 +1792,21 @@ from the `swift-book` repository), the Zig reference on enum literals, Rust's
   variant is refused under `--freestanding`, and so is one whose payload does
   not actually reach the enum again. The reviewer corrected one claim: boxing
   adds no *new* cycle, but a class inside a payload can still close one, as
-  it always could. **A known limit:** releasing a very deep list recurses on
-  the C stack, as a deep chain of classes already does. It is documented,
-  not solved. Recursive *structs* remain refused.
+  it always could. **A known limit, measured:** releasing a chain recurses on
+  the C stack once per link, as a chain of classes already does. On Windows'
+  default stack a 10,000-link list is released and a 100,000-link one
+  overflows, and a 100,000-long chain of classes overflows the same way, so
+  boxes added no new limit. It is documented, not solved; an iterative
+  release would fix both and is its own change. Recursive *structs* remain
+  refused.
+- **Closing marker: met.** Each item landed as its own commit with its
+  fixtures, and the whole suite passes on Windows with clang, including the
+  address and undefined-behaviour sanitizers over every `tests/pass` fixture:
+  `ordering`, `map_err`, `implicit_variants`, `var_methods` and
+  `indirect_enums` are new, and the arrays benchmark prints the same checksum
+  as before the comparator change. The Linux run, the i686 portability suite
+  and LeakSanitizer were not run from this machine, and CI is where they are
+  checked.
 
 ## Open design questions
 

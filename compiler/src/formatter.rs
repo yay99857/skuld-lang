@@ -477,6 +477,9 @@ impl<'a> Formatter<'a> {
         self.indent();
         for variant in &en.variants {
             self.emit_comments_before(variant.span.start);
+            if variant.indirect {
+                self.push("indirect ");
+            }
             self.push(&variant.name.text);
             if let Some(payload) = &variant.payload {
                 self.push("(");

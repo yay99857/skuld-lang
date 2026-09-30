@@ -983,7 +983,24 @@ enum Status {
 - Variants may be unit variants (`Status.Pending`) or payload variants (`Status.Active(42)`).
 - Variant constructors live in the enum's member namespace: `Status.Pending` constructs a unit variant, and `Status.Active(value)` constructs a payload variant.
 - Variants can be separated by commas, newlines, or both. Duplicate variant names are rejected (`E0202`).
-- Direct recursive enum variants by value (such as `enum List { Cons(List), Nil }`) are rejected as value cycles (`E0103`); indirect recursion via arrays (`[]List`) or classes is supported.
+- An enum may contain itself only through a variant marked `indirect`
+  (M32): `enum List { Nil, indirect Cons(Cell) }` where `Cell` holds a `List`.
+  The payload of an `indirect` variant is stored in a reference-counted box
+  rather than inline, and a copy of the enum shares the box, which cannot be
+  told apart from copying it because a payload is never assigned in place.
+  Construction, `.Variant` and matching are written exactly as for any
+  variant. `indirect` is read as a marker only before another name on the same
+  line, like `packed` and `align`, so it is not a keyword. Without it, an enum
+  that contains itself by value is still `E0103`, now with a help line naming
+  `indirect`. The marker is also `E0103` on a variant without a payload, or on
+  one whose payload never leads back to the enum, since nothing needs that box.
+  An enum with an `indirect` variant is managed: it is refused under
+  `--freestanding` and in a `static`. The box is written, not inferred, so
+  adding a variant never silently changes whether an enum is managed.
+  Recursion through an array (`[]List`) or a class needs no marker, as before.
+  Releasing a chain recurses once per link, the way a chain of classes already
+  does; measured on Windows' default stack, a list of 10,000 links is released
+  and one of 100,000 overflows it, for boxes and classes alike.
 - Enums have value semantics. Managed payloads (strings, arrays, classes) are automatically reference-counted with retain and release in C codegen.
 - Enum values implicitly wrap into `Option<Enum>` where expected.
 - Where the context expects an enum, a variant may be written `.Pending` or

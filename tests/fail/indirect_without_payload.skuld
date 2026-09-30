@@ -1,0 +1,5 @@
+enum Shape {
+    indirect Dot
+}
+
+func main() {}

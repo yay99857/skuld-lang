@@ -12,7 +12,7 @@ use crate::{
         int_type_fits, int_type_min, sign_extend,
     },
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The entry file, which is the only file of the root module today.
 const ROOT_FILE: FileId = FileId(0);
@@ -536,9 +536,50 @@ pub(crate) fn type_check(
                 name: variant.name.text.clone(),
                 payload,
                 value,
+                indirect: variant.indirect,
             });
         }
         checker.enums[index].variants = variants;
+    }
+    // `indirect` is written, never inferred, so a marker nothing needs is an
+    // error rather than a silent allocation per value.
+    for (index, &(site_file, site_position)) in enum_sites.iter().enumerate() {
+        let declaration = &program.files[site_file.0].program.enums[site_position];
+        checker.file = site_file;
+        for variant in declaration
+            .variants
+            .iter()
+            .filter(|variant| variant.indirect)
+        {
+            let Some(info) = checker.enums[index]
+                .variants
+                .iter()
+                .find(|info| info.name == variant.name.text)
+            else {
+                continue;
+            };
+            let message = match info.payload {
+                None => Some(format!(
+                    "`indirect` boxes a payload, and `{}` has none",
+                    variant.name.text
+                )),
+                Some(Type::Error) => None,
+                Some(payload) => (!checker.reaches_enum(
+                    payload,
+                    EnumId(index),
+                    &mut BTreeSet::new(),
+                ))
+                .then(|| {
+                    format!(
+                        "`{}` is marked `indirect`, but its payload never contains `{}` again, so nothing needs the box",
+                        variant.name.text, declaration.name.text
+                    )
+                }),
+            };
+            if let Some(message) = message {
+                checker.error(DiagnosticCode::InvalidValueType, variant.name.span, message);
+            }
+        }
     }
     for (index, &(site_file, site_position)) in enum_sites.iter().enumerate() {
         if checker.enum_contains_by_value(
@@ -556,6 +597,11 @@ pub(crate) fn type_check(
                     declaration.name.text
                 ),
             );
+            if let Some(last) = checker.diagnostics.last_mut() {
+                last.diagnostic.help = Some(
+                    "mark the variant that leads back to it `indirect`, which stores that payload in a counted box".into(),
+                );
+            }
         }
     }
     // Method signatures come after fields so a method can use any field type,
@@ -2773,11 +2819,19 @@ impl Checker<'_> {
                 self.needs_runtime(self.results[id.0].ok)
                     || self.needs_runtime(self.results[id.0].err)
             }
-            Type::Enum(id) => self.enums[id.0].variants.iter().any(|variant| {
-                variant
-                    .payload
-                    .is_some_and(|payload| self.needs_runtime(payload))
-            }),
+            // A box is an allocation, and the check comes first because the
+            // payload behind one may lead straight back to this enum.
+            Type::Enum(id) => {
+                self.enums[id.0]
+                    .variants
+                    .iter()
+                    .any(|variant| variant.indirect)
+                    || self.enums[id.0].variants.iter().any(|variant| {
+                        variant
+                            .payload
+                            .is_some_and(|payload| self.needs_runtime(payload))
+                    })
+            }
             _ => false,
         }
     }
@@ -4714,16 +4768,19 @@ impl Checker<'_> {
         })
     }
     fn enum_contains_struct_by_value(&self, from: EnumId, target: StructId) -> bool {
+        // An `indirect` payload is behind a box, which is exactly the
+        // indirection a value type otherwise lacks.
         self.enums[from.0].variants.iter().any(|v| {
-            v.payload.is_some_and(|payload| {
-                self.inline_payloads(payload)
-                    .into_iter()
-                    .any(|ty| match ty {
-                        Type::Struct(id) if !self.structs[id.0].reference => id == target,
-                        Type::Enum(id) => self.enum_contains_struct_by_value(id, target),
-                        _ => false,
-                    })
-            })
+            !v.indirect
+                && v.payload.is_some_and(|payload| {
+                    self.inline_payloads(payload)
+                        .into_iter()
+                        .any(|ty| match ty {
+                            Type::Struct(id) if !self.structs[id.0].reference => id == target,
+                            Type::Enum(id) => self.enum_contains_struct_by_value(id, target),
+                            _ => false,
+                        })
+                })
         })
     }
     fn enum_contains_by_value(&self, from: EnumId, target: EnumId, seen: &mut Vec<bool>) -> bool {
@@ -4732,20 +4789,54 @@ impl Checker<'_> {
         }
         seen[from.0] = true;
         self.enums[from.0].variants.iter().any(|v| {
-            v.payload.is_some_and(|payload| {
-                self.inline_payloads(payload)
-                    .into_iter()
-                    .any(|ty| match ty {
-                        Type::Enum(id) => {
-                            id == target || self.enum_contains_by_value(id, target, seen)
-                        }
-                        Type::Struct(id) if !self.structs[id.0].reference => {
-                            self.struct_contains_enum_by_value(id, target)
-                        }
-                        _ => false,
-                    })
-            })
+            !v.indirect
+                && v.payload.is_some_and(|payload| {
+                    self.inline_payloads(payload)
+                        .into_iter()
+                        .any(|ty| match ty {
+                            Type::Enum(id) => {
+                                id == target || self.enum_contains_by_value(id, target, seen)
+                            }
+                            Type::Struct(id) if !self.structs[id.0].reference => {
+                                self.struct_contains_enum_by_value(id, target)
+                            }
+                            _ => false,
+                        })
+                })
         })
+    }
+    /// Whether a payload leads back to `target` along anything a value holds
+    /// inline — fields, Options, Results, fixed arrays and other enums,
+    /// boxed or not. An `indirect` variant that never does has no reason for
+    /// its box.
+    fn reaches_enum(&self, ty: Type, target: EnumId, seen: &mut BTreeSet<Type>) -> bool {
+        if !seen.insert(ty) {
+            return false;
+        }
+        match ty {
+            Type::Enum(id) => {
+                id == target
+                    || self.enums[id.0]
+                        .variants
+                        .iter()
+                        .filter_map(|variant| variant.payload)
+                        .any(|payload| self.reaches_enum(payload, target, seen))
+            }
+            Type::Struct(id) if !self.structs[id.0].reference => self.structs[id.0]
+                .fields
+                .iter()
+                .any(|field| self.reaches_enum(field.ty, target, seen)),
+            Type::Option(id) => self.reaches_enum(self.options[id.0].element, target, seen),
+            Type::Result(id) => {
+                let info = self.results[id.0];
+                self.reaches_enum(info.ok, target, seen)
+                    || self.reaches_enum(info.err, target, seen)
+            }
+            Type::FixedArray(id) => {
+                self.reaches_enum(self.fixed_arrays[id.0].element, target, seen)
+            }
+            _ => false,
+        }
     }
     fn struct_contains_enum_by_value(&self, from: StructId, target: EnumId) -> bool {
         self.structs[from.0].fields.iter().any(|field| {
@@ -6199,6 +6290,7 @@ fn ordering_enum() -> EnumInfo {
         name: name.into(),
         payload: None,
         value,
+        indirect: false,
     };
     EnumInfo {
         name: "Ordering".into(),
@@ -6227,11 +6319,13 @@ fn result_as_enum(info: ResultInfo) -> EnumInfo {
                 name: "Ok".into(),
                 payload: Some(info.ok),
                 value: ResultInfo::OK as i128,
+                indirect: false,
             },
             VariantInfo {
                 name: "Err".into(),
                 payload: Some(info.err),
                 value: ResultInfo::ERR as i128,
+                indirect: false,
             },
         ],
     }

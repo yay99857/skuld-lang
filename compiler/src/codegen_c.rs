@@ -70,6 +70,29 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
             emitter.line(&format!("typedef struct skuld_s{index} skuld_s{index};"));
         }
     }
+    // An `indirect` variant's box is reached through a pointer too, which is
+    // what lets its payload hold the enum that holds the box.
+    let boxes: Vec<(usize, usize, Type)> = program
+        .enums
+        .iter()
+        .enumerate()
+        .flat_map(|(enum_index, info)| {
+            info.variants
+                .iter()
+                .enumerate()
+                .filter(|(_, variant)| variant.indirect)
+                .filter_map(move |(variant_index, variant)| {
+                    variant
+                        .payload
+                        .map(|payload| (enum_index, variant_index, payload))
+                })
+        })
+        .collect();
+    for (enum_index, variant_index, _) in &boxes {
+        emitter.line(&format!(
+            "typedef struct skuld_b{enum_index}_{variant_index} skuld_b{enum_index}_{variant_index};"
+        ));
+    }
     // Inline structs, enums, fixed arrays and Options must be complete before embedding them.
     let types: Vec<_> = (0..program.structs.len())
         .map(|i| Type::Struct(crate::types::StructId(i)))
@@ -107,7 +130,7 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
                 Type::Enum(id) => program.enums[id.0]
                     .variants
                     .iter()
-                    .all(|v| v.payload.is_none_or(complete)),
+                    .all(|v| v.indirect || v.payload.is_none_or(complete)),
                 _ => unreachable!(),
             };
             if ready {
@@ -163,7 +186,12 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
                     emitter.line("union {");
                     emitter.indent += 1;
                     for (v_index, variant) in declaration.variants.iter().enumerate() {
-                        if let Some(payload_ty) = variant.payload {
+                        if variant.indirect && variant.payload.is_some() {
+                            emitter.line(&format!(
+                                "skuld_b{}_{v_index} *v{v_index}; /* indirect {} */",
+                                id.0, variant.name
+                            ));
+                        } else if let Some(payload_ty) = variant.payload {
                             emitter.line(&format!(
                                 "{} v{v_index}; /* {} */",
                                 emitter.c_type(payload_ty),
@@ -240,6 +268,13 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
         } else {
             emitter.line(&format!("}} skuld_s{index};"));
         }
+    }
+    // Every payload type is complete by now, so each box can hold its own.
+    for (enum_index, variant_index, payload) in &boxes {
+        emitter.line(&format!(
+            "struct skuld_b{enum_index}_{variant_index} {{ skuld_object header; {} value; }};",
+            emitter.c_type(*payload)
+        ));
     }
     // Module-level storage. It is emitted after the types it may be shaped by
     // and before any function that reads it, and it is `static` in the C sense
@@ -491,8 +526,31 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
             "static inline void {prefix}_assign({name} *slot, {name} value);"
         ));
     }
+    for (enum_index, variant_index, _) in &boxes {
+        emitter.line(&format!(
+            "static void skuld_b{enum_index}_{variant_index}_destroy(skuld_object *object);"
+        ));
+    }
     for ty in managed {
         emitter.aggregate_helpers(ty);
+    }
+    // A box's destructor releases the payload it holds. It is written after
+    // every helper, since that payload may be the struct whose helpers
+    // release the enum that owns the box. Releasing a very long chain this
+    // way recurses once per link, as a long chain of classes already does.
+    for (enum_index, variant_index, payload) in &boxes {
+        let name = format!("skuld_b{enum_index}_{variant_index}");
+        emitter.line(&format!(
+            "static void {name}_destroy(skuld_object *object) {{"
+        ));
+        emitter.indent += 1;
+        emitter.line(&format!("{name} *box = ({name} *)object;"));
+        emitter.line("(void)box;");
+        if let Some(release) = emitter.release_function(*payload) {
+            emitter.line(&format!("{release}(&box->value);"));
+        }
+        emitter.indent -= 1;
+        emitter.line("}");
     }
     if !program.structs.is_empty() {
         emitter.line("");
@@ -861,9 +919,20 @@ impl<'a> Emitter<'a> {
             .variants
             .iter()
             .enumerate()
-            .filter_map(|(i, v)| v.payload.filter(|ty| self.managed(*ty)).map(|ty| (i, ty)))
+            .filter_map(|(i, v)| {
+                v.payload
+                    .filter(|ty| v.indirect || self.managed(*ty))
+                    .map(|ty| (i, ty))
+            })
             .collect();
-        self.tagged_helpers(format!("skuld_e{}", id.0), &managed_variants);
+        let boxed: Vec<usize> = self.enums[id.0]
+            .variants
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.indirect)
+            .map(|(i, _)| i)
+            .collect();
+        self.tagged_helpers(format!("skuld_e{}", id.0), &managed_variants, &boxed);
     }
     fn result_helpers(&mut self, id: crate::types::ResultId) {
         let info = self.results[id.0];
@@ -874,11 +943,16 @@ impl<'a> Emitter<'a> {
         .into_iter()
         .filter(|(_, ty)| self.managed(*ty))
         .collect();
-        self.tagged_helpers(format!("skuld_r{}", id.0), &managed_variants);
+        self.tagged_helpers(format!("skuld_r{}", id.0), &managed_variants, &[]);
     }
     /// Retain, release and assign for an inline tag-plus-payload value. Enums
     /// and `Result` share one layout, so they share one implementation.
-    fn tagged_helpers(&mut self, name: String, managed_variants: &[(usize, Type)]) {
+    fn tagged_helpers(
+        &mut self,
+        name: String,
+        managed_variants: &[(usize, Type)],
+        boxed: &[usize],
+    ) {
         self.line(&format!(
             "static inline {name} {name}_retain({name} value) {{"
         ));
@@ -889,8 +963,16 @@ impl<'a> Emitter<'a> {
             for &(index, payload) in managed_variants {
                 self.line(&format!("case {index}:"));
                 self.indent += 1;
-                let retained = self.retained(payload, &format!("value.payload.v{index}"));
-                self.line(&format!("value.payload.v{index} = {retained};"));
+                // A box is shared, not copied: its payload is never assigned
+                // in place, so sharing it cannot be told apart from a copy.
+                if boxed.contains(&index) {
+                    self.line(&format!(
+                        "skuld_object_retain(&value.payload.v{index}->header);"
+                    ));
+                } else {
+                    let retained = self.retained(payload, &format!("value.payload.v{index}"));
+                    self.line(&format!("value.payload.v{index} = {retained};"));
+                }
                 self.line("break;");
                 self.indent -= 1;
             }
@@ -910,10 +992,16 @@ impl<'a> Emitter<'a> {
             self.line("switch (slot->tag) {");
             self.indent += 1;
             for &(index, payload) in managed_variants {
-                let release_fn = self.release_function(payload).unwrap();
                 self.line(&format!("case {index}:"));
                 self.indent += 1;
-                self.line(&format!("{release_fn}(&slot->payload.v{index});"));
+                if boxed.contains(&index) {
+                    self.line(&format!(
+                        "skuld_object_release(&slot->payload.v{index}->header);"
+                    ));
+                } else {
+                    let release_fn = self.release_function(payload).unwrap();
+                    self.line(&format!("{release_fn}(&slot->payload.v{index});"));
+                }
                 self.line("break;");
                 self.indent -= 1;
             }
@@ -1407,10 +1495,15 @@ impl<'a> Emitter<'a> {
             Type::Result(id) => {
                 self.managed(self.results[id.0].ok) || self.managed(self.results[id.0].err)
             }
-            Type::Enum(id) => self.enums[id.0]
-                .variants
-                .iter()
-                .any(|v| v.payload.is_some_and(|p| self.managed(p))),
+            // A box is counted, and the check comes first because the payload
+            // behind one may lead straight back to this enum.
+            Type::Enum(id) => {
+                self.enums[id.0].variants.iter().any(|v| v.indirect)
+                    || self.enums[id.0]
+                        .variants
+                        .iter()
+                        .any(|v| v.payload.is_some_and(|p| self.managed(p)))
+            }
             // A class always owns a reference; a struct owns one only if a
             // field does.
             Type::Struct(id) => {
@@ -1879,6 +1972,15 @@ impl<'a> Emitter<'a> {
                         }
                         _ => unreachable!("checked match"),
                     };
+                    // A boxed payload is read through the box it lives in.
+                    let boxed: Vec<bool> = match value.ty {
+                        Type::Enum(id) => self.enums[id.0]
+                            .variants
+                            .iter()
+                            .map(|variant| variant.indirect)
+                            .collect(),
+                        _ => vec![false; payloads.len()],
+                    };
                     let target = self.expression(value);
                     let mut first = true;
                     for arm in arms {
@@ -1905,7 +2007,10 @@ impl<'a> Emitter<'a> {
                                         binding_id.0,
                                         self.retained(
                                             payload_ty,
-                                            &format!("{target}.payload.v{variant_index}")
+                                            &format!(
+                                                "{target}.payload.v{variant_index}{}",
+                                                if boxed[*variant_index] { "->value" } else { "" }
+                                            )
                                         )
                                     ));
                                     self.line(&format!("(void)skuld_v{};", binding_id.0));
@@ -2698,7 +2803,31 @@ impl<'a> Emitter<'a> {
                 payload,
             } => {
                 let c_ty = self.c_type(expr.ty);
-                let value = if let Some(payload_expr) = payload {
+                let indirect = match expr.ty {
+                    Type::Enum(id) => self.enums[id.0].variants[*variant_index].indirect,
+                    _ => false,
+                };
+                let value = if let (Some(payload_expr), true, Type::Enum(id)) =
+                    (payload, indirect, expr.ty)
+                {
+                    // The payload moves into a box of its own, counted from one.
+                    let rendered = self.expression(payload_expr);
+                    let retained = self.retained(payload_expr.ty, &rendered);
+                    let name = format!("skuld_b{}_{variant_index}", id.0);
+                    let slot = format!("skuld_t{}", self.next_temp);
+                    self.next_temp += 1;
+                    self.line(&format!(
+                        "{name} *{slot} = skuld_allocate(sizeof({name}), 0, 0, {});",
+                        expr.span.start
+                    ));
+                    self.line(&format!(
+                        "skuld_object_init(&{slot}->header, {name}_destroy);"
+                    ));
+                    self.line(&format!("{slot}->value = {retained};"));
+                    format!(
+                        "({c_ty}){{.tag = {variant_index}, .payload = {{.v{variant_index} = {slot}}}}}"
+                    )
+                } else if let Some(payload_expr) = payload {
                     let rendered = self.expression(payload_expr);
                     let retained = self.retained(payload_expr.ty, &rendered);
                     format!(
