@@ -121,6 +121,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
                     return_type: typed.signatures[&id].return_type,
                     body: block(&method.body, cx),
                     span: method.span,
+                    by_reference: method.mutating.then_some(this),
                 });
             }
         }
@@ -145,6 +146,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
                     return_type: typed.signatures[&id].return_type,
                     body: block(&function.body, cx),
                     span: function.span,
+                    by_reference: None,
                 });
             }
         }
@@ -464,6 +466,17 @@ fn strip_groups(mut expr: &ast::Expr) -> &ast::Expr {
 }
 fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
     let kind = match &source.kind {
+        ast::ExprKind::ImplicitVariant(name) => {
+            let Some(Type::Enum(enum_id)) = cx.ty(source.span) else {
+                unreachable!("internal compiler bug: unchecked implicit variant")
+            };
+            h::ExprKind::EnumVariant {
+                variant_index: cx.typed.enums[enum_id.0]
+                    .find_variant(&name.text)
+                    .expect("checked variant"),
+                payload: None,
+            }
+        }
         ast::ExprKind::Lambda(lambda) => {
             let Some(Type::Function(ty)) = cx.ty(source.span) else {
                 unreachable!("internal compiler bug: unchecked function value")
@@ -747,6 +760,23 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
             value: Box::new(expression(value, cx)),
         },
         ast::ExprKind::Call { callee, arguments } => {
+            if let ast::ExprKind::ImplicitVariant(name) = &strip_groups(callee).kind {
+                let Some(Type::Enum(enum_id)) = cx.ty(source.span) else {
+                    unreachable!("internal compiler bug: unchecked implicit variant")
+                };
+                let variant_index = cx.typed.enums[enum_id.0]
+                    .find_variant(&name.text)
+                    .expect("checked enum variant");
+                let payload = Some(Box::new(expression(&arguments[0], cx)));
+                return wrap_expression(
+                    h::ExprKind::EnumVariant {
+                        variant_index,
+                        payload,
+                    },
+                    source,
+                    cx,
+                );
+            }
             if let ast::ExprKind::Member { object, member } = &strip_groups(callee).kind {
                 if let Some(enum_id) = cx.enum_prefix(object) {
                     let variant_index = cx.typed.enums[enum_id.0]
@@ -827,8 +857,22 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     (Some(Type::Weak(_)), "alive") => {
                         Some(h::ExprKind::WeakAlive(Box::new(expression(object, cx))))
                     }
-                    (Some(Type::Weak(_)), "get") => {
-                        Some(h::ExprKind::WeakGet(Box::new(expression(object, cx))))
+                    (Some(Type::Int(_) | Type::Char | Type::Bool | Type::String), "compare")
+                    | (Some(Type::Float), "total_compare") => Some(h::ExprKind::Compare(
+                        Box::new(expression(object, cx)),
+                        Box::new(expression(&arguments[0], cx)),
+                    )),
+                    (Some(Type::Result(_)), "map_err") => Some(h::ExprKind::ResultMapErr {
+                        value: Box::new(expression(object, cx)),
+                        function: Box::new(expression(&arguments[0], cx)),
+                    }),
+                    // `Ordering` is the only enum with a `then`: nobody else
+                    // can declare that name.
+                    (Some(Type::Enum(id)), "then") if cx.typed.enums[id.0].name == "Ordering" => {
+                        Some(h::ExprKind::OrderingThen(
+                            Box::new(expression(object, cx)),
+                            Box::new(expression(&arguments[0], cx)),
+                        ))
                     }
                     _ => None,
                 };
@@ -884,8 +928,18 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     .find(|method| method.name == member.text)
                     .expect("internal compiler bug: checked call to a missing method");
                 // The receiver is an ordinary leading argument, copied like any
-                // other value-typed argument.
-                let mut values = vec![expression(object, cx)];
+                // other value-typed argument — except for a `var` method,
+                // which is handed the storage itself.
+                let receiver = if method.mutating {
+                    h::Expr {
+                        kind: h::ExprKind::Receiver(place(object, cx)),
+                        ty: cx.ty(object.span).expect("checked receiver"),
+                        span: object.span,
+                    }
+                } else {
+                    expression(object, cx)
+                };
+                let mut values = vec![receiver];
                 values.extend(arguments.iter().map(|e| expression(e, cx)));
                 return h::Expr {
                     kind: h::ExprKind::Call {

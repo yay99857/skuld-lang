@@ -12,7 +12,7 @@ use crate::{
         int_type_fits, int_type_min, sign_extend,
     },
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The entry file, which is the only file of the root module today.
 const ROOT_FILE: FileId = FileId(0);
@@ -217,6 +217,8 @@ pub(crate) fn type_check(
         place_writes: 0,
         layout_queries: BTreeMap::new(),
         unsafe_depth: 0,
+        ordering: EnumId(0),
+        lambda_parameters: None,
     };
     // Where each type was declared, aligned with the ids handed out below, so
     // that a later pass finds its syntax without searching for it.
@@ -237,6 +239,14 @@ pub(crate) fn type_check(
             });
             enum_sites.push((FileId(index), position));
         }
+    }
+    // `Ordering` comes after every declared enum, so the ids above still
+    // line up with `enum_sites`. The name is reserved, so inserting it into
+    // each module's namespace cannot hide anything a program declared.
+    checker.ordering = EnumId(checker.enums.len());
+    checker.enums.push(ordering_enum());
+    for types in &mut checker.module_types {
+        types.enums.insert("Ordering".into(), checker.ordering);
     }
     // Interface names come first so that a field, a parameter or another
     // interface's signature may mention one before it is filled in.
@@ -526,9 +536,50 @@ pub(crate) fn type_check(
                 name: variant.name.text.clone(),
                 payload,
                 value,
+                indirect: variant.indirect,
             });
         }
         checker.enums[index].variants = variants;
+    }
+    // `indirect` is written, never inferred, so a marker nothing needs is an
+    // error rather than a silent allocation per value.
+    for (index, &(site_file, site_position)) in enum_sites.iter().enumerate() {
+        let declaration = &program.files[site_file.0].program.enums[site_position];
+        checker.file = site_file;
+        for variant in declaration
+            .variants
+            .iter()
+            .filter(|variant| variant.indirect)
+        {
+            let Some(info) = checker.enums[index]
+                .variants
+                .iter()
+                .find(|info| info.name == variant.name.text)
+            else {
+                continue;
+            };
+            let message = match info.payload {
+                None => Some(format!(
+                    "`indirect` boxes a payload, and `{}` has none",
+                    variant.name.text
+                )),
+                Some(Type::Error) => None,
+                Some(payload) => (!checker.reaches_enum(
+                    payload,
+                    EnumId(index),
+                    &mut BTreeSet::new(),
+                ))
+                .then(|| {
+                    format!(
+                        "`{}` is marked `indirect`, but its payload never contains `{}` again, so nothing needs the box",
+                        variant.name.text, declaration.name.text
+                    )
+                }),
+            };
+            if let Some(message) = message {
+                checker.error(DiagnosticCode::InvalidValueType, variant.name.span, message);
+            }
+        }
     }
     for (index, &(site_file, site_position)) in enum_sites.iter().enumerate() {
         if checker.enum_contains_by_value(
@@ -546,6 +597,11 @@ pub(crate) fn type_check(
                     declaration.name.text
                 ),
             );
+            if let Some(last) = checker.diagnostics.last_mut() {
+                last.diagnostic.help = Some(
+                    "mark the variant that leads back to it `indirect`, which stores that payload in a counted box".into(),
+                );
+            }
         }
     }
     // Method signatures come after fields so a method can use any field type,
@@ -615,9 +671,23 @@ pub(crate) fn type_check(
                 .copied()
                 .expect("internal compiler bug: method body has no receiver symbol");
             checker.symbol_types[this.0] = receiver;
+            // A class's `this` is already a reference to the one object, so a
+            // method may change it without saying so, and `var` would claim
+            // a difference that is not there.
+            if method.mutating && checker.structs[index].reference {
+                checker.error(
+                    DiagnosticCode::UnsupportedFeature,
+                    method.name.span,
+                    format!(
+                        "`var` marks a struct method that changes `this`; `{}` is a class, whose methods already change the object they are called on",
+                        declaration.name.text
+                    ),
+                );
+            }
             methods.push(MethodInfo {
                 name: method.name.text.clone(),
                 id,
+                mutating: method.mutating,
             });
         }
         checker.structs[index].methods = methods;
@@ -996,6 +1066,15 @@ struct Checker<'a> {
     /// builtins read and write memory the compiler cannot vouch for, so they
     /// are refused wherever this is zero.
     unsafe_depth: usize,
+    /// The builtin `Ordering` a comparison answers. It is an ordinary
+    /// numbered enum in every respect except where it is declared: nowhere,
+    /// and in every module's namespace at once.
+    ordering: EnumId,
+    /// Parameter types for the lambda about to be checked when its result
+    /// type is not known, which is `map_err`'s case: the error type is, the
+    /// type it maps to is whatever the lambda answers. Taken by that lambda
+    /// alone, so a lambda nested inside it does not see it.
+    lambda_parameters: Option<Vec<Type>>,
 }
 
 /// One module's type namespace, which is separate from its value scope: a
@@ -1042,6 +1121,9 @@ pub struct MethodInfo {
     pub name: String,
     /// Methods are ordinary functions with an implicit leading receiver.
     pub id: SymbolId,
+    /// A `var` method, whose receiver is passed as the address of the
+    /// caller's storage rather than as a copy.
+    pub mutating: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1201,7 +1283,7 @@ impl Checker<'_> {
     /// Record a type in the current module's namespace. Types live apart from
     /// value names, so a struct and a function may still share a spelling.
     fn declare_type(&mut self, name: &Name, entry: TypeEntry) {
-        if matches!(name.text.as_str(), "Option" | "Result") {
+        if matches!(name.text.as_str(), "Option" | "Result" | "Ordering") {
             self.error(
                 DiagnosticCode::DuplicateDeclaration,
                 name.span,
@@ -1770,6 +1852,16 @@ impl Checker<'_> {
                 self.type_name(found)
             ),
         );
+        // A comparator written the way it had to be before M32 lands here,
+        // and the replacement is one method away.
+        if expected == Type::Enum(self.ordering)
+            && found.int_type().is_some()
+            && let Some(last) = self.diagnostics.last_mut()
+        {
+            last.diagnostic.help = Some(
+                "a comparison answers an `Ordering`: write `a.compare(b)` rather than `a - b`, which traps when the difference overflows".into(),
+            );
+        }
         false
     }
     fn block(&mut self, block: &Block) -> bool {
@@ -2308,10 +2400,11 @@ impl Checker<'_> {
             }
         }
     }
-    /// `(a: int, b: int): int { ... }`. A parameter type may be omitted when
+    /// `(a: int, b: int) -> int { ... }`. A parameter type may be omitted when
     /// the expected type supplies it, which is the same local inference a
     /// `let` already performs.
     fn lambda(&mut self, lambda: &Lambda, expected: Option<Type>) -> Type {
+        let hint = self.lambda_parameters.take();
         let signature = match expected {
             Some(Type::Function(id)) => Some(self.function_signatures[id.0].clone()),
             _ => None,
@@ -2335,6 +2428,9 @@ impl Checker<'_> {
                 (Some(reference), _) => self.type_ref(reference, false),
                 (None, Some(signature)) if index < signature.parameters.len() => {
                     signature.parameters[index]
+                }
+                (None, None) if hint.as_ref().is_some_and(|hint| index < hint.len()) => {
+                    hint.as_ref().map_or(Type::Error, |hint| hint[index])
                 }
                 (None, _) => {
                     self.error(
@@ -2723,11 +2819,19 @@ impl Checker<'_> {
                 self.needs_runtime(self.results[id.0].ok)
                     || self.needs_runtime(self.results[id.0].err)
             }
-            Type::Enum(id) => self.enums[id.0].variants.iter().any(|variant| {
-                variant
-                    .payload
-                    .is_some_and(|payload| self.needs_runtime(payload))
-            }),
+            // A box is an allocation, and the check comes first because the
+            // payload behind one may lead straight back to this enum.
+            Type::Enum(id) => {
+                self.enums[id.0]
+                    .variants
+                    .iter()
+                    .any(|variant| variant.indirect)
+                    || self.enums[id.0].variants.iter().any(|variant| {
+                        variant
+                            .payload
+                            .is_some_and(|payload| self.needs_runtime(payload))
+                    })
+            }
             _ => false,
         }
     }
@@ -2750,6 +2854,10 @@ impl Checker<'_> {
     fn expression(&mut self, expr: &Expr) -> Type {
         let expected = self.expected_context.take();
         let ty = match &expr.kind {
+            ExprKind::ImplicitVariant(name) => match self.implicit_enum(name, expected) {
+                Some(enum_id) => self.variant_value(enum_id, name),
+                None => Type::Error,
+            },
             ExprKind::Literal(literal) => match literal {
                 Literal::Integer(value) => {
                     // An integer literal takes the width the context expects,
@@ -3099,35 +3207,7 @@ impl Checker<'_> {
                     };
                 }
                 if let Some(enum_id) = self.enum_prefix(object) {
-                    let enum_info = &self.enums[enum_id.0];
-                    if let Some(variant_index) = enum_info.find_variant(&member.text) {
-                        let variant = &enum_info.variants[variant_index];
-                        if variant.payload.is_some() {
-                            self.error(
-                                DiagnosticCode::ArgumentCount,
-                                member.span,
-                                format!(
-                                    "variant `{}` expects a payload; call it with `(...)`",
-                                    member.text
-                                ),
-                            );
-                            Type::Error
-                        } else {
-                            Type::Enum(enum_id)
-                        }
-                    } else {
-                        let message = format!(
-                            "enum `{}` has no variant `{}`",
-                            self.enums[enum_id.0].name, member.text
-                        );
-                        let variants = self.enums[enum_id.0]
-                            .variants
-                            .iter()
-                            .map(|variant| variant.name.clone())
-                            .collect();
-                        self.unknown_member(DiagnosticCode::UnknownName, member, message, variants);
-                        Type::Error
-                    }
+                    self.variant_value(enum_id, member)
                 } else {
                     let object_type = self.expression(object);
                     match object_type {
@@ -3576,10 +3656,12 @@ impl Checker<'_> {
                 "insert" => Some(vec![Type::INT, element]),
                 "pop" => Some(vec![]),
                 "remove" => Some(vec![Type::INT]),
-                // A comparator returns a negative, zero or positive `int`,
-                // the ordering convention the C library already uses.
+                // A comparator answers an `Ordering`. It answered an `int`
+                // until M32, and the idiom that invited, `a - b`, traps once
+                // the difference leaves `int`.
                 "sort" | "to_sorted" => {
-                    let comparator = self.function_type(vec![element, element], Type::INT);
+                    let ordering = Type::Enum(self.ordering);
+                    let comparator = self.function_type(vec![element, element], ordering);
                     Some(vec![comparator])
                 }
                 _ => None,
@@ -3615,6 +3697,148 @@ impl Checker<'_> {
                 };
             }
         }
+        // `get()` retained a live target or trapped, the only unwrap in the
+        // language that did; M32 removed it in favour of `upgrade()`, which
+        // makes the expired case something the program writes down.
+        if matches!(receiver, Type::Weak(_)) && member.text == "get" {
+            self.error(
+                DiagnosticCode::UnknownName,
+                member.span,
+                "a weak reference has no `get()`; `upgrade()` answers an Option instead of trapping",
+            );
+            if let Some(last) = self.diagnostics.last_mut() {
+                last.diagnostic.help = Some(
+                    "write `if let target = reference.upgrade() { ... }` or `let target = reference.upgrade() else { ... }`".into(),
+                );
+            }
+            for argument in arguments {
+                self.expression(argument);
+            }
+            return Type::Error;
+        }
+        // `result.map_err(f)`: the success passes through and the error goes
+        // through `f`. What the error becomes is what `f` answers — declared,
+        // or read off an expression body — and never guessed from a `?`
+        // around the call, since a Result type is interned whole and there is
+        // no type with a hole in it to carry half an answer.
+        if let (Type::Result(id), "map_err") = (receiver, member.text.as_str()) {
+            let info = self.results[id.0];
+            if arguments.len() != 1 {
+                self.error(
+                    DiagnosticCode::ArgumentCount,
+                    span,
+                    format!(
+                        "method `map_err` expects 1 argument, found {}",
+                        arguments.len()
+                    ),
+                );
+                for argument in arguments {
+                    self.expression(argument);
+                }
+                return Type::Error;
+            }
+            let argument = &arguments[0];
+            let previous = self.expected_context.take();
+            self.lambda_parameters = Some(vec![info.err]);
+            let found = self.expression(argument);
+            self.lambda_parameters = None;
+            self.expected_context = previous;
+            let mapped = match found {
+                Type::Function(function) => {
+                    let signature = self.function_signatures[function.0].clone();
+                    if signature.parameters.len() != 1 || signature.parameters[0] != info.err {
+                        self.error(
+                            DiagnosticCode::TypeMismatch,
+                            argument.span,
+                            format!(
+                                "`map_err` takes a function of the error, `({}) -> T`, found `{}`",
+                                self.type_name(info.err),
+                                self.type_name(found)
+                            ),
+                        );
+                        return Type::Error;
+                    }
+                    signature.return_type
+                }
+                Type::Error => return Type::Error,
+                other => {
+                    self.error(
+                        DiagnosticCode::TypeMismatch,
+                        argument.span,
+                        format!(
+                            "`map_err` takes a function of the error, found `{}`",
+                            self.type_name(other)
+                        ),
+                    );
+                    return Type::Error;
+                }
+            };
+            if mapped == Type::Void {
+                self.error(
+                    DiagnosticCode::TypeMismatch,
+                    argument.span,
+                    "the function given to `map_err` must answer the new error, and this one answers nothing",
+                );
+                if let Some(last) = self.diagnostics.last_mut() {
+                    last.diagnostic.help = Some(
+                        "write the result on a block lambda, `(e) -> AppError { ... }`, or use an expression body, `(e) => ...`".into(),
+                    );
+                }
+                return Type::Error;
+            }
+            if mapped == Type::Error {
+                return Type::Error;
+            }
+            return self.result_type(info.ok, mapped);
+        }
+        // The comparisons that answer an `Ordering`. `float` has only the
+        // total one, which is IEEE 754 totalOrder: it orders `-0.0` before
+        // `0.0` and places NaN, where `<` says neither, so it cannot share the
+        // name the other types use for an order that agrees with `<`.
+        let ordering = Type::Enum(self.ordering);
+        let comparison = match (receiver, member.text.as_str()) {
+            (Type::Int(_) | Type::Char | Type::Bool | Type::String, "compare") => Some(receiver),
+            (Type::Float, "total_compare") => Some(Type::Float),
+            (Type::Enum(id), "then") if id == self.ordering => Some(ordering),
+            _ => None,
+        };
+        if let Some(operand) = comparison {
+            if arguments.len() != 1 {
+                self.error(
+                    DiagnosticCode::ArgumentCount,
+                    span,
+                    format!(
+                        "method `{}` expects 1 argument, found {}",
+                        member.text,
+                        arguments.len()
+                    ),
+                );
+            }
+            let previous = self.expected_context;
+            for argument in arguments {
+                self.expected_context = Some(operand);
+                let found = self.expression(argument);
+                self.expect_type(operand, found, argument.span);
+            }
+            self.expected_context = previous;
+            return ordering;
+        }
+        if receiver == Type::Float && member.text == "compare" {
+            self.error(
+                DiagnosticCode::UnknownName,
+                member.span,
+                "`float` has no `compare`: `<` leaves NaN unordered and treats `-0.0` and `0.0` as equal",
+            );
+            if let Some(last) = self.diagnostics.last_mut() {
+                last.diagnostic.help = Some(
+                    "`total_compare` orders every float, NaN and both zeros included, as IEEE 754 totalOrder does".into(),
+                );
+            }
+            for argument in arguments {
+                self.expression(argument);
+            }
+            return Type::Error;
+        }
         let builtin = match (receiver, member.text.as_str()) {
             (Type::Array(_) | Type::FixedArray(_), "len") => Some(Type::INT),
             // A string's length is its byte count, matching what indexing and
@@ -3625,7 +3849,6 @@ impl Checker<'_> {
                 Some(self.array_type(byte))
             }
             (Type::Weak(_), "alive") => Some(Type::Bool),
-            (Type::Weak(id), "get") => Some(Type::Struct(id)),
             (Type::Weak(id), "upgrade") => Some(self.option_type(Type::Struct(id))),
             (Type::Option(_), "is_some" | "is_none") => Some(Type::Bool),
             (Type::Result(_), "is_ok" | "is_err") => Some(Type::Bool),
@@ -3736,6 +3959,9 @@ impl Checker<'_> {
             return Type::Error;
         };
         let signature = self.signatures[&method.id].clone();
+        if method.mutating {
+            self.mutating_receiver(object, member);
+        }
         if signature.parameters.len() != arguments.len() {
             self.error(
                 DiagnosticCode::ArgumentCount,
@@ -3761,6 +3987,213 @@ impl Checker<'_> {
         self.expected_context = previous;
         signature.return_type
     }
+    /// A `var` method changes the storage its receiver names, through a
+    /// pointer, so that storage must be a place nothing else can reach while
+    /// the call runs: a `var` local, or `this` inside another `var` method,
+    /// and struct fields inside either. An array element is refused because
+    /// the method could push onto the array and move the element away from
+    /// under the pointer; a class field because it could drop the last
+    /// reference to the object. Swift makes both sound with copy-in, copy-out
+    /// and an exclusivity checker; Skuld keeps the pointer and narrows where
+    /// it may point instead.
+    fn mutating_receiver(&mut self, object: &Expr, member: &Name) {
+        let mut place = strip_groups_ref(object);
+        let refused = loop {
+            match &place.kind {
+                ExprKind::Identifier(name) => {
+                    let symbol = self
+                        .resolution
+                        .references
+                        .get(&(self.file, name.span.start))
+                        .map(|id| &self.resolution.symbols[id.0]);
+                    match symbol.map(|symbol| symbol.kind) {
+                        Some(SymbolKind::Variable(Mutability::Mutable)) => return,
+                        Some(_) => {
+                            let mut diagnostic = Diagnostic {
+                                code: DiagnosticCode::ImmutableAssignment,
+                                span: name.span,
+                                message: format!(
+                                    "`{}` is a `var` method and changes its receiver, but `{}` cannot change",
+                                    member.text, name.text
+                                ),
+                                help: Some(format!(
+                                    "declare `{}` with `var`; a parameter or `let` is a value the call may not rewrite",
+                                    name.text
+                                )),
+                                fix: None,
+                            };
+                            if name.text == "this" {
+                                diagnostic.help = Some(
+                                    "`this` changes only inside a method declared `var` itself"
+                                        .into(),
+                                );
+                            }
+                            self.diagnostics.push(FileDiagnostic {
+                                file: self.file,
+                                diagnostic,
+                            });
+                            return;
+                        }
+                        // Unresolved names are already reported.
+                        None => return,
+                    }
+                }
+                ExprKind::Member { object, .. } => match self.expression_type_of(object) {
+                    Some(Type::Struct(id)) if !self.structs[id.0].reference => {
+                        place = strip_groups_ref(object);
+                    }
+                    Some(Type::Error) | None => return,
+                    _ => break "a field of a class object",
+                },
+                ExprKind::Index { .. } => break "an array element",
+                _ => break "a temporary value",
+            }
+        };
+        self.error(
+            DiagnosticCode::InvalidAssignment,
+            object.span,
+            format!(
+                "`{}` is a `var` method and changes its receiver in place, which cannot be {refused}",
+                member.text
+            ),
+        );
+        if let Some(last) = self.diagnostics.last_mut() {
+            last.diagnostic.help = Some(format!(
+                "copy it into a `var`, call `{}` there and write it back: the method could otherwise move or free the storage it is changing",
+                member.text
+            ));
+        }
+    }
+    /// The enum a `.Variant` belongs to: the one this position expects, seen
+    /// through an expected `Option` too, since the variant wraps into it the
+    /// way any value does. Absence under an `Option` is still `None`.
+    fn implicit_enum(&mut self, name: &Name, expected: Option<Type>) -> Option<EnumId> {
+        let expected_enum = match expected {
+            Some(Type::Enum(id)) => Some(id),
+            Some(Type::Option(id)) => match self.options[id.0].element {
+                Type::Enum(id) => Some(id),
+                _ => None,
+            },
+            _ => None,
+        };
+        if expected_enum.is_none() {
+            let mut diagnostic = Diagnostic {
+                code: DiagnosticCode::UnknownType,
+                span: name.span,
+                message: format!(
+                    "`.{}` names a variant of the enum this position expects, and nothing here expects one",
+                    name.text
+                ),
+                help: Some(format!("name the enum: `Enum.{}`", name.text)),
+                fix: None,
+            };
+            if let Some(Type::Error) = expected {
+                // Whatever should have supplied the type is already reported.
+                diagnostic.help = None;
+            }
+            self.diagnostics.push(FileDiagnostic {
+                file: self.file,
+                diagnostic,
+            });
+        }
+        expected_enum
+    }
+    /// `Enum.Variant` or `.Variant` written as a value: a unit variant, since
+    /// one with a payload has to be called.
+    fn variant_value(&mut self, enum_id: EnumId, member: &Name) -> Type {
+        let enum_info = &self.enums[enum_id.0];
+        if let Some(variant_index) = enum_info.find_variant(&member.text) {
+            let variant = &enum_info.variants[variant_index];
+            if variant.payload.is_some() {
+                self.error(
+                    DiagnosticCode::ArgumentCount,
+                    member.span,
+                    format!(
+                        "variant `{}` expects a payload; call it with `(...)`",
+                        member.text
+                    ),
+                );
+                Type::Error
+            } else {
+                Type::Enum(enum_id)
+            }
+        } else {
+            let message = format!(
+                "enum `{}` has no variant `{}`",
+                self.enums[enum_id.0].name, member.text
+            );
+            let variants = self.enums[enum_id.0]
+                .variants
+                .iter()
+                .map(|variant| variant.name.clone())
+                .collect();
+            self.unknown_member(DiagnosticCode::UnknownName, member, message, variants);
+            Type::Error
+        }
+    }
+    /// `Enum.Variant(payload)` or `.Variant(payload)`.
+    fn variant_call(
+        &mut self,
+        enum_id: EnumId,
+        member: &Name,
+        arguments: &[Expr],
+        span: Span,
+    ) -> Type {
+        let enum_info = &self.enums[enum_id.0];
+        if let Some(variant_index) = enum_info.find_variant(&member.text) {
+            let variant = &enum_info.variants[variant_index];
+            match variant.payload {
+                None => {
+                    self.error(
+                        DiagnosticCode::ArgumentCount,
+                        span,
+                        format!("variant `{}` does not take arguments", member.text),
+                    );
+                    for arg in arguments {
+                        self.expression(arg);
+                    }
+                    Type::Error
+                }
+                Some(expected_payload) => {
+                    if arguments.len() != 1 {
+                        self.error(
+                            DiagnosticCode::ArgumentCount,
+                            span,
+                            format!(
+                                "variant `{}` expects 1 argument, found {}",
+                                member.text,
+                                arguments.len()
+                            ),
+                        );
+                        for arg in arguments {
+                            self.expression(arg);
+                        }
+                        Type::Error
+                    } else {
+                        let previous = self.expected_context;
+                        self.expected_context = Some(expected_payload);
+                        let found = self.expression(&arguments[0]);
+                        self.expected_context = previous;
+                        self.expect_type(expected_payload, found, arguments[0].span);
+                        Type::Enum(enum_id)
+                    }
+                }
+            }
+        } else {
+            self.error(
+                DiagnosticCode::UnknownName,
+                member.span,
+                format!(
+                    "enum `{}` has no variant `{}`",
+                    self.enums[enum_id.0].name, member.text
+                ),
+            );
+            for arg in arguments {
+                self.expression(arg);
+            }
+            Type::Error
+        }
+    }
     fn call(
         &mut self,
         callee: &Expr,
@@ -3772,62 +4205,18 @@ impl Checker<'_> {
         while let ExprKind::Group(inner) = &direct.kind {
             direct = inner;
         }
+        if let ExprKind::ImplicitVariant(name) = &direct.kind {
+            let Some(enum_id) = self.implicit_enum(name, expected) else {
+                for argument in arguments {
+                    self.expression(argument);
+                }
+                return Type::Error;
+            };
+            return self.variant_call(enum_id, name, arguments, span);
+        }
         if let ExprKind::Member { object, member } = &direct.kind {
             if let Some(enum_id) = self.enum_prefix(object) {
-                let enum_info = &self.enums[enum_id.0];
-                return if let Some(variant_index) = enum_info.find_variant(&member.text) {
-                    let variant = &enum_info.variants[variant_index];
-                    match variant.payload {
-                        None => {
-                            self.error(
-                                DiagnosticCode::ArgumentCount,
-                                span,
-                                format!("variant `{}` does not take arguments", member.text),
-                            );
-                            for arg in arguments {
-                                self.expression(arg);
-                            }
-                            Type::Error
-                        }
-                        Some(expected_payload) => {
-                            if arguments.len() != 1 {
-                                self.error(
-                                    DiagnosticCode::ArgumentCount,
-                                    span,
-                                    format!(
-                                        "variant `{}` expects 1 argument, found {}",
-                                        member.text,
-                                        arguments.len()
-                                    ),
-                                );
-                                for arg in arguments {
-                                    self.expression(arg);
-                                }
-                                Type::Error
-                            } else {
-                                let previous = self.expected_context;
-                                self.expected_context = Some(expected_payload);
-                                let found = self.expression(&arguments[0]);
-                                self.expected_context = previous;
-                                self.expect_type(expected_payload, found, arguments[0].span);
-                                Type::Enum(enum_id)
-                            }
-                        }
-                    }
-                } else {
-                    self.error(
-                        DiagnosticCode::UnknownName,
-                        member.span,
-                        format!(
-                            "enum `{}` has no variant `{}`",
-                            self.enums[enum_id.0].name, member.text
-                        ),
-                    );
-                    for arg in arguments {
-                        self.expression(arg);
-                    }
-                    Type::Error
-                };
+                return self.variant_call(enum_id, member, arguments, span);
             }
             // `geometry.area(p)` is one name in two halves: a direct call to
             // an exported function, not a method on a value called `geometry`.
@@ -4379,16 +4768,19 @@ impl Checker<'_> {
         })
     }
     fn enum_contains_struct_by_value(&self, from: EnumId, target: StructId) -> bool {
+        // An `indirect` payload is behind a box, which is exactly the
+        // indirection a value type otherwise lacks.
         self.enums[from.0].variants.iter().any(|v| {
-            v.payload.is_some_and(|payload| {
-                self.inline_payloads(payload)
-                    .into_iter()
-                    .any(|ty| match ty {
-                        Type::Struct(id) if !self.structs[id.0].reference => id == target,
-                        Type::Enum(id) => self.enum_contains_struct_by_value(id, target),
-                        _ => false,
-                    })
-            })
+            !v.indirect
+                && v.payload.is_some_and(|payload| {
+                    self.inline_payloads(payload)
+                        .into_iter()
+                        .any(|ty| match ty {
+                            Type::Struct(id) if !self.structs[id.0].reference => id == target,
+                            Type::Enum(id) => self.enum_contains_struct_by_value(id, target),
+                            _ => false,
+                        })
+                })
         })
     }
     fn enum_contains_by_value(&self, from: EnumId, target: EnumId, seen: &mut Vec<bool>) -> bool {
@@ -4397,20 +4789,54 @@ impl Checker<'_> {
         }
         seen[from.0] = true;
         self.enums[from.0].variants.iter().any(|v| {
-            v.payload.is_some_and(|payload| {
-                self.inline_payloads(payload)
-                    .into_iter()
-                    .any(|ty| match ty {
-                        Type::Enum(id) => {
-                            id == target || self.enum_contains_by_value(id, target, seen)
-                        }
-                        Type::Struct(id) if !self.structs[id.0].reference => {
-                            self.struct_contains_enum_by_value(id, target)
-                        }
-                        _ => false,
-                    })
-            })
+            !v.indirect
+                && v.payload.is_some_and(|payload| {
+                    self.inline_payloads(payload)
+                        .into_iter()
+                        .any(|ty| match ty {
+                            Type::Enum(id) => {
+                                id == target || self.enum_contains_by_value(id, target, seen)
+                            }
+                            Type::Struct(id) if !self.structs[id.0].reference => {
+                                self.struct_contains_enum_by_value(id, target)
+                            }
+                            _ => false,
+                        })
+                })
         })
+    }
+    /// Whether a payload leads back to `target` along anything a value holds
+    /// inline — fields, Options, Results, fixed arrays and other enums,
+    /// boxed or not. An `indirect` variant that never does has no reason for
+    /// its box.
+    fn reaches_enum(&self, ty: Type, target: EnumId, seen: &mut BTreeSet<Type>) -> bool {
+        if !seen.insert(ty) {
+            return false;
+        }
+        match ty {
+            Type::Enum(id) => {
+                id == target
+                    || self.enums[id.0]
+                        .variants
+                        .iter()
+                        .filter_map(|variant| variant.payload)
+                        .any(|payload| self.reaches_enum(payload, target, seen))
+            }
+            Type::Struct(id) if !self.structs[id.0].reference => self.structs[id.0]
+                .fields
+                .iter()
+                .any(|field| self.reaches_enum(field.ty, target, seen)),
+            Type::Option(id) => self.reaches_enum(self.options[id.0].element, target, seen),
+            Type::Result(id) => {
+                let info = self.results[id.0];
+                self.reaches_enum(info.ok, target, seen)
+                    || self.reaches_enum(info.err, target, seen)
+            }
+            Type::FixedArray(id) => {
+                self.reaches_enum(self.fixed_arrays[id.0].element, target, seen)
+            }
+            _ => false,
+        }
     }
     fn struct_contains_enum_by_value(&self, from: StructId, target: EnumId) -> bool {
         self.structs[from.0].fields.iter().any(|field| {
@@ -5857,6 +6283,28 @@ fn fits_int_type(value: i128, kind: IntType) -> bool {
     value >= low && value <= high
 }
 
+/// The builtin `Ordering`, numbered the way Rust's `std::cmp::Ordering` is so
+/// that `i8(order)` gives the sign a C comparator would.
+fn ordering_enum() -> EnumInfo {
+    let variant = |name: &str, value: i128| VariantInfo {
+        name: name.into(),
+        payload: None,
+        value,
+        indirect: false,
+    };
+    EnumInfo {
+        name: "Ordering".into(),
+        module: ROOT,
+        visibility: Visibility::Public,
+        underlying: Some(IntType::I8),
+        variants: vec![
+            variant("Less", -1),
+            variant("Equal", 0),
+            variant("Greater", 1),
+        ],
+    }
+}
+
 /// A `Result` seen as the two-variant enum it behaves like. `Ok` is variant 0
 /// and `Err` variant 1, the same order the backend gives its tag.
 fn result_as_enum(info: ResultInfo) -> EnumInfo {
@@ -5871,11 +6319,13 @@ fn result_as_enum(info: ResultInfo) -> EnumInfo {
                 name: "Ok".into(),
                 payload: Some(info.ok),
                 value: ResultInfo::OK as i128,
+                indirect: false,
             },
             VariantInfo {
                 name: "Err".into(),
                 payload: Some(info.err),
                 value: ResultInfo::ERR as i128,
+                indirect: false,
             },
         ],
     }

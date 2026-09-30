@@ -158,9 +158,11 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
     resolver.insert("print", SymbolKind::Builtin(Builtin::Print), None);
     resolver.insert("Some", SymbolKind::Builtin(Builtin::Some), None);
     resolver.insert("None", SymbolKind::Builtin(Builtin::None), None);
-    resolver.insert("null", SymbolKind::Builtin(Builtin::None), None);
     resolver.insert("Ok", SymbolKind::Builtin(Builtin::Ok), None);
     resolver.insert("Err", SymbolKind::Builtin(Builtin::Err), None);
+    // A type, like a declared enum, but declared by nobody: `Ordering.Less`
+    // resolves its left half here.
+    resolver.insert("Ordering", SymbolKind::Enum, None);
     resolver.insert(
         "bytes_to_string",
         SymbolKind::Builtin(Builtin::BytesToString),
@@ -331,9 +333,17 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
                     resolver.type_ref(t);
                 }
                 resolver.enter_scope(Some(method.body.span));
+                // A `var` method's `this` is the caller's storage, so it can
+                // be assigned through, and like any `var` it cannot be
+                // captured or read in place.
+                let receiver = if method.mutating {
+                    SymbolKind::Variable(Mutability::Mutable)
+                } else {
+                    SymbolKind::Parameter
+                };
                 resolver.insert(
                     "this",
-                    SymbolKind::Parameter,
+                    receiver,
                     Some(Span::new(method.body.span.start, method.body.span.start)),
                 );
                 for parameter in &method.parameters {
@@ -538,6 +548,26 @@ impl Resolver {
                 .references
                 .insert((self.file, name.span.start), id);
             self.capture(id, name.span);
+            return;
+        }
+        // `null` was a second spelling of `None` until M32. Only a use that
+        // reaches nothing lands here, so a program that declares its own
+        // `null` — as `std/ffi` does for the null pointer — is not touched.
+        if name.text == "null" {
+            let diagnostic = Diagnostic {
+                code: DiagnosticCode::UnknownName,
+                span: name.span,
+                message: "Skuld has no `null`; an absent Option is written `None`".into(),
+                help: Some(
+                    "`None` pairs with `Some`, and a pattern already writes it that way".into(),
+                ),
+                fix: None,
+            }
+            .with_fix(Fix::new("change to `None`", name.span, "None"));
+            self.diagnostics.push(FileDiagnostic {
+                file: self.file,
+                diagnostic,
+            });
             return;
         }
         // A name one slip away from one that is in scope is a typo, and the
@@ -835,7 +865,9 @@ impl Resolver {
     }
     fn expression(&mut self, expr: &Expr) {
         match &expr.kind {
-            ExprKind::Literal(_) => {}
+            // The name is a variant, looked up in the enum the checker finds
+            // the context expecting, so there is no value binding to find.
+            ExprKind::Literal(_) | ExprKind::ImplicitVariant(_) => {}
             ExprKind::Identifier(name) => self.reference(name),
             ExprKind::Group(inner)
             | ExprKind::Try(inner)

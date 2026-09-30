@@ -233,12 +233,51 @@ pub fn members_of(typed: &TypedProgram, ty: Type) -> Vec<Item> {
             items.push(Item::new(
                 "sort",
                 kind::METHOD,
-                Some(format!("(({element}, {element}) -> int) -> void")),
+                Some(format!("(({element}, {element}) -> Ordering) -> void")),
+            ));
+            items.push(Item::new(
+                "to_sorted",
+                kind::METHOD,
+                Some(format!(
+                    "(({element}, {element}) -> Ordering) -> []{element}"
+                )),
             ));
         }
         Type::String => {
             items.push(Item::new("len", kind::METHOD, Some("() -> int".into())));
             items.push(Item::new("bytes", kind::METHOD, Some("() -> []u8".into())));
+            items.push(Item::new(
+                "compare",
+                kind::METHOD,
+                Some("(string) -> Ordering".into()),
+            ));
+        }
+        Type::Int(_) | Type::Char | Type::Bool => {
+            let operand = type_name(typed, ty);
+            items.push(Item::new(
+                "compare",
+                kind::METHOD,
+                Some(format!("({operand}) -> Ordering")),
+            ));
+        }
+        Type::Float => {
+            items.push(Item::new(
+                "total_compare",
+                kind::METHOD,
+                Some("(float) -> Ordering".into()),
+            ));
+        }
+        Type::Enum(id)
+            if typed
+                .enums()
+                .get(id.0)
+                .is_some_and(|info| info.name == "Ordering") =>
+        {
+            items.push(Item::new(
+                "then",
+                kind::METHOD,
+                Some("(Ordering) -> Ordering".into()),
+            ));
         }
         Type::Option(_) => {
             items.push(Item::new(
@@ -255,6 +294,11 @@ pub fn members_of(typed: &TypedProgram, ty: Type) -> Vec<Item> {
         Type::Result(_) => {
             items.push(Item::new("is_ok", kind::METHOD, Some("() -> bool".into())));
             items.push(Item::new("is_err", kind::METHOD, Some("() -> bool".into())));
+            items.push(Item::new(
+                "map_err",
+                kind::METHOD,
+                Some("((E) -> F) -> Result<T, F>".into()),
+            ));
         }
         Type::Weak(id) => {
             let class = typed
@@ -263,11 +307,6 @@ pub fn members_of(typed: &TypedProgram, ty: Type) -> Vec<Item> {
                 .map(|info| info.name.clone())
                 .unwrap_or_else(|| "Class".to_owned());
             items.push(Item::new("alive", kind::METHOD, Some("() -> bool".into())));
-            items.push(Item::new(
-                "get",
-                kind::METHOD,
-                Some(format!("() -> {class}")),
-            ));
             items.push(Item::new(
                 "upgrade",
                 kind::METHOD,

@@ -593,12 +593,7 @@ impl Parser<'_> {
             .start;
         let name = self.name("a function name")?;
         let parameters = self.parameter_list()?;
-        let return_type =
-            if self.take(&TokenKind::Colon).is_some() || self.take(&TokenKind::Arrow).is_some() {
-                Some(self.type_ref()?)
-            } else {
-                None
-            };
+        let return_type = self.return_type()?;
         if self.at(&TokenKind::LeftBrace) {
             return Err(self
                 .error(
@@ -667,6 +662,18 @@ impl Parser<'_> {
         self.expect(&TokenKind::LeftBrace, "`{` to begin the enum body")?;
         let mut variants = Vec::new();
         while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
+            // `indirect` is an ordinary identifier read as a marker only when
+            // another name follows it on the same line, the way `packed` and
+            // `align` are read on an `extern struct`: no attribute syntax
+            // enters the language, and a variant may still be called
+            // `indirect`.
+            let marker_start = self.current().span.start;
+            let indirect = matches!(&self.current().kind, TokenKind::Identifier(word) if word == "indirect")
+                && matches!(self.peek_kind(1), TokenKind::Identifier(_))
+                && !self.newline_after(0);
+            if indirect {
+                self.bump();
+            }
             let variant_name = self.name("a variant name")?;
             let payload = if self.take(&TokenKind::LeftParen).is_some() {
                 let ty = self.type_ref()?;
@@ -679,12 +686,13 @@ impl Parser<'_> {
                 Some(_) => Some(self.nested(Parser::expression)?),
                 None => None,
             };
-            let span = Span::new(variant_name.span.start, self.previous_end());
+            let span = Span::new(marker_start, self.previous_end());
             variants.push(VariantDecl {
                 name: variant_name,
                 payload,
                 value,
                 span,
+                indirect,
             });
             let has_comma = self.take(&TokenKind::Comma).is_some();
             if !has_comma
@@ -722,13 +730,7 @@ impl Parser<'_> {
             let method_start = self.current().span.start;
             let name = self.name("a method name")?;
             let parameters = self.parameter_list()?;
-            let return_type = if self.take(&TokenKind::Colon).is_some()
-                || self.take(&TokenKind::Arrow).is_some()
-            {
-                Some(self.type_ref()?)
-            } else {
-                None
-            };
+            let return_type = self.return_type()?;
             methods.push(MethodSignature {
                 name,
                 parameters,
@@ -846,6 +848,19 @@ impl Parser<'_> {
         let mut methods = Vec::new();
         while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
             let field_start = self.current().span.start;
+            // `var name(` is a method that may change `this`. `var` is a
+            // keyword, so no field could have started this way.
+            if self.at(&TokenKind::Var)
+                && matches!(self.peek_kind(1), TokenKind::Identifier(_))
+                && matches!(self.peek_kind(2), TokenKind::LeftParen)
+            {
+                self.bump();
+                let name = self.name("a method name")?;
+                let mut method = self.nested(|parser| parser.method(name, field_start))?;
+                method.mutating = true;
+                methods.push(method);
+                continue;
+            }
             let name = self.name("a field or method name")?;
             // `name(` is a method; `name:` is a field.
             if self.at(&TokenKind::LeftParen) {
@@ -929,12 +944,7 @@ impl Parser<'_> {
     /// The name and `(` are already known; methods carry no `func` keyword.
     fn method(&mut self, name: Name, start: usize) -> Parsed<FunctionDecl> {
         let parameters = self.parameter_list()?;
-        let return_type =
-            if self.take(&TokenKind::Colon).is_some() || self.take(&TokenKind::Arrow).is_some() {
-                Some(self.type_ref()?)
-            } else {
-                None
-            };
+        let return_type = self.return_type()?;
         let body = self.block()?;
         let span = Span::new(start, body.span.end);
         Ok(FunctionDecl {
@@ -946,6 +956,7 @@ impl Parser<'_> {
             return_type,
             body,
             span,
+            mutating: false,
         })
     }
     /// Whether the `(` under the cursor opens a lambda rather than a grouped
@@ -954,6 +965,27 @@ impl Parser<'_> {
     /// A condition disables this the same way it disables a bare struct
     /// literal, so `if (flag) { ... }` keeps its ordinary reading.
     /// Whether a line break separates the token at `offset` from the next.
+    /// `-> Type` after a signature, or nothing for `void`. A `:` in the same
+    /// place was a second spelling until M32 and is refused with the edit that
+    /// replaces it, since a program written before then says exactly this.
+    fn return_type(&mut self) -> Parsed<Option<TypeRef>> {
+        if self.take(&TokenKind::Arrow).is_some() {
+            return Ok(Some(self.type_ref()?));
+        }
+        if self.at(&TokenKind::Colon) {
+            let colon = self.current().span;
+            let spaced = self.source[..colon.start].ends_with([' ', '\t']);
+            let replacement = if spaced { "->" } else { " ->" };
+            return Err(self
+                .error(
+                    DiagnosticCode::ExpectedSyntax,
+                    "a return type is written `-> Type`, not `: Type`",
+                )
+                .with_help("`:` names the type of a binding or a field; `->` names what a function returns")
+                .with_fix(Fix::new("write `->`", colon, replacement)));
+        }
+        Ok(None)
+    }
     fn newline_after(&self, offset: usize) -> bool {
         let index = (self.position + offset).min(self.tokens.len() - 1);
         let end = self.tokens[index].span.end;
@@ -1046,12 +1078,7 @@ impl Parser<'_> {
         let start = self.expect(&TokenKind::Function, "`func`")?.span.start;
         let name = self.name("a function name")?;
         let parameters = self.parameter_list()?;
-        let return_type =
-            if self.take(&TokenKind::Colon).is_some() || self.take(&TokenKind::Arrow).is_some() {
-                Some(self.type_ref()?)
-            } else {
-                None
-            };
+        let return_type = self.return_type()?;
         let body = self.block()?;
         let span = Span::new(start, body.span.end);
         Ok(FunctionDecl {
@@ -1061,6 +1088,7 @@ impl Parser<'_> {
             return_type,
             body,
             span,
+            mutating: false,
         })
     }
     fn block(&mut self) -> Parsed<Block> {
@@ -1400,8 +1428,8 @@ impl Parser<'_> {
                     }
                 }
             };
-            if self.take(&TokenKind::Colon).is_none() && self.take(&TokenKind::Arrow).is_none() {
-                return Err(self.expected("`:` or `->` after match pattern"));
+            if self.take(&TokenKind::Colon).is_none() {
+                return Err(self.expected("`:` after match pattern"));
             }
             let body = if self.at(&TokenKind::LeftBrace) {
                 self.block()?
@@ -1532,11 +1560,11 @@ impl Parser<'_> {
                 (pattern, name)
             } else {
                 let name = self.name("a binding name")?;
-                if name.text == "None" || name.text == "null" {
+                if name.text == "None" {
                     return Err(Diagnostic {
                         code: DiagnosticCode::ExpectedSyntax,
                         span: name.span,
-                        message: "cannot bind to `null` or `None` in an if-let pattern".into(),
+                        message: "cannot bind to `None` in an if-let pattern".into(),
                         help: None,
                         fix: None,
                     });
@@ -1634,6 +1662,14 @@ impl Parser<'_> {
                 self.bump();
                 ExprKind::Literal(Literal::Boolean(value))
             }
+            // `.Pending`: a variant of whatever enum the context expects. In
+            // prefix position a `.` can mean nothing else, so this never
+            // competes with a member access, which only ever follows a value.
+            TokenKind::Dot if matches!(self.peek_kind(1), TokenKind::Identifier(_)) => {
+                self.bump();
+                let name = self.name("a variant name after `.`")?;
+                ExprKind::ImplicitVariant(name)
+            }
             TokenKind::Identifier(text) => {
                 self.bump();
                 let name = Name {
@@ -1662,18 +1698,12 @@ impl Parser<'_> {
                 }
             }
             TokenKind::LeftParen if self.struct_literals && self.at_lambda() => {
-                // `(a: int, b: int): int { ... }`. Methods already declare
+                // `(a: int, b: int) -> int { ... }`. Methods already declare
                 // themselves without a keyword; a lambda is the same shape
                 // without a name.
                 let start = self.current().span.start;
                 let parameters = self.lambda_parameters()?;
-                let return_type = if self.take(&TokenKind::Arrow).is_some()
-                    || self.take(&TokenKind::Colon).is_some()
-                {
-                    Some(self.type_ref()?)
-                } else {
-                    None
-                };
+                let return_type = self.return_type()?;
                 let (body, is_expression) = if self.take(&TokenKind::FatArrow).is_some() {
                     let expr = self.expression()?;
                     let span = expr.span;

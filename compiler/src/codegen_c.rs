@@ -36,6 +36,7 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
             std::collections::BTreeMap::new()
         },
         statics: program.statics.iter().map(|(id, _)| *id).collect(),
+        receiver: None,
         defers: Vec::new(),
     };
     // An interface value is a pair: the object, and the table of methods to
@@ -68,6 +69,29 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
         if declaration.reference {
             emitter.line(&format!("typedef struct skuld_s{index} skuld_s{index};"));
         }
+    }
+    // An `indirect` variant's box is reached through a pointer too, which is
+    // what lets its payload hold the enum that holds the box.
+    let boxes: Vec<(usize, usize, Type)> = program
+        .enums
+        .iter()
+        .enumerate()
+        .flat_map(|(enum_index, info)| {
+            info.variants
+                .iter()
+                .enumerate()
+                .filter(|(_, variant)| variant.indirect)
+                .filter_map(move |(variant_index, variant)| {
+                    variant
+                        .payload
+                        .map(|payload| (enum_index, variant_index, payload))
+                })
+        })
+        .collect();
+    for (enum_index, variant_index, _) in &boxes {
+        emitter.line(&format!(
+            "typedef struct skuld_b{enum_index}_{variant_index} skuld_b{enum_index}_{variant_index};"
+        ));
     }
     // Inline structs, enums, fixed arrays and Options must be complete before embedding them.
     let types: Vec<_> = (0..program.structs.len())
@@ -106,7 +130,7 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
                 Type::Enum(id) => program.enums[id.0]
                     .variants
                     .iter()
-                    .all(|v| v.payload.is_none_or(complete)),
+                    .all(|v| v.indirect || v.payload.is_none_or(complete)),
                 _ => unreachable!(),
             };
             if ready {
@@ -162,7 +186,12 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
                     emitter.line("union {");
                     emitter.indent += 1;
                     for (v_index, variant) in declaration.variants.iter().enumerate() {
-                        if let Some(payload_ty) = variant.payload {
+                        if variant.indirect && variant.payload.is_some() {
+                            emitter.line(&format!(
+                                "skuld_b{}_{v_index} *v{v_index}; /* indirect {} */",
+                                id.0, variant.name
+                            ));
+                        } else if let Some(payload_ty) = variant.payload {
                             emitter.line(&format!(
                                 "{} v{v_index}; /* {} */",
                                 emitter.c_type(payload_ty),
@@ -239,6 +268,13 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
         } else {
             emitter.line(&format!("}} skuld_s{index};"));
         }
+    }
+    // Every payload type is complete by now, so each box can hold its own.
+    for (enum_index, variant_index, payload) in &boxes {
+        emitter.line(&format!(
+            "struct skuld_b{enum_index}_{variant_index} {{ skuld_object header; {} value; }};",
+            emitter.c_type(*payload)
+        ));
     }
     // Module-level storage. It is emitted after the types it may be shaped by
     // and before any function that reads it, and it is `static` in the C sense
@@ -450,10 +486,11 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
             "        size_t end = start + 2 * width < n ? start + 2 * width : n;".to_owned(),
             "        size_t left = start, right = middle, out = start;".to_owned(),
             "        while (left < middle && right < end) {".to_owned(),
-            // `<= 0` is what makes the sort stable: equal elements keep the
-            // order they were written in.
+            // Taking the left unless it is `Greater` (tag 2) is what makes
+            // the sort stable: equal elements keep the order they were
+            // written in.
             format!(
-                "            dst[out++] = skuld_ftcall{}(cmp, src[left], src[right]) <= 0 ? src[left++] : src[right++];",
+                "            dst[out++] = skuld_ftcall{}(cmp, src[left], src[right]).tag != 2 ? src[left++] : src[right++];",
                 comparator.0
             ),
             "        }".to_owned(),
@@ -489,8 +526,31 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
             "static inline void {prefix}_assign({name} *slot, {name} value);"
         ));
     }
+    for (enum_index, variant_index, _) in &boxes {
+        emitter.line(&format!(
+            "static void skuld_b{enum_index}_{variant_index}_destroy(skuld_object *object);"
+        ));
+    }
     for ty in managed {
         emitter.aggregate_helpers(ty);
+    }
+    // A box's destructor releases the payload it holds. It is written after
+    // every helper, since that payload may be the struct whose helpers
+    // release the enum that owns the box. Releasing a very long chain this
+    // way recurses once per link, as a long chain of classes already does.
+    for (enum_index, variant_index, payload) in &boxes {
+        let name = format!("skuld_b{enum_index}_{variant_index}");
+        emitter.line(&format!(
+            "static void {name}_destroy(skuld_object *object) {{"
+        ));
+        emitter.indent += 1;
+        emitter.line(&format!("{name} *box = ({name} *)object;"));
+        emitter.line("(void)box;");
+        if let Some(release) = emitter.release_function(*payload) {
+            emitter.line(&format!("{release}(&box->value);"));
+        }
+        emitter.indent -= 1;
+        emitter.line("}");
     }
     if !program.structs.is_empty() {
         emitter.line("");
@@ -626,6 +686,7 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
         ));
         emitter.line(&format!("{} {{", emitter.signature(function)));
         emitter.current_return = function.return_type;
+        emitter.receiver = function.by_reference;
         emitter.indent += 1;
         for parameter in &function.parameters {
             emitter.line(&format!(
@@ -693,7 +754,14 @@ fn signature_of(structs: &[StructInfo], function: &Function, name: &str) -> Stri
         function
             .parameters
             .iter()
-            .map(|p| format!("{} skuld_v{}", type_name(structs, p.ty), p.id.0))
+            .map(|p| {
+                let pointer = if function.by_reference == Some(p.id) {
+                    "*"
+                } else {
+                    ""
+                };
+                format!("{}{pointer} skuld_v{}", type_name(structs, p.ty), p.id.0)
+            })
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -734,6 +802,8 @@ struct Emitter<'a> {
     /// names is an ordinary read or write of a file-scope variable, which is
     /// why it only has to be known here.
     statics: std::collections::BTreeSet<crate::resolver::SymbolId>,
+    /// The receiver of the `var` method being emitted, if it is one.
+    receiver: Option<crate::resolver::SymbolId>,
     /// One frame per block being emitted, holding that block's `defer`red
     /// statements in the order they were registered.
     ///
@@ -849,9 +919,20 @@ impl<'a> Emitter<'a> {
             .variants
             .iter()
             .enumerate()
-            .filter_map(|(i, v)| v.payload.filter(|ty| self.managed(*ty)).map(|ty| (i, ty)))
+            .filter_map(|(i, v)| {
+                v.payload
+                    .filter(|ty| v.indirect || self.managed(*ty))
+                    .map(|ty| (i, ty))
+            })
             .collect();
-        self.tagged_helpers(format!("skuld_e{}", id.0), &managed_variants);
+        let boxed: Vec<usize> = self.enums[id.0]
+            .variants
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.indirect)
+            .map(|(i, _)| i)
+            .collect();
+        self.tagged_helpers(format!("skuld_e{}", id.0), &managed_variants, &boxed);
     }
     fn result_helpers(&mut self, id: crate::types::ResultId) {
         let info = self.results[id.0];
@@ -862,11 +943,16 @@ impl<'a> Emitter<'a> {
         .into_iter()
         .filter(|(_, ty)| self.managed(*ty))
         .collect();
-        self.tagged_helpers(format!("skuld_r{}", id.0), &managed_variants);
+        self.tagged_helpers(format!("skuld_r{}", id.0), &managed_variants, &[]);
     }
     /// Retain, release and assign for an inline tag-plus-payload value. Enums
     /// and `Result` share one layout, so they share one implementation.
-    fn tagged_helpers(&mut self, name: String, managed_variants: &[(usize, Type)]) {
+    fn tagged_helpers(
+        &mut self,
+        name: String,
+        managed_variants: &[(usize, Type)],
+        boxed: &[usize],
+    ) {
         self.line(&format!(
             "static inline {name} {name}_retain({name} value) {{"
         ));
@@ -877,8 +963,16 @@ impl<'a> Emitter<'a> {
             for &(index, payload) in managed_variants {
                 self.line(&format!("case {index}:"));
                 self.indent += 1;
-                let retained = self.retained(payload, &format!("value.payload.v{index}"));
-                self.line(&format!("value.payload.v{index} = {retained};"));
+                // A box is shared, not copied: its payload is never assigned
+                // in place, so sharing it cannot be told apart from a copy.
+                if boxed.contains(&index) {
+                    self.line(&format!(
+                        "skuld_object_retain(&value.payload.v{index}->header);"
+                    ));
+                } else {
+                    let retained = self.retained(payload, &format!("value.payload.v{index}"));
+                    self.line(&format!("value.payload.v{index} = {retained};"));
+                }
                 self.line("break;");
                 self.indent -= 1;
             }
@@ -898,10 +992,16 @@ impl<'a> Emitter<'a> {
             self.line("switch (slot->tag) {");
             self.indent += 1;
             for &(index, payload) in managed_variants {
-                let release_fn = self.release_function(payload).unwrap();
                 self.line(&format!("case {index}:"));
                 self.indent += 1;
-                self.line(&format!("{release_fn}(&slot->payload.v{index});"));
+                if boxed.contains(&index) {
+                    self.line(&format!(
+                        "skuld_object_release(&slot->payload.v{index}->header);"
+                    ));
+                } else {
+                    let release_fn = self.release_function(payload).unwrap();
+                    self.line(&format!("{release_fn}(&slot->payload.v{index});"));
+                }
                 self.line("break;");
                 self.indent -= 1;
             }
@@ -1352,6 +1452,11 @@ impl<'a> Emitter<'a> {
         if self.statics.contains(&id) {
             return format!("skuld_g{}", id.0);
         }
+        // A `var` method's receiver is the caller's storage, reached through
+        // the address it was handed; everything written to `this` lands there.
+        if self.receiver == Some(id) {
+            return format!("(*skuld_v{})", id.0);
+        }
         if self.captures.contains(&id) {
             format!("skuld_env->skuld_v{}", id.0)
         } else {
@@ -1390,10 +1495,15 @@ impl<'a> Emitter<'a> {
             Type::Result(id) => {
                 self.managed(self.results[id.0].ok) || self.managed(self.results[id.0].err)
             }
-            Type::Enum(id) => self.enums[id.0]
-                .variants
-                .iter()
-                .any(|v| v.payload.is_some_and(|p| self.managed(p))),
+            // A box is counted, and the check comes first because the payload
+            // behind one may lead straight back to this enum.
+            Type::Enum(id) => {
+                self.enums[id.0].variants.iter().any(|v| v.indirect)
+                    || self.enums[id.0]
+                        .variants
+                        .iter()
+                        .any(|v| v.payload.is_some_and(|p| self.managed(p)))
+            }
             // A class always owns a reference; a struct owns one only if a
             // field does.
             Type::Struct(id) => {
@@ -1862,6 +1972,15 @@ impl<'a> Emitter<'a> {
                         }
                         _ => unreachable!("checked match"),
                     };
+                    // A boxed payload is read through the box it lives in.
+                    let boxed: Vec<bool> = match value.ty {
+                        Type::Enum(id) => self.enums[id.0]
+                            .variants
+                            .iter()
+                            .map(|variant| variant.indirect)
+                            .collect(),
+                        _ => vec![false; payloads.len()],
+                    };
                     let target = self.expression(value);
                     let mut first = true;
                     for arm in arms {
@@ -1888,7 +2007,10 @@ impl<'a> Emitter<'a> {
                                         binding_id.0,
                                         self.retained(
                                             payload_ty,
-                                            &format!("{target}.payload.v{variant_index}")
+                                            &format!(
+                                                "{target}.payload.v{variant_index}{}",
+                                                if boxed[*variant_index] { "->value" } else { "" }
+                                            )
                                         )
                                     ));
                                     self.line(&format!("(void)skuld_v{};", binding_id.0));
@@ -2681,7 +2803,31 @@ impl<'a> Emitter<'a> {
                 payload,
             } => {
                 let c_ty = self.c_type(expr.ty);
-                let value = if let Some(payload_expr) = payload {
+                let indirect = match expr.ty {
+                    Type::Enum(id) => self.enums[id.0].variants[*variant_index].indirect,
+                    _ => false,
+                };
+                let value = if let (Some(payload_expr), true, Type::Enum(id)) =
+                    (payload, indirect, expr.ty)
+                {
+                    // The payload moves into a box of its own, counted from one.
+                    let rendered = self.expression(payload_expr);
+                    let retained = self.retained(payload_expr.ty, &rendered);
+                    let name = format!("skuld_b{}_{variant_index}", id.0);
+                    let slot = format!("skuld_t{}", self.next_temp);
+                    self.next_temp += 1;
+                    self.line(&format!(
+                        "{name} *{slot} = skuld_allocate(sizeof({name}), 0, 0, {});",
+                        expr.span.start
+                    ));
+                    self.line(&format!(
+                        "skuld_object_init(&{slot}->header, {name}_destroy);"
+                    ));
+                    self.line(&format!("{slot}->value = {retained};"));
+                    format!(
+                        "({c_ty}){{.tag = {variant_index}, .payload = {{.v{variant_index} = {slot}}}}}"
+                    )
+                } else if let Some(payload_expr) = payload {
                     let rendered = self.expression(payload_expr);
                     let retained = self.retained(payload_expr.ty, &rendered);
                     format!(
@@ -2692,6 +2838,78 @@ impl<'a> Emitter<'a> {
                 };
                 self.store(expr.ty, &value, true)
             }
+            // `Ordering`'s tags are its variants in order — Less, Equal,
+            // Greater — so a three-way sign plus one is the tag.
+            ExprKind::Compare(left, right) => {
+                let operand = left.ty;
+                let left = self.expression(left);
+                let right = self.expression(right);
+                let sign = match operand {
+                    Type::String => format!("skuld_string_compare({left}, {right})"),
+                    Type::Float => format!("skuld_float_total_compare({left}, {right})"),
+                    // A scalar is read twice, so each side is settled once.
+                    _ => {
+                        let left = self.temporary(operand, &left);
+                        let right = self.temporary(operand, &right);
+                        format!("(({left} > {right}) - ({left} < {right}))")
+                    }
+                };
+                let c_ty = self.c_type(expr.ty);
+                self.store(expr.ty, &format!("({c_ty}){{.tag = {sign} + 1}}"), true)
+            }
+            ExprKind::OrderingThen(first, second) => {
+                let ordering = first.ty;
+                let first = self.expression(first);
+                let first = self.temporary(ordering, &first);
+                let second = self.expression(second);
+                self.store(
+                    expr.ty,
+                    &format!("({first}.tag == 1 ? {second} : {first})"),
+                    true,
+                )
+            }
+            ExprKind::ResultMapErr { value, function } => {
+                let Type::Result(id) = value.ty else {
+                    unreachable!("checked `map_err`")
+                };
+                let Type::Function(function_ty) = function.ty else {
+                    unreachable!("checked `map_err` function")
+                };
+                let ok = self.results[id.0].ok;
+                let (success, failure) =
+                    (crate::types::ResultInfo::OK, crate::types::ResultInfo::ERR);
+                let rendered = self.expression(value);
+                // Owned for the length of the call, so the error the function
+                // borrows is alive while it runs.
+                let slot = self.temporary(value.ty, &rendered);
+                let callee = self.expression(function);
+                let mapped = self.c_type(expr.ty);
+                // Built in both branches before anything owns it, so no
+                // cleanup ever sees it half made.
+                let built = format!("skuld_t{}", self.next_temp);
+                self.next_temp += 1;
+                self.line(&format!("{mapped} {built};"));
+                let kept = self.retained(ok, &format!("{slot}.payload.v{success}"));
+                self.line(&format!("if ({slot}.tag == {success}) {{"));
+                self.indent += 1;
+                self.line(&format!(
+                    "{built} = ({mapped}){{.tag = {success}, .payload = {{.v{success} = {kept}}}}};"
+                ));
+                self.indent -= 1;
+                self.line("} else {");
+                self.indent += 1;
+                // A call's result is already owned, so it is adopted as is.
+                self.line(&format!(
+                    "{built} = ({mapped}){{.tag = {failure}, .payload = {{.v{failure} = skuld_ftcall{}({callee}, {slot}.payload.v{failure})}}}};",
+                    function_ty.0
+                ));
+                self.indent -= 1;
+                self.line("}");
+                self.store(expr.ty, &built, true)
+            }
+            // No retain: the storage belongs to the caller, stays where it is
+            // for the whole call, and is changed through this address.
+            ExprKind::Receiver(place) => format!("&{}", self.place(place)),
             ExprKind::IsSome(value) | ExprKind::IsNone(value) => {
                 let value = self.expression(value);
                 let not = if matches!(expr.kind, ExprKind::IsNone(_)) {
@@ -2713,14 +2931,6 @@ impl<'a> Emitter<'a> {
                     "if ({pointer} != NULL) {{ {result}.some = true; {result}.value = {pointer}; }}"
                 ));
                 result
-            }
-            ExprKind::WeakGet(object) => {
-                let value = self.expression(object);
-                self.store(
-                    expr.ty,
-                    &format!("skuld_weak_get({value}, {})", expr.span.start),
-                    true,
-                )
             }
             ExprKind::Interpolation(parts) => {
                 // Folded left into concatenations. Each piece becomes a string
@@ -3005,6 +3215,17 @@ static inline size_t skuld_index(int64_t index, size_t length, size_t byte) {
     if ((uint64_t)index >= length) skuld_fail("array index out of bounds", byte);
     return (size_t)index;
 }
+/* IEEE 754 totalOrder as a sign: -NaN < -inf < ... < -0 < +0 < ... < +inf <
+   +NaN. Flipping every bit but the sign of a negative number makes the bit
+   patterns order the way the values do, so one signed comparison does. */
+static inline int skuld_float_total_compare(double a, double b) {
+    int64_t x, y;
+    __builtin_memcpy(&x, &a, sizeof x);
+    __builtin_memcpy(&y, &b, sizeof y);
+    x ^= (int64_t)((uint64_t)(x >> 63) >> 1);
+    y ^= (int64_t)((uint64_t)(y >> 63) >> 1);
+    return (x > y) - (x < y);
+}
 "#;
 
 const PRELUDE_HEAD: &str = r#"/* Generated by Skuld. C11, compiled with clang. */
@@ -3258,6 +3479,14 @@ const PRELUDE_HOSTED: &str = r#"
 void skuld_start(int argc, char **argv);
 static inline bool skuld_string_equal(skuld_string a, skuld_string b) {
     return a.len == b.len && memcmp(a.data, b.data, a.len) == 0;
+}
+/* Byte order, shorter first on a common prefix: the same bytes `len()` and
+   indexing already count, so no locale enters the language here. */
+static inline int skuld_string_compare(skuld_string a, skuld_string b) {
+    size_t common = a.len < b.len ? a.len : b.len;
+    int order = common == 0 ? 0 : memcmp(a.data, b.data, common);
+    if (order != 0) return (order > 0) - (order < 0);
+    return (a.len > b.len) - (a.len < b.len);
 }
 static inline void skuld_print_int(int64_t value, size_t byte) {
     if (printf("%" PRId64 "\n", value) < 0) skuld_fail("stdout write failed", byte);

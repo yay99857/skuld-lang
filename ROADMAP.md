@@ -1675,6 +1675,139 @@ match", which was wrong about its own code in the worse direction.
   fails and prints the repeated number. A real name still resolves through the
   machine's own nameserver.
 
+## M32 — One spelling for each thing, and the shorthands that earned one — Implemented
+
+The user read the website's documentation with an agent, asked what it would
+change about the language, and then asked for all of it. The proposal had six
+items. Before any code moved, a second agent was asked for the strongest case
+against each one; it read the parser, the checker, the lowering and the
+runtime, and five of the six changed shape as a result. What follows is the
+shape that survived and what was given up along the way. Sources read, not
+recalled: the Swift reference (`Declarations.md` on in-out parameters,
+`mutating` and `indirect`; `Expressions.md` on implicit member expressions,
+from the `swift-book` repository), the Zig reference on enum literals, Rust's
+`std::cmp::Ordering` and `Result::map_err`, and Go's `slices.SortFunc`.
+
+- **One return spelling: `-> T`.** `: T` after a signature, method, interface
+  method, extern function or lambda is now an error that carries a fix to
+  `->`. This closes open question 14 and **reverses part of M8's answer to
+  question 4**, which chose `(a: int): int { ... }` for a lambda. That choice
+  was made while `:` was still an accepted return spelling everywhere, so a
+  lambda had nothing to disagree with; once every other signature writes `->`,
+  the lambda alone writing `:` would be the inconsistency. `(a, b) => expr`
+  and `(a, b) { ... }` stay as two forms, because they are not two spellings
+  of one thing: one body is an expression and the other is a block, the same
+  distinction `match` arms already make.
+- **One match-arm separator: `:`.** The parser also accepted `->` there, which
+  reads as a return type. Nothing used it.
+- **One spelling of absence: `None`.** `null` was the documented spelling and
+  `None` the alternative. The user left the choice to the agent. `None` was kept
+  because it pairs with `Some`, which cannot be removed: patterns already say
+  `Some(x)`, and a pattern that says `null` would be the odd one out. Removing
+  `null` also makes "Skuld has no null value" literally true, and leaves
+  `ffi.null()`, the null *pointer*, as the only `null` in the language, which
+  is exactly where the word belongs. `null` stops being a prelude binding. A
+  program that writes it where nothing named `null` is in scope gets a fix to
+  `None`; a program that declares its own `null` is unaffected. The reviewer
+  called this a taste decision rather than an evidence decision, and it is
+  recorded as one.
+- **`weak.get()` is removed.** It was the only unwrap in the language that
+  trapped. `upgrade()` with `if let` or `let ... else` says the same thing and
+  makes the expired case visible. `alive()` stays, because it neither retains
+  nor traps.
+- **Comparators return `Ordering`.** The builtin `enum Ordering: i8 { Less =
+  -1, Equal = 0, Greater = 1 }` joins `Option` and `Result` as a reserved type
+  name. `sort` and `to_sorted` take `(T, T) -> Ordering`. Every integer width,
+  `char`, `bool` and `string` gain `a.compare(b)`, and `Ordering` gains
+  `then(other)` for sorting by a second key. The motivating fault: `a - b` was
+  the idiom every example used, and in Skuld it traps once the difference
+  leaves `int`. Go keeps an `int` comparator, but Go's integers wrap, and its
+  own `SortFunc` examples call `cmp.Compare` rather than subtracting.
+  - **Decision taken: `float` has `total_compare`, not `compare`.** It is IEEE
+    754 totalOrder, which disagrees with `<` about `-0.0` and NaN. Giving it the
+    name the other types use for an order that agrees with `<` would let a sort
+    and a later binary search written with `<` disagree. This follows Rust,
+    which keeps `total_cmp` apart from `partial_cmp`.
+  - **Rejected: `reverse()`.** Swapping the arguments already reverses an
+    order. Sorting by two keys had no idiom at all.
+- **`result.map_err(f)`** maps the error side and leaves `Ok` alone. `f` is a
+  non-escaping function value like a comparator. Its result type comes from
+  what the lambda declares or from its expression body; a block-bodied lambda
+  writes `-> F`. **Rejected: inferring `F` through a surrounding `?`.** Result
+  types are interned whole and there is no type with a hole in it, so
+  `r.map_err((e) => .Fs(e))?` is refused rather than guessed. `?` still never
+  converts. The reviewer's case against was that `let x = f() else e { return
+  Err(W(e)) }` already does this job. It survives because those sites exist in
+  `std/` and each becomes one line. It does not replace `let ... else`, which
+  remains the only form where the error-handling block needs to do more than
+  wrap.
+- **`.Variant` in an expression whose expected type is an enum.**
+  `show(.Ready(42))`, `let s: Status = .Pending`, an assignment or an array
+  element. The draft also promised `if s == .Pending`, on the grounds that `==`
+  hands its right operand the left operand's type. It does, but enums have no
+  `==` at all, and giving them one would be a feature of its own; `match`
+  remains how a variant is tested. Under an expected
+  `Option<E>`, `.X` names a variant of `E`; Option's own absence is still
+  written `None`. **Rejected: `.Variant` in patterns.** Patterns have accepted
+  the bare `Variant` since M1, unqualified and undocumented until now, so a
+  dotted form would have been a third spelling. It would also have made the
+  arm grammar depend on newlines: `A: print(1)` followed by a line `.B: ...`
+  reads as `print(1).B`. Patterns keep the bare name and it is now documented.
+  The two shorthands differ, bare in patterns and dotted in expressions, and
+  that is the price. Swift uses one shape for both, but Swift's grammar is
+  newline-sensitive and Skuld's is not.
+- **`var` methods on structs.** `var translate(dx: int) { this.x += dx }`
+  receives its struct through a pointer, and `this` is a mutable place inside
+  it. The call's receiver must be a chain of struct fields rooted at a `var`
+  local, or at `this` inside another `var` method. An array element, a class
+  field and a temporary are refused, with help that writes the copy out and
+  back. That restriction is the safety argument. A pointer into an array's
+  buffer dangles if the method pushes onto that array. A pointer into a class
+  object dangles if the method drops the last reference to it. Swift makes
+  both sound with a copy-in, copy-out rule and an exclusivity checker, and
+  Skuld has neither. Storage that nothing else can reach needs no checker.
+  Inside a `var` method, `this` is not borrowed the way an immutable receiver
+  is: reading `this.name` retains, so reassigning the field cannot free a
+  value that is still being read. A lambda may not capture `this` there,
+  since captures are copies of immutable bindings. `var` on a class or
+  interface method is refused, because a class's `this` is already a
+  reference.
+  - **Rejected: a new keyword** such as `mutating` or `mut`. `var` already
+    means "this binding may change", and in this position it says exactly
+    that about `this`. The reviewer noted that `var translate()` reads a
+    little like a declaration. That was recorded, and it did not block the
+    change.
+- **Recursive enums are marked `indirect`, which answers open question 3.** A
+  variant written `indirect Cons(Node)` stores its payload behind a
+  reference-counted box, so the enum may contain itself through that payload.
+  `indirect` is read as an identifier in that one position, the same way
+  `packed` and `align` are, so no attribute syntax enters the language.
+  Sharing a box is indistinguishable from copying it, because a payload is
+  never assigned in place. **Rejected: automatic boxing.** The reviewer showed
+  that adding one variant would silently turn a scalar-only enum into a
+  managed type. It would then stop being allowed in a `static` or under
+  `--freestanding`, and every copy of it would start counting, all without
+  the change being visible at the line that caused it. Swift, which the
+  proposal cited, requires the marker for the same reason. An `indirect`
+  variant is refused under `--freestanding`, and so is one whose payload does
+  not actually reach the enum again. The reviewer corrected one claim: boxing
+  adds no *new* cycle, but a class inside a payload can still close one, as
+  it always could. **A known limit, measured:** releasing a chain recurses on
+  the C stack once per link, as a chain of classes already does. On Windows'
+  default stack a 10,000-link list is released and a 100,000-link one
+  overflows, and a 100,000-long chain of classes overflows the same way, so
+  boxes added no new limit. It is documented, not solved; an iterative
+  release would fix both and is its own change. Recursive *structs* remain
+  refused.
+- **Closing marker: met.** Each item landed as its own commit with its
+  fixtures, and the whole suite passes on Windows with clang, including the
+  address and undefined-behaviour sanitizers over every `tests/pass` fixture:
+  `ordering`, `map_err`, `implicit_variants`, `var_methods` and
+  `indirect_enums` are new, and the arrays benchmark prints the same checksum
+  as before the comparator change. The Linux run, the i686 portability suite
+  and LeakSanitizer were not run from this machine, and CI is where they are
+  checked.
+
 ## Open design questions
 
 These are not settled by this document and change the shape of the milestones
@@ -1719,11 +1852,17 @@ above.
 2. ~~Do string slices retain their owner or copy?~~ Answered: they copy, except
    for slices of string literals, whose bytes are static. Whether a retaining
    slice earns its danger is a question for a benchmark, not for this document.
-3. Recursive enum variants: automatic boxing, or the user's responsibility?
+3. ~~Recursive enum variants: automatic boxing, or the user's responsibility?~~
+   Answered by M32: neither. The user marks the variant `indirect` and the
+   compiler boxes it. Automatic boxing was rejected because it silently changes
+   whether an enum is managed.
 4. ~~Callback and lambda syntax?~~ Answered by M8, which the user delegated:
    `(a: int, b: int): int { ... }` as the literal and `(int, int) -> int`
    as the type, with the types omissible under a known expected type. The
    sketch's `=>` is not adopted.
+   **Partly reversed:** M19 adopted `=>` for expression bodies, and M32
+   removed `:` as a return spelling, so a lambda now writes
+   `(a: int, b: int) -> int { ... }`.
 5. ~~JSON objects as a list of key/value fields, or waiting for a real map
    type?~~ Answered by M4's closing marker: a list of key/value pairs in source
    order, with linear lookup and duplicate keys preserved. Waiting for a map
@@ -1772,7 +1911,9 @@ above.
     than a benchmark is. It needs a local flow analysis and nothing resembling
     a borrow checker, and it has no consumer until systems code shows the
     proportion of `var` actually rising.
-14. Does the return type keep two spellings? `-> Type` and `: Type` are both
+14. ~~Does the return type keep two spellings?~~ Answered by M32: no, `-> T`
+    only.
+    The original question: Does the return type keep two spellings? `-> Type` and `: Type` are both
     accepted and the formatter already writes the first. Removing the second
     is a one-line parser change and a fixture sweep; keeping both is a
     permanent second way to say one thing.

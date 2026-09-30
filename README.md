@@ -222,7 +222,7 @@ itself, and a function type keeps `->`:
 
 ```skuld
 var numbers = [5, 3, 9, 1]
-numbers.sort((a: int, b: int): int { return a - b })
+numbers.sort((a: int, b: int) -> Ordering { return a.compare(b) })
 
 func count_if(values: []int, keep: (int) -> bool) -> int { ... }
 ```
@@ -340,7 +340,7 @@ heap-based and reference counted.
 
 `weak User` holds a non-owning class reference. `weak(user)` creates one,
 `upgrade()` returns `Some(user)` or `None` and safely retains a live target.
-`alive()` and trapping `get()` remain available. Weak parent
+`alive()` checks liveness without retaining. Weak parent
 links avoid ownership cycles without introducing null or a cycle collector.
 
 Arrays use `[]int` and `[1, 2, 3]`, with shared references, checked indexes and
@@ -359,8 +359,8 @@ cargo run -p skuld-cli -- run examples/bytes.skuld
 cargo run -p skuld-cli -- run examples/ffi.skuld
 ```
 
-`Option<T>`, `Some(value)` and `None` represent optional values; contextual
-`null` is another spelling of absence, not a standalone null value.
+`Option<T>`, `Some(value)` and `None` represent optional values. Skuld has no
+`null`: writing it is an error whose fix is `None`.
 Use `if let Some(value) = expression { ... } else { ... }` to access a payload;
 `is_some()` and `is_none()` query presence. Options have value semantics and
 an inline representation, with reference counting for managed payloads.

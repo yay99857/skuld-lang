@@ -1,0 +1,9 @@
+func parse() -> Result<int, string> {
+    return Err("no")
+}
+
+func main() {
+    let mapped = parse().map_err((e: string) {
+        print(e)
+    })
+}

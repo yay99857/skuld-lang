@@ -1,8 +1,8 @@
 class User { name: string }
 
-func find_answer(found: bool): Option<int> {
+func find_answer(found: bool) -> Option<int> {
     if found { return 42 }
-    return null
+    return None
 }
 
 func main() {

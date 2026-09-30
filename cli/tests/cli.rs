@@ -289,7 +289,7 @@ func main() { print(greeting.hello()) }
 #[test]
 fn fmt_formats_in_place_and_check_detects_drift() {
     let path = std::env::temp_dir().join(format!("skuld-fmt-{}.skuld", std::process::id()));
-    let unformatted = "func add(a: int, b: int): int {\nreturn a + b\n}\n";
+    let unformatted = "func add(a: int, b: int)->int {\nreturn a + b\n}\n";
     std::fs::write(&path, unformatted).expect("write unformatted");
 
     // --check fails when file needs formatting

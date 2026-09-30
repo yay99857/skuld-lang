@@ -1,0 +1,73 @@
+// An `indirect` variant keeps its payload in a counted box, so an enum can
+// contain itself: a tree whose one node is shared by two parents, and a list
+// a thousand links long that is released link by link when it goes.
+enum Expr {
+    Number(int),
+    Name(string),
+    indirect Add(Pair),
+    indirect Negate(Expr),
+}
+
+struct Pair {
+    left: Expr
+    right: Expr
+}
+
+enum List {
+    Empty,
+    indirect Cons(Cell),
+}
+
+struct Cell {
+    head: string
+    tail: List
+}
+
+func eval(expr: Expr) -> int {
+    match expr {
+        Number(value): return value
+        Name(name): return name.len()
+        Add(pair): return eval(pair.left) + eval(pair.right)
+        Negate(inner): return -eval(inner)
+    }
+}
+
+func show(expr: Expr) -> string {
+    match expr {
+        Number(value): return "${value}"
+        Name(name): return name
+        Add(pair): return "(" + show(pair.left) + " + " + show(pair.right) + ")"
+        Negate(inner): return "-" + show(inner)
+    }
+}
+
+func length(list: List) -> int {
+    var count = 0
+    var rest = list
+    loop {
+        match rest {
+            Empty: return count
+            Cons(cell): {
+                count += 1
+                rest = cell.tail
+            }
+        }
+    }
+}
+
+func main() {
+    let one = Expr.Number(1)
+    let shared = Expr.Add(Pair { left: one, right: .Name("ab" + "c") })
+    let tree = Expr.Add(Pair { left: shared, right: .Negate(shared) })
+    print(show(tree))
+    print(eval(tree))
+    var list: List = .Empty
+    for i in 0..1000 {
+        list = .Cons(Cell { head: "item ${i}", tail: list })
+    }
+    print(length(list))
+    match list {
+        Empty: print("empty")
+        Cons(cell): print(cell.head)
+    }
+}

@@ -12,9 +12,8 @@ fn format_basic_indentation() {
 }
 
 #[test]
-fn normalize_return_type() {
-    // `: int` normalizes to `-> int` for top-level functions.
-    let input = "func add(a: int, b: int): int {\n    return a + b\n}\n";
+fn return_type_keeps_its_arrow() {
+    let input = "func add(a: int, b: int)->int {\n    return a + b\n}\n";
     let expected = "func add(a: int, b: int) -> int {\n    return a + b\n}\n";
     assert_eq!(fmt(input), expected);
 }
@@ -110,7 +109,7 @@ fn weak_uses_parentheses() {
 #[test]
 fn lambda_syntax() {
     let input =
-        "func main() {\n    let f = (a: int, b: int): int {\n        return a + b\n    }\n}\n";
+        "func main() {\n    let f = (a: int, b: int)->int {\n        return a + b\n    }\n}\n";
     let output = fmt(input);
     assert!(
         output.contains("(a: int, b: int) -> int {"),

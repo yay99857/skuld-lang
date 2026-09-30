@@ -121,6 +121,9 @@ pub struct VariantDecl {
     /// left out continues from the variant before it.
     pub value: Option<Expr>,
     pub span: Span,
+    /// `indirect Cons(Node)`: the payload lives behind a counted box, which
+    /// is what lets it contain the enum again.
+    pub indirect: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,6 +290,9 @@ pub struct FunctionDecl {
     pub return_type: Option<TypeRef>,
     pub body: Block,
     pub span: Span,
+    /// `var name(...)`: a struct method whose `this` is a place it may change,
+    /// reached through the caller's own storage. Always false for a function.
+    pub mutating: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -456,6 +462,8 @@ pub struct Expr {
 pub enum ExprKind {
     Literal(Literal),
     Identifier(Name),
+    /// `.Variant`, whose enum is the one the context expects.
+    ImplicitVariant(Name),
     Group(Box<Expr>),
     Unary {
         op: UnaryOp,

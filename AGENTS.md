@@ -142,7 +142,7 @@ behind it. The obligations above are checkable, and a persona is not.
 - The resolver's declaration and use tables are keyed by file and byte offset;
   keep them with their exact AST revision. Functions are predeclared; parameters share the function
   body scope; locals become visible after initializers; child scopes shadow.
-  The prelude bindings — `print`, `Some`, `None`, `null`, `Ok`, `Err`, `ptr`, the width
+  The prelude bindings — `print`, `Some`, `None`, `Ok`, `Err`, `ptr`, the width
   conversions and `bytes_to_string` — may all be shadowed. Use resolved symbols,
   not spelling, to identify builtins. Only direct calls are supported currently.
 - HIR lowering is separate from checking. Only successful checking constructs
@@ -159,7 +159,12 @@ behind it. The obligations above are checkable, and a persona is not.
   declared without `func`, take an implicit immutable `this`, and lower to
   functions with a leading receiver. Struct names live in a type namespace
   owned by the checker, and method names in a scope of their own, so neither
-  resolves as an ordinary value name.
+  resolves as an ordinary value name. A method declared `var name(...)` (M32)
+  receives its struct by address and may change it; its receiver at a call
+  must be a `var` local or `this` of another `var` method, through struct
+  fields only — never an array element, a class field or a temporary, which
+  the method could move or free. That restriction is the safety argument, in
+  place of an exclusivity checker. `var` on a class method is refused.
 - Classes are implemented with reference semantics: fields, methods with implicit
   `this`, `new Class(...)` construction, field access and field assignment through
   references. Assigning into a class field is allowed on `let` bindings and through
@@ -171,10 +176,11 @@ behind it. The obligations above are checkable, and a persona is not.
   retained on entry, arguments borrowed, returns retained.
 - Weak class references use `weak Class`, `weak(value)` and contextually typed
   empty `weak()`. `upgrade()` returns an owning `Option<Class>` without trapping
-  on expiration; `alive()` checks liveness and `get()` retains or traps.
+  on expiration and `alive()` checks liveness; the trapping `get()` was removed in
+  M32.
   Weak references do not keep managed fields alive. No normal null value exists.
-- Builtin `Option<T>` uses inline tag/payload value semantics. Contextual `null` (and
-  `None`) represents absent values; values wrap implicitly into expected Options.
+- Builtin `Option<T>` uses inline tag/payload value semantics. Contextual `None`
+  represents absent values — `null` stopped being a spelling of it in M32; values wrap implicitly into expected Options.
   `if let name = value` (and `if let Some(name)`) binds an immutable payload in its then scope.
   Managed payloads retain/release only when present. Interfaces arrived with
   M10; general generics remain future work.
@@ -185,13 +191,19 @@ behind it. The obligations above are checkable, and a persona is not.
   `if let Err(e)`, `is_ok()` and `is_err()` inspect a Result. Postfix `?` yields
   the success payload or returns the error unchanged; it requires an enclosing
   function returning a Result with an identical error type and never converts
-  between error types. `Result` is a reserved type name; `Ok` and `Err` are
+  between error types; since M32 the conversion is written at the call with
+  `result.map_err(f)`, whose new error type is what the non-escaping `f`
+  answers and is never inferred from the `?`. `Result` is a reserved type name; `Ok` and `Err` are
   shadowable prelude bindings.
 - Arrays use `[]T`, literals, checked int indexes, `len()`, `push()`, `insert()`,
   `pop()`, `remove()` and `[a..b]` slicing. Capacity grows geometrically; references
   share element mutations even through `let`. Managed elements are retained and
   released. Sorting and callbacks arrived with M8: `sort()` is stable, returns
-  void and takes a non-escaping comparator.
+  void and takes a non-escaping comparator. Since M32 a comparator answers the
+  builtin `Ordering` (`Less`, `Equal`, `Greater`, worth -1, 0, 1 as an `i8`),
+  from `compare` on the integers, `char`, `bool` and `string`, `total_compare`
+  on `float` — which has no `compare`, since totalOrder disagrees with `<` —
+  and `then` for a second key. `Ordering` is a reserved type name.
 - Sized integers are `i8 i16 i32 i64` and `u8 u16 u32 u64`; `int` is a spelling of
   `i64`, not a separate type. A literal takes the width its context expects and is
   range-checked there, defaulting to `int`; a signed minimum is written as a minus
@@ -208,6 +220,12 @@ behind it. The obligations above are checkable, and a persona is not.
   string error side is provisional and awaits a standard library to own a real
   error type.
 - Enums are user-declared sum types with unit and payload variants: `enum Name { Variant, Variant(Type) }`.
+  A variant marked `indirect` (M32) keeps its payload in a counted, shared box
+  so the enum may contain itself; the marker is written, never inferred, since
+  inferring it would silently make an enum managed. It is a contextual word
+  like `packed`, refused without a payload or where nothing recurses.
+  Where an enum is expected, a variant is written `.Pending` or `.Active(v)`
+  without naming it (M32); patterns name it bare, `Pending:`, and never dotted.
   Pattern matching uses `match value { Pattern: stmt, Pattern: { ... }, _: ... }` with exhaustiveness
   checking, immutable payload arm bindings, and C codegen retaining/releasing managed variant payloads.
 - `for` loops iterate over half-open integer ranges `a..b` and arrays `[]T` by value:
@@ -268,8 +286,8 @@ behind it. The obligations above are checkable, and a persona is not.
   M11 (the official formatter) is complete: `skuld fmt <file>` formats in-place
   and `skuld fmt --check <file>` detects drift without writing. It preserves all
   `//` comments, exact literal representations, statement boundaries and AST
-  semantics. Return types normalize to `-> Type` while `:` remains fully accepted
-  in source. All fixtures and examples format idempotently and execute cleanly.
+  semantics. Return types are written `-> Type`; the `:` spelling it once
+  normalized was removed by M32. All fixtures and examples format idempotently and execute cleanly.
   M12 (references and rename in the LSP) is complete; its two open decisions
   were taken as recorded below and in `ROADMAP.md`.
   M13 (local CLI applications and `skuld test`) is complete, with its file,
@@ -579,7 +597,7 @@ behind it. The obligations above are checkable, and a persona is not.
   builtin `bytes_to_string` keeps returning `Result<string, string>`: making it
   return a library type would invert the dependency.
 - Function values are implemented and non-escaping. A lambda is written
-  `(a: int, b: int): int { ... }` — no keyword, the shape a method already uses
+  `(a: int, b: int) -> int { ... }` — no keyword, the shape a method already uses
   — and a function type is `(int, int) -> int`, which keeps `->` so a parameter
   is not spelled `compare: (int, int): int`. Parameter and result types may be
   omitted where the expected type supplies them, and a declared function named
@@ -648,8 +666,8 @@ behind it. The obligations above are checkable, and a persona is not.
 - The official formatter is implemented: `skuld fmt <file>` formats in place and
   `skuld fmt --check <file>` reports drift without modifying the file. Formatting
   preserves all line comments (`//`), literal byte choices, statement boundaries
-  and AST semantics. Top-level and method signatures normalize to `-> Type`, while
-  colon return type syntax remains accepted. Match arms normalize to `Pattern: ...`.
+  and AST semantics. Signatures are written `-> Type` — since M32 the only
+  spelling — and match arms `Pattern: ...`, their only separator.
   Idempotency and native output preservation are tested across all fixtures.
 - The language server finds references and renames. A workspace is the set of
   programs the editor has open: each document is compiled as the entry file of

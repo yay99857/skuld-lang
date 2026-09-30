@@ -6,5 +6,5 @@ func run(f: () -> void) {
 
 func main() {
     var total = 0
-    run((): void { print(total) })
+    run(() -> void { print(total) })
 }

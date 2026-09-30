@@ -598,7 +598,7 @@ fn option_syntax_errors_and_nesting_are_diagnosed() {
 fn result_types_patterns_and_try_parse() {
     // `Result<T, E>` closes like `Option<T>`, including the `>=` that the lexer
     // hands over as one token in an annotation followed by an initializer.
-    let source = "func read(): Result<int, string> { return Ok(1) }\nfunc main() {\n    let a: Result<int, string>= read()\n    if let Ok(value) = a { print(value) }\n    if let Err(reason) = a { print(reason) }\n}";
+    let source = "func read() -> Result<int, string> { return Ok(1) }\nfunc main() {\n    let a: Result<int, string>= read()\n    if let Ok(value) = a { print(value) }\n    if let Err(reason) = a { print(reason) }\n}";
     let result = parse(source);
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     let program = result.program.expect("parsed");
@@ -694,13 +694,53 @@ fn slices_and_indexes_are_distinguished() {
 }
 
 #[test]
-fn colon_return_and_direct_if_let_parse() {
-    let source = "struct Calc { compute(x: int): int { return x } }\nfunc add(a: int, b: int): int { return a + b }\nfunc main() { if let ans = None {} }";
+fn arrow_return_and_direct_if_let_parse() {
+    let source = "struct Calc { compute(x: int) -> int { return x } }\nfunc add(a: int, b: int) -> int { return a + b }\nfunc main() { if let ans = None {} }";
     let result = parse(source);
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     let program = result.program.expect("parsed");
     assert_eq!(program.functions.len(), 2);
     assert_eq!(program.structs.len(), 1);
+}
+
+#[test]
+fn a_colon_return_type_is_refused_with_the_arrow_as_its_fix() {
+    // Every place a signature names its result: a function, a method, an
+    // interface method, an extern function and a lambda.
+    for source in [
+        "func add(a: int): int { return a }",
+        "struct S { get() : int { return 1 } }",
+        "interface I { text(): string }",
+        "unsafe extern \"C\" { func abs(v: i32): i32 }",
+        "func main() { let f = (n: int): int { return n } }",
+    ] {
+        let result = parse(source);
+        assert!(result.program.is_none(), "{source}");
+        let diagnostic = &result.diagnostics[0];
+        assert!(diagnostic.message.contains("`-> Type`"), "{diagnostic:?}");
+        let fix = diagnostic.fix.as_ref().expect("a fix");
+        assert_eq!(&source[fix.span.start..fix.span.end], ":", "{source}");
+        let mut fixed = source.to_owned();
+        fixed.replace_range(fix.span.start..fix.span.end, &fix.replacement);
+        assert!(fixed.contains(") -> "), "{fixed}");
+        let reparsed = parse(&fixed);
+        assert!(
+            reparsed.diagnostics.is_empty(),
+            "{fixed}: {:?}",
+            reparsed.diagnostics
+        );
+    }
+}
+
+#[test]
+fn a_match_arm_is_separated_only_by_a_colon() {
+    let result = parse("func main() { match 1 { 1 -> print(1)\n _: print(0) } }");
+    assert!(result.program.is_none());
+    assert!(
+        result.diagnostics[0]
+            .message
+            .contains("`:` after match pattern")
+    );
 }
 
 #[test]

@@ -444,6 +444,9 @@ impl<'a> Formatter<'a> {
 
     /// A method inside a struct or class: no `func`, no visibility.
     fn format_method(&mut self, f: &FunctionDecl) {
+        if f.mutating {
+            self.push("var ");
+        }
         self.push(&f.name.text);
         self.push("(");
         self.format_parameters(&f.parameters);
@@ -474,6 +477,9 @@ impl<'a> Formatter<'a> {
         self.indent();
         for variant in &en.variants {
             self.emit_comments_before(variant.span.start);
+            if variant.indirect {
+                self.push("indirect ");
+            }
             self.push(&variant.name.text);
             if let Some(payload) = &variant.payload {
                 self.push("(");
@@ -872,6 +878,10 @@ impl<'a> Formatter<'a> {
                 self.push(&self.source[expr.span.start..expr.span.end]);
             }
             ExprKind::Identifier(name) => {
+                self.push(&name.text);
+            }
+            ExprKind::ImplicitVariant(name) => {
+                self.push(".");
                 self.push(&name.text);
             }
             ExprKind::Group(inner) => {

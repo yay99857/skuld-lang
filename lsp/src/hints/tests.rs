@@ -68,6 +68,6 @@ fn names_a_declared_type_the_way_it_was_declared() {
 fn a_binding_inside_a_lambda_is_hinted_too() {
     // The hints come from the resolver's table rather than a walk over
     // statements, so a body nested in an expression is not a special case.
-    let source = "func main() {\n    var values = [3, 1, 2]\n    values.sort((a: int, b: int) -> int {\n        let first = a\n        return first - b\n    })\n    print(values[0])\n}\n";
+    let source = "func main() {\n    var values = [3, 1, 2]\n    values.sort((a: int, b: int) -> Ordering {\n        let first = a\n        return first.compare(b)\n    })\n    print(values[0])\n}\n";
     assert_eq!(labels(source), [": []int", ": int"]);
 }

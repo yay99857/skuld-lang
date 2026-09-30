@@ -1,0 +1,38 @@
+// Comparisons answer an `Ordering`. Sorting the extremes of `int` shows why:
+// the `a - b` comparator this replaced trapped on exactly these values.
+struct Person {
+    name: string
+    age: int
+}
+
+func show(order: Ordering) {
+    match order {
+        Less: print("less")
+        Equal: print("equal")
+        Greater: print("greater")
+    }
+}
+
+func main() {
+    show(1.compare(2))
+    show('b'.compare('a'))
+    show("abc".compare("abd"))
+    show("ab".compare("abc"))
+    show(true.compare(false))
+    show(0.5.total_compare(0.5))
+    show((-0.0).total_compare(0.0))
+    show(0.0.total_compare(-0.0))
+    print(i8(3.compare(1)))
+    let big = [9223372036854775807, -9223372036854775807, 0]
+    big.sort((a, b) => a.compare(b))
+    for n in big {
+        print(n)
+    }
+    let people = [Person { name: "Bea", age: 30 }, Person { name: "Al", age: 30 }, Person { name: "Cy", age: 20 }]
+    let sorted = people.to_sorted((a, b) => a.age.compare(b.age).then(a.name.compare(b.name)))
+    for p in sorted {
+        print(p.name)
+    }
+    show(Ordering.Less.then(Ordering.Greater))
+    show(Ordering(1))
+}

@@ -251,7 +251,7 @@ func read_line() -> Option<string> {
         let got = read(0, ptr(one), u64(1))
         if got <= 0 {
             if bytes.len() == 0 {
-                return null
+                return None
             }
             break
         }
@@ -270,14 +270,14 @@ func read_line() -> Option<string> {
 
 func parse_int(text: string) -> Option<int> {
     if text.len() == 0 {
-        return null
+        return None
     }
     var total = 0
     var index = 0
     while index < text.len() {
         let digit = text[index]
         if digit < 48 || digit > 57 {
-            return null
+            return None
         }
         total = total * 10 + int(digit - 48)
         index += 1

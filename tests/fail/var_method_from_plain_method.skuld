@@ -1,0 +1,17 @@
+struct Point {
+    x: int
+
+    var shift() {
+        this.x += 1
+    }
+}
+
+struct Pair {
+    a: Point
+
+    both() {
+        this.a.shift()
+    }
+}
+
+func main() {}

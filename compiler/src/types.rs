@@ -121,6 +121,9 @@ pub struct VariantInfo {
     /// names an underlying type; otherwise it is the variant's own position,
     /// which is also what the backend stores as the tag.
     pub value: i128,
+    /// Stored behind a reference-counted box rather than inline, so the
+    /// payload may contain the enum it belongs to. Written, never inferred.
+    pub indirect: bool,
 }
 
 /// A machine integer width and signedness. `int` is a spelling of `I64`, so

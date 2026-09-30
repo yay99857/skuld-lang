@@ -1,13 +1,13 @@
 enum Status {
     Pending,
     Active,
-    Cancelled
+    Cancelled,
 }
 
 enum Command {
     Quit,
     Echo(string),
-    Move(int)
+    Move(int),
 }
 
 func handle(cmd: Command) {
@@ -24,7 +24,7 @@ func handle(cmd: Command) {
     }
 }
 
-func status_name(s: Status): string {
+func status_name(s: Status) -> string {
     match s {
         Status.Active: return "Active"
         _: return "Inactive"

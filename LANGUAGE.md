@@ -60,7 +60,7 @@ The old words are ordinary identifiers and can be explicitly declared by users.
 
 Keywords: `func let var return if else while loop for in break continue new weak class struct
 impl enum match import pub extern unsafe interface`. A lambda needs none of them: it is
-written `(a: int): int { ... }`, the shape a method already uses.
+written `(a: int) -> int { ... }`, the shape a method already uses.
 Reserved future keywords: `static`.
 `true` and `false` produce boolean literal tokens. Type names, `print`, `Some`,
 `None`, `Ok` and `Err` are identifiers. `Option<T>` and `Result<T, E>` are
@@ -192,6 +192,10 @@ func main() {
 ```
 
 Parameters and return signatures are explicit; omitted return type means void.
+A return type is written `-> Type` and nowhere else: `: Type` after a
+signature, method, interface method, extern function or lambda is a syntax
+error carrying the edit to `->`, since `:` names the type of a binding or a
+field. It was accepted as a second spelling until M32.
 The entrypoint is `func main()`. Executable global statements are forbidden.
 `print` is a special builtin returning `void`. `print()` emits a blank line;
 `print(value)` accepts one `int`, `float`, `bool` or `string` and appends a newline.
@@ -427,6 +431,53 @@ no partial initialization, so a missing field is `E0112` and a repeated one is
 a duplicate declaration. Field order in construction is free; the backend lays
 fields out in declaration order.
 
+### Methods that change the struct — Implemented (M32)
+
+A struct method receives an immutable copy of its receiver, so it cannot change
+the caller's value. One declared `var` can:
+
+```skuld
+struct Point {
+    x: int
+    y: int
+
+    var translate(dx: int, dy: int) {
+        this.x += dx
+        this.y += dy
+    }
+}
+
+func main() {
+    var p = Point { x: 1, y: 2 }
+    p.translate(10, 20)
+    print(p.x) // 11
+}
+```
+
+Inside it `this` is a mutable place, the caller's own storage reached through
+its address; fields are assigned through it and `this` itself may be replaced.
+`var` reuses the keyword that already means "this binding may change", and it is
+refused on a class method, whose `this` is already a reference.
+
+The receiver of a call to one must be storage nothing else can reach while the
+call runs: a `var` local, or `this` inside another `var` method, or a struct
+field of either. A `let` or a parameter is `E0203`. An array element, a field of
+a class object and a temporary are `E0204`, because the method could push onto
+that array or drop the last reference to that object and so move or free the
+storage it is changing. Swift makes those cases sound with copy-in, copy-out
+and an exclusivity checker; Skuld narrows where the pointer may point instead,
+and the copy is written out:
+
+```skuld
+var item = points[i]
+item.translate(1, 0)
+points[i] = item
+```
+
+Inside a `var` method `this` is read like any `var`: a counted copy, so
+replacing a field cannot free a value still being read. A lambda may not capture
+it, since captures are copies of immutable bindings.
+
 ## Field defaults — Implemented
 
 ```skuld
@@ -639,10 +690,10 @@ operation. A live target produces `Some(user)` owning a strong reference; an
 empty or expired weak reference produces `None` without trapping. Handle the
 result with `if let Some(user) = observer.upgrade() { ... } else { ... }`.
 
-`alive() -> bool` remains a liveness query. The existing `get() -> User` retains
-the target or traps with `expired weak reference` and a source byte offset.
-Prefer `upgrade()` when expiration is an expected outcome: it combines the
-check and promotion. All three methods take no arguments.
+`alive() -> bool` remains a liveness query that neither retains nor traps.
+Both methods take no arguments. There is no `get()`: until M32 it retained the
+target or trapped, the only unwrap in the language that did, and a program
+now writes the expired case down with `if let` or `let ... else`.
 
 Weak values can be copied, assigned, passed, returned and stored in structs,
 classes and arrays. They keep allocation bookkeeping alive, not the target's
@@ -652,19 +703,19 @@ Use a weak parent link with a strong child link to avoid ownership cycles; see
 
 ## Optional values — Implemented
 
-`Option<T>` is a builtin value type representing a present value or `null` (also `None`).
+`Option<T>` is a builtin value type representing a present value or `None`.
 `T` can be any non-void implemented value type, including another Option,
 a struct, a class, an array or a weak reference. This milestone introduces
 neither general generics nor user-defined enums.
 
 ```skuld
-func answer(found: bool): Option<int> {
+func answer(found: bool) -> Option<int> {
     if found { return 42 }
-    return null
+    return None
 }
 
 func main() {
-    let missing: Option<int> = null
+    let missing: Option<int> = None
     if let value = answer(true) {
         print(value)
     } else {
@@ -676,13 +727,18 @@ func main() {
 
 Values wrap implicitly into an expected `Option<T>` (e.g. `return 42` or
 `let x: Option<int> = 42`), while `Some(value)` remains supported.
-`null` (and `None`) needs an expected Option type from an annotation, assignment, parameter,
+`None` needs an expected Option type from an annotation, assignment, parameter,
 field, return type or enclosing array/Some expression. For example,
-`let nested: Option<Option<int>> = Some(null)` is valid, while unannotated
-`let nested = null` cannot infer the payload. No implicit unwrapping,
-truthiness or numeric conversions are provided. `null()` is invalid.
-`Option` cannot be redeclared as a struct/class type; `null`, `Some` and `None` remain
+`let nested: Option<Option<int>> = Some(None)` is valid, while unannotated
+`let nested = None` cannot infer the payload. No implicit unwrapping,
+truthiness or numeric conversions are provided. `None()` is invalid.
+`Option` cannot be redeclared as a struct/class type; `Some` and `None` remain
 shadowable prelude value bindings like `print`.
+
+`None` is the one spelling of absence. `null` was a second one until M32 and is
+now an ordinary identifier: written where nothing named `null` is in scope, it
+is an error carrying the edit to `None`, and a program may declare its own
+`null`, as `std/ffi` does for the null pointer.
 
 `if let name = expression { ... } else { ... }` (and `if let Some(name)`) evaluates the expression
 once. The successful branch receives an immutable copy of the payload, retaining
@@ -819,6 +875,22 @@ operator, so `read()? + read()?` applies it to each call. An early return throug
 `?` releases the operand and everything the scope had acquired, exactly like a
 written `return`.
 
+Where the error types differ, the conversion is written at the call:
+`result.map_err(f)` leaves `Ok` alone and passes an error through `f`, a
+non-escaping function value like a comparator, so
+
+```skuld
+let address = dns.resolve(host).map_err((reason) => HttpError.Name(reason))?
+```
+
+carries a `DnsError` out of a function returning `Result<_, HttpError>`. What
+the error becomes is what `f` answers: the result written on a block lambda,
+`(e) -> AppError { ... }`, or read off an expression body. It is never inferred
+from the `?` around the call, since a `Result` type is known whole or not at
+all. `f` runs only on the error side, after the result is evaluated. A
+`let ... else` remains the form for handling that needs more than a wrap. Added
+in M32, with `std/http` and `std/https` as its first callers.
+
 `Result` stores a tag and an inline payload, so constructing one does not
 allocate, and a value struct cannot contain itself through a `Result`. Copying
 retains a managed payload on whichever side is active. Results support neither
@@ -864,8 +936,8 @@ element before evaluating the RHS.
 Dynamic array mutation and growth:
 - `values.push(element: T)` appends an element, growing geometric capacity.
 - `values.insert(index: int, element: T)` inserts at `0 <= index <= len()`, shifting later elements. Traps on invalid index.
-- `values.pop(): Option<T>` removes and returns the last element, or `null` if empty.
-- `values.remove(index: int): Option<T>` removes and returns element at index, shifting elements left, or `null` if out of bounds.
+- `values.pop(): Option<T>` removes and returns the last element, or `None` if empty.
+- `values.remove(index: int): Option<T>` removes and returns element at index, shifting elements left, or `None` if out of bounds.
 
 Slicing, array equality, sorting, callbacks and `for` iteration remain
 planned. Strong cycles through classes and arrays still require explicit
@@ -911,9 +983,33 @@ enum Status {
 - Variants may be unit variants (`Status.Pending`) or payload variants (`Status.Active(42)`).
 - Variant constructors live in the enum's member namespace: `Status.Pending` constructs a unit variant, and `Status.Active(value)` constructs a payload variant.
 - Variants can be separated by commas, newlines, or both. Duplicate variant names are rejected (`E0202`).
-- Direct recursive enum variants by value (such as `enum List { Cons(List), Nil }`) are rejected as value cycles (`E0103`); indirect recursion via arrays (`[]List`) or classes is supported.
+- An enum may contain itself only through a variant marked `indirect`
+  (M32): `enum List { Nil, indirect Cons(Cell) }` where `Cell` holds a `List`.
+  The payload of an `indirect` variant is stored in a reference-counted box
+  rather than inline, and a copy of the enum shares the box, which cannot be
+  told apart from copying it because a payload is never assigned in place.
+  Construction, `.Variant` and matching are written exactly as for any
+  variant. `indirect` is read as a marker only before another name on the same
+  line, like `packed` and `align`, so it is not a keyword. Without it, an enum
+  that contains itself by value is still `E0103`, now with a help line naming
+  `indirect`. The marker is also `E0103` on a variant without a payload, or on
+  one whose payload never leads back to the enum, since nothing needs that box.
+  An enum with an `indirect` variant is managed: it is refused under
+  `--freestanding` and in a `static`. The box is written, not inferred, so
+  adding a variant never silently changes whether an enum is managed.
+  Recursion through an array (`[]List`) or a class needs no marker, as before.
+  Releasing a chain recurses once per link, the way a chain of classes already
+  does; measured on Windows' default stack, a list of 10,000 links is released
+  and one of 100,000 overflows it, for boxes and classes alike.
 - Enums have value semantics. Managed payloads (strings, arrays, classes) are automatically reference-counted with retain and release in C codegen.
 - Enum values implicitly wrap into `Option<Enum>` where expected.
+- Where the context expects an enum, a variant may be written `.Pending` or
+  `.Active(42)` without naming it: an argument, a `return`, an annotated
+  `let`, an assignment, a field or an array element. Under an expected
+  `Option<Enum>` the variant is looked up in `Enum` and wrapped; absence is
+  still `None`. With no expected enum, `.Name` is an error asking for the
+  enum's name (`E0101`). Added in M32; `Status.Pending` stays valid everywhere.
+- Enums have no `==`; `match` is how a variant is tested.
 
 Pattern matching is performed using the `match` statement:
 
@@ -932,7 +1028,13 @@ match status {
 
 - Target expression can be an enum, a `Result` (which matches as a two-variant enum with `Ok` and `Err`), or any scalar or string type (integers, float, bool, string). Non-matchable types like structs or classes are rejected (`E0102`).
 - Arm patterns support variant patterns (`Status.Pending`, `Status.Active(code)`), literal and constant value patterns, half-open ranges `a..b`, inclusive ranges `a..=b`, and the wildcard pattern (`_`).
-- Arm separator accepts `:` or `->`.
+- A variant pattern may leave the enum out — `Pending:` and `Active(code):` —
+  since the target already says which enum it is. A pattern never takes the
+  dotted `.Pending` an expression does: the arm grammar would then depend on
+  newlines, because `A: print(1)` followed by a line `.B: ...` reads as
+  `print(1).B`.
+- Arms are separated from their bodies by `:` alone; `->` was accepted too
+  until M32.
 - Arms can have a single statement or a block `{ ... }`.
 - Variant payload bindings introduce an immutable local variable scoped to that arm's body.
 - Exhaustiveness is strictly checked: every enum variant must be covered or a wildcard `_` provided; for scalar and string matches, a wildcard `_` arm is mandatory (`E0113`).
@@ -1308,18 +1410,18 @@ A lambda is a function declaration without a name, which is why it needs no
 keyword: a method already declares itself the same way.
 
 ```skuld
-let increment = (n: int): int { return n + 1 }
+let increment = (n: int) -> int { return n + 1 }
 let double = (n: int) => n * 2
-numbers.sort((a, b) => a - b)
+numbers.sort((a, b) => a.compare(b))
 ```
 
-A lambda can have a block body or an expression body with `=>` (e.g. `(a, b) => a - b`).
+A lambda can have a block body or an expression body with `=>` (e.g. `(a, b) => a + b`).
 Where expected context supplies parameter and return types, annotations may be omitted.
 
 A function *type* is written `(int, int) -> int`. The result uses `->` there so
 that a parameter is not spelled `compare: (int, int): int`, with `:` meaning
-"has type" and "returns" in the same declaration; inside a literal both `:` and
-`->` introduce the result, as they do on a method.
+"has type" and "returns" in the same declaration; a literal introduces its
+result with `->` too, as a method does.
 
 ```skuld
 func count_if(values: []int, keep: (int) -> bool) -> int {
@@ -1338,7 +1440,7 @@ local inference `let` performs — and a declared function named where a value i
 expected becomes one:
 
 ```skuld
-print(count_if(numbers, (n): bool { return n > 1 }))
+print(count_if(numbers, (n) -> bool { return n > 1 }))
 print(apply(10, double))
 ```
 
@@ -1363,10 +1465,10 @@ the two rules are one rule.
 
 ```skuld
 let base = 100
-print(apply(5, (n: int): int { return n + base }))   // captures `base`
+print(apply(5, (n: int) -> int { return n + base }))   // captures `base`
 
 var running = 0
-print(apply(5, (n: int): int { return n + running })) // rejected
+print(apply(5, (n: int) -> int { return n + running })) // rejected
 ```
 
 **A chosen limit.** Because a function value cannot be stored, a callback
@@ -1391,19 +1493,39 @@ array no longer owns.
 
 ```skuld
 var words = ["pear", "fig", "banana", "kiwi"]
-words.sort((a, b) => a.len() - b.len())
+words.sort((a, b) => a.len().compare(b.len()))
 // fig, pear, kiwi, banana — `pear` and `kiwi` keep the order they were in
 
 let numbers = [5, 3, 9, 1]
-let sorted = numbers.to_sorted((a, b) => a - b)
+let sorted = numbers.to_sorted((a, b) => a.compare(b))
 // numbers remains [5, 3, 9, 1]; sorted is [1, 3, 5, 9]
 ```
 
-A comparator returns a negative, zero or positive `int`. Writing that as
-`a - b` is the usual shorthand and it is only safe when the values are small:
-arithmetic traps on overflow at every width, so comparing values near the
-extremes of `int` that way aborts the program. Comparing and returning `-1`,
-`0` or `1` always works.
+A comparator answers an `Ordering`, the builtin
+`enum Ordering: i8 { Less = -1, Equal = 0, Greater = 1 }`. `Ordering` is a
+reserved type name like `Option` and `Result`; its variants are written
+`Ordering.Less`, or bare in a `match` on one, and `i8(order)` gives the sign a C
+comparator would.
+
+| Receiver | Method | Order |
+| --- | --- | --- |
+| every integer width, `char`, `bool` | `a.compare(b)` | numeric; `false` before `true` |
+| `string` | `a.compare(b)` | bytewise, a shorter prefix first — no locale |
+| `float` | `a.total_compare(b)` | IEEE 754 totalOrder |
+| `Ordering` | `first.then(second)` | `first`, unless it is `Equal` |
+
+`then` is how a sort takes a second key:
+`people.sort((a, b) => a.age.compare(b.age).then(a.name.compare(b.name)))`.
+Both sides are evaluated, left to right, like any other pair of operands.
+
+`float` has no `compare`. Its order under `<` leaves NaN unordered and calls
+`-0.0` and `0.0` equal, while totalOrder puts `-0.0` first and places every
+NaN, so giving it the name the other types use for an order that agrees with
+`<` would let a sort and a later search written with `<` disagree.
+
+Until M32 a comparator returned a negative, zero or positive `int`, and the
+shorthand that invited, `a - b`, traps once the difference leaves `int`. An
+`int` comparator is now a type error whose help names `compare`.
 
 ## Interfaces — Implemented
 
@@ -1589,7 +1711,7 @@ import "geometry"
 
 func place(p: geometry.Point, all: []geometry.Point) -> Option<geometry.Point> {
     match geometry.Shape.Box(p) {
-        geometry.Shape.Dot: return null
+        geometry.Shape.Dot: return None
         geometry.Shape.Box(inner): return inner
     }
 }
@@ -1812,8 +1934,10 @@ or automatically implement every construct it contains.
   all fields and run statements inside `func main()`.
 - Array literals such as `[1, 4, 6, 7, 3]` and the type syntax `[]int` are now
   implemented; the sketch's global placement is still unsupported.
-- `numbers.sort((a, b) => a - b)` in the sketch is settled: expression lambdas
-  using `=>` are supported for inline lambdas (`(a, b) => a - b`). In-place sorting
+- `numbers.sort((a, b) => a - b)` in the sketch is settled, and its comparator
+  is where M32 changed it: expression lambdas using `=>` are supported, and a
+  comparator answers an `Ordering`, so the line is written
+  `numbers.sort((a, b) => a.compare(b))`. In-place sorting
   remains `numbers.sort(cmp)` returning `void`, while non-mutating copy sorting is
   provided by `numbers.to_sorted(cmp) -> []T`. Parameter types may be omitted
   where expected types provide them.
