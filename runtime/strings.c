@@ -3,7 +3,9 @@
  *
  * Reference counts are NOT atomic. Skuld has no threads, and paying for atomic
  * operations on every copy would be a cost with nothing to buy. Introducing
- * threads means revisiting this file, not the code generator.
+ * threads means revisiting this file, not the code generator — including the
+ * release queue and its depth below, the one piece of mutable global state
+ * here, which would have to become per-thread.
  *
  * There is no cycle collector, by design: this is reference counting, not a
  * garbage collector. Strong cycles through classes/arrays require explicit
@@ -181,10 +183,64 @@ static inline void skuld_weak_assign(skuld_weak *slot, skuld_weak value) {
     *slot = skuld_weak_retain(value);
     skuld_weak_release(&previous);
 }
+/* Releasing a chain without a C stack frame per link.
+ *
+ * A destroy releases what the object held, and that release may end the next
+ * object in a chain, whose destroy ends the next: one C stack frame per link,
+ * until a list a hundred thousand long overflowed the stack when dropped. So
+ * past a nesting depth a release only records the object, and the outermost
+ * release destroys what was recorded in a loop. The stack a release uses is
+ * bounded by that depth instead of by the length of the chain.
+ *
+ * Shallow releases recurse exactly as they always did. That is deliberate and
+ * measured: queueing every nested release, as the first draft did, cost the
+ * dispatch benchmark eight per cent, while this costs it nothing. CPython's
+ * deallocator makes the same choice and defers only when the stack runs low.
+ *
+ * The queue lives beside the objects rather than inside them. A queued
+ * object's count stays exactly zero, so a weak reference to it reads as dead
+ * and an over-release still goes wrong at the release that caused it; CPython
+ * keeps the same count at zero for the same reason. Nothing a program writes
+ * runs inside a destroy, so the order in which queued objects are destroyed is
+ * not something a program can observe. */
+#define SKULD_RELEASE_DEPTH 1000
+static skuld_object **skuld_release_queue = NULL;
+static size_t skuld_release_queued = 0;
+static size_t skuld_release_capacity = 0;
+static size_t skuld_release_depth = 0;
+
+static __attribute__((noinline, unused)) void skuld_release_enqueue(skuld_object *object) {
+    if (skuld_release_queued == skuld_release_capacity) {
+        size_t capacity = skuld_release_capacity == 0 ? 64 : skuld_release_capacity * 2;
+        skuld_object **grown = realloc(skuld_release_queue, capacity * sizeof(*grown));
+        if (grown == NULL) skuld_fail("out of memory while releasing", 0);
+        skuld_release_queue = grown;
+        skuld_release_capacity = capacity;
+    }
+    skuld_release_queue[skuld_release_queued++] = object;
+}
+/* A queued object's destroy may queue more; the loop takes them as they come. */
+static __attribute__((noinline, unused)) void skuld_release_drain(void) {
+    skuld_release_depth += 1;
+    while (skuld_release_queued != 0) {
+        skuld_object *next = skuld_release_queue[--skuld_release_queued];
+        next->destroy(next);
+        skuld_weak_release(&next);
+    }
+    skuld_release_depth -= 1;
+}
 static inline void skuld_object_release(skuld_object *object) {
-    if (--object->strong == 0) {
-        object->destroy(object);
-        skuld_weak_release(&object);
+    if (--object->strong != 0) return;
+    if (__builtin_expect(skuld_release_depth >= SKULD_RELEASE_DEPTH, 0)) {
+        skuld_release_enqueue(object);
+        return;
+    }
+    skuld_release_depth += 1;
+    object->destroy(object);
+    skuld_weak_release(&object);
+    skuld_release_depth -= 1;
+    if (__builtin_expect(skuld_release_depth == 0 && skuld_release_queued != 0, 0)) {
+        skuld_release_drain();
     }
 }
 static inline bool skuld_weak_alive(skuld_weak value) {

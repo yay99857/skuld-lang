@@ -1796,9 +1796,8 @@ from the `swift-book` repository), the Zig reference on enum literals, Rust's
   the C stack once per link, as a chain of classes already does. On Windows'
   default stack a 10,000-link list is released and a 100,000-link one
   overflows, and a 100,000-long chain of classes overflows the same way, so
-  boxes added no new limit. It is documented, not solved; an iterative
-  release would fix both and is its own change. Recursive *structs* remain
-  refused.
+  boxes added no new limit. M33 fixed it for both. Recursive *structs*
+  remain refused.
 - **Closing marker: met.** Each item landed as its own commit with its
   fixtures, and the whole suite passes on Windows with clang, including the
   address and undefined-behaviour sanitizers over every `tests/pass` fixture:
@@ -1807,6 +1806,69 @@ from the `swift-book` repository), the Zig reference on enum literals, Rust's
   as before the comparator change. The Linux run, the i686 portability suite
   and LeakSanitizer were not run from this machine, and CI is where they are
   checked.
+
+## M33 — Releasing a chain of any length — Implemented
+
+A chain of objects was released one C stack frame per link: a class's
+generated destroy released its fields, which ended the next object, whose
+destroy ended the next. M32 measured it on Windows' default stack: 10,000
+links were released and 100,000 overflowed, for a chain of classes and a
+chain of `indirect` boxes alike. The process died with no Skuld diagnostic
+and lost its buffered output, which is worse than a trap.
+
+Sources read, not recalled: CPython's `Objects/object.c`, whose comment names
+this exact failure ("an unbounded chain of deallocations ... can easily lead
+to stack overflows"). `_Py_Dealloc` defers an object only when the stack
+margin runs low, links it through a field the object already has, and drains
+the list once the stack unwinds. Also Rust's
+`library/alloc/src/collections/linked_list.rs`, whose `Drop` is a loop. That
+fixes the one type, and a user's `Box` list still recurses.
+
+- **Decision taken: queue past a depth, recurse below it.** Past 1000 nested
+  releases, `skuld_object_release` records the object instead of destroying
+  it, and the outermost release destroys what was recorded in a loop. The
+  stack a release uses is now bounded by that depth rather than by the
+  chain's length, and a release that never nests that deep does exactly what
+  it did before.
+- **The queue lives beside the objects, not in their headers.** The first
+  draft linked queued objects through their `strong` field. The adversarial
+  review found two faults in that. A queued object would have read as alive
+  to a weak reference. And an over-release, which is a code generator bug,
+  would have decremented a pointer and surfaced far from its cause instead of
+  where it happened. CPython keeps a deferred object's count at zero for the
+  same reason. So the queue is a growable array of pointers, and a queued
+  object's count stays exactly zero.
+- **Rejected, by measurement: queueing every nested release.** The reviewer
+  preferred it, because it would exercise the queue on every nested free
+  across the whole suite. It cost `dispatch` and `json_parse` about eight per
+  cent each. An out-of-line slow path did not help. Neither did a variant
+  that measured the stack margin by address and so wrote nothing on the
+  common path. The queue is covered instead by two fixtures that force it.
+  `deep_release` drops a million-link chain of classes, a million-link chain
+  of boxes and an array of chains. `release_queue` checks that weak
+  references into a released chain read as dead, that weak references held
+  by queued nodes release without freeing a header early, and that a chain
+  through interface values drains too. Both fail before this change, and
+  both run under the address and undefined-behaviour sanitizers with the
+  rest of `tests/pass`.
+- **The cost, measured and kept.** This used the fastest of five runs,
+  repeated three times, interleaved with the previous build, on Windows with
+  clang 23. `arrays`, `strings` and `dispatch` are unchanged within noise.
+  `json_parse` is about seven per cent slower (838 → 899 ms) and
+  `map_lookup` about five (110 → 116 ms), with identical checksums. The cause
+  was isolated rather than guessed. Any queue a released pointer can reach
+  keeps clang from deleting a short-lived allocation outright, so the old
+  number partly measured an allocation the compiler removed. The depth
+  counter alone accounts for about half of the difference. A program that
+  crashed now completes, and a program that did not is at most a few per
+  cent slower. That is the trade this records.
+- **What it leaves behind.** The queue and its depth are the managed
+  runtime's first mutable global state, and the header of
+  `runtime/strings.c` says they become per-thread if threads ever arrive.
+  The order in which queued objects are destroyed differs from the recursive
+  order. That is unobservable only because nothing a program writes runs
+  inside a destroy, which is a third reason, after M25's and M30's, why
+  Skuld has no destructor a user can write.
 
 ## Open design questions
 

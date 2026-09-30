@@ -998,9 +998,8 @@ enum Status {
   `--freestanding` and in a `static`. The box is written, not inferred, so
   adding a variant never silently changes whether an enum is managed.
   Recursion through an array (`[]List`) or a class needs no marker, as before.
-  Releasing a chain recurses once per link, the way a chain of classes already
-  does; measured on Windows' default stack, a list of 10,000 links is released
-  and one of 100,000 overflows it, for boxes and classes alike.
+  A chain of any length is released without overflowing the stack, whether
+  its links are boxes, classes or array elements (M33).
 - Enums have value semantics. Managed payloads (strings, arrays, classes) are automatically reference-counted with retain and release in C codegen.
 - Enum values implicitly wrap into `Option<Enum>` where expected.
 - Where the context expects an enum, a variant may be written `.Pending` or
