@@ -1,0 +1,16 @@
+struct Point {
+    x: int
+
+    var shift() {
+        this.x += 1
+    }
+}
+
+class Holder {
+    at: Point
+}
+
+func main() {
+    let holder = new Holder(at: Point { x: 1 })
+    holder.at.shift()
+}

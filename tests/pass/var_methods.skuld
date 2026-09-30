@@ -1,0 +1,63 @@
+// A `var` method changes the struct it is called on, through the caller's
+// own storage. `rename` and `echo` read a field and then replace it, which
+// is where a receiver read in place would free what is still being used.
+struct Point {
+    x: int
+    y: int
+
+    var translate(dx: int, dy: int) {
+        this.x += dx
+        this.y += dy
+    }
+
+    var reset() {
+        this = Point { x: 0, y: 0 }
+    }
+
+    sum() -> int {
+        return this.x + this.y
+    }
+}
+
+struct Named {
+    name: string
+    at: Point
+
+    var rename(prefix: string) {
+        let old = this.name
+        this.name = prefix + "-" + this.name
+        print(old)
+    }
+
+    var echo() {
+        this.take(this.name)
+    }
+
+    var take(value: string) {
+        this.name = value + "!" + "?"
+        print(value)
+    }
+
+    var nudge() -> int {
+        this.at.translate(1, 1)
+        return this.at.sum()
+    }
+}
+
+func main() {
+    var p = Point { x: 1, y: 2 }
+    p.translate(10, 20)
+    print(p.sum())
+    let copy = p
+    p.reset()
+    print(p.sum())
+    print(copy.sum())
+    var n = Named { name: "a" + "b", at: Point { x: 0, y: 0 } }
+    n.rename("x" + "y")
+    print(n.name)
+    n.echo()
+    print(n.name)
+    print(n.nudge())
+    n.at.translate(5, 5)
+    print(n.at.sum())
+}

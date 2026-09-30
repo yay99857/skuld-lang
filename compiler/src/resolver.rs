@@ -333,9 +333,17 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
                     resolver.type_ref(t);
                 }
                 resolver.enter_scope(Some(method.body.span));
+                // A `var` method's `this` is the caller's storage, so it can
+                // be assigned through, and like any `var` it cannot be
+                // captured or read in place.
+                let receiver = if method.mutating {
+                    SymbolKind::Variable(Mutability::Mutable)
+                } else {
+                    SymbolKind::Parameter
+                };
                 resolver.insert(
                     "this",
-                    SymbolKind::Parameter,
+                    receiver,
                     Some(Span::new(method.body.span.start, method.body.span.start)),
                 );
                 for parameter in &method.parameters {

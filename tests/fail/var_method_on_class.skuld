@@ -1,0 +1,9 @@
+class Counter {
+    n: int
+
+    var bump() {
+        this.n += 1
+    }
+}
+
+func main() {}

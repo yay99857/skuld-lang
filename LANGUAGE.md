@@ -431,6 +431,53 @@ no partial initialization, so a missing field is `E0112` and a repeated one is
 a duplicate declaration. Field order in construction is free; the backend lays
 fields out in declaration order.
 
+### Methods that change the struct — Implemented (M32)
+
+A struct method receives an immutable copy of its receiver, so it cannot change
+the caller's value. One declared `var` can:
+
+```skuld
+struct Point {
+    x: int
+    y: int
+
+    var translate(dx: int, dy: int) {
+        this.x += dx
+        this.y += dy
+    }
+}
+
+func main() {
+    var p = Point { x: 1, y: 2 }
+    p.translate(10, 20)
+    print(p.x) // 11
+}
+```
+
+Inside it `this` is a mutable place, the caller's own storage reached through
+its address; fields are assigned through it and `this` itself may be replaced.
+`var` reuses the keyword that already means "this binding may change", and it is
+refused on a class method, whose `this` is already a reference.
+
+The receiver of a call to one must be storage nothing else can reach while the
+call runs: a `var` local, or `this` inside another `var` method, or a struct
+field of either. A `let` or a parameter is `E0203`. An array element, a field of
+a class object and a temporary are `E0204`, because the method could push onto
+that array or drop the last reference to that object and so move or free the
+storage it is changing. Swift makes those cases sound with copy-in, copy-out
+and an exclusivity checker; Skuld narrows where the pointer may point instead,
+and the copy is written out:
+
+```skuld
+var item = points[i]
+item.translate(1, 0)
+points[i] = item
+```
+
+Inside a `var` method `this` is read like any `var`: a counted copy, so
+replacing a field cannot free a value still being read. A lambda may not capture
+it, since captures are copies of immutable bindings.
+
 ## Field defaults — Implemented
 
 ```skuld

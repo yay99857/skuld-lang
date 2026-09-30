@@ -625,9 +625,23 @@ pub(crate) fn type_check(
                 .copied()
                 .expect("internal compiler bug: method body has no receiver symbol");
             checker.symbol_types[this.0] = receiver;
+            // A class's `this` is already a reference to the one object, so a
+            // method may change it without saying so, and `var` would claim
+            // a difference that is not there.
+            if method.mutating && checker.structs[index].reference {
+                checker.error(
+                    DiagnosticCode::UnsupportedFeature,
+                    method.name.span,
+                    format!(
+                        "`var` marks a struct method that changes `this`; `{}` is a class, whose methods already change the object they are called on",
+                        declaration.name.text
+                    ),
+                );
+            }
             methods.push(MethodInfo {
                 name: method.name.text.clone(),
                 id,
+                mutating: method.mutating,
             });
         }
         checker.structs[index].methods = methods;
@@ -1061,6 +1075,9 @@ pub struct MethodInfo {
     pub name: String,
     /// Methods are ordinary functions with an implicit leading receiver.
     pub id: SymbolId,
+    /// A `var` method, whose receiver is passed as the address of the
+    /// caller's storage rather than as a copy.
+    pub mutating: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -3888,6 +3905,9 @@ impl Checker<'_> {
             return Type::Error;
         };
         let signature = self.signatures[&method.id].clone();
+        if method.mutating {
+            self.mutating_receiver(object, member);
+        }
         if signature.parameters.len() != arguments.len() {
             self.error(
                 DiagnosticCode::ArgumentCount,
@@ -3912,6 +3932,83 @@ impl Checker<'_> {
         }
         self.expected_context = previous;
         signature.return_type
+    }
+    /// A `var` method changes the storage its receiver names, through a
+    /// pointer, so that storage must be a place nothing else can reach while
+    /// the call runs: a `var` local, or `this` inside another `var` method,
+    /// and struct fields inside either. An array element is refused because
+    /// the method could push onto the array and move the element away from
+    /// under the pointer; a class field because it could drop the last
+    /// reference to the object. Swift makes both sound with copy-in, copy-out
+    /// and an exclusivity checker; Skuld keeps the pointer and narrows where
+    /// it may point instead.
+    fn mutating_receiver(&mut self, object: &Expr, member: &Name) {
+        let mut place = strip_groups_ref(object);
+        let refused = loop {
+            match &place.kind {
+                ExprKind::Identifier(name) => {
+                    let symbol = self
+                        .resolution
+                        .references
+                        .get(&(self.file, name.span.start))
+                        .map(|id| &self.resolution.symbols[id.0]);
+                    match symbol.map(|symbol| symbol.kind) {
+                        Some(SymbolKind::Variable(Mutability::Mutable)) => return,
+                        Some(_) => {
+                            let mut diagnostic = Diagnostic {
+                                code: DiagnosticCode::ImmutableAssignment,
+                                span: name.span,
+                                message: format!(
+                                    "`{}` is a `var` method and changes its receiver, but `{}` cannot change",
+                                    member.text, name.text
+                                ),
+                                help: Some(format!(
+                                    "declare `{}` with `var`; a parameter or `let` is a value the call may not rewrite",
+                                    name.text
+                                )),
+                                fix: None,
+                            };
+                            if name.text == "this" {
+                                diagnostic.help = Some(
+                                    "`this` changes only inside a method declared `var` itself"
+                                        .into(),
+                                );
+                            }
+                            self.diagnostics.push(FileDiagnostic {
+                                file: self.file,
+                                diagnostic,
+                            });
+                            return;
+                        }
+                        // Unresolved names are already reported.
+                        None => return,
+                    }
+                }
+                ExprKind::Member { object, .. } => match self.expression_type_of(object) {
+                    Some(Type::Struct(id)) if !self.structs[id.0].reference => {
+                        place = strip_groups_ref(object);
+                    }
+                    Some(Type::Error) | None => return,
+                    _ => break "a field of a class object",
+                },
+                ExprKind::Index { .. } => break "an array element",
+                _ => break "a temporary value",
+            }
+        };
+        self.error(
+            DiagnosticCode::InvalidAssignment,
+            object.span,
+            format!(
+                "`{}` is a `var` method and changes its receiver in place, which cannot be {refused}",
+                member.text
+            ),
+        );
+        if let Some(last) = self.diagnostics.last_mut() {
+            last.diagnostic.help = Some(format!(
+                "copy it into a `var`, call `{}` there and write it back: the method could otherwise move or free the storage it is changing",
+                member.text
+            ));
+        }
     }
     /// The enum a `.Variant` belongs to: the one this position expects, seen
     /// through an expected `Option` too, since the variant wraps into it the

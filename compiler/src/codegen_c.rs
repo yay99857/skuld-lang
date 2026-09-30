@@ -36,6 +36,7 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
             std::collections::BTreeMap::new()
         },
         statics: program.statics.iter().map(|(id, _)| *id).collect(),
+        receiver: None,
         defers: Vec::new(),
     };
     // An interface value is a pair: the object, and the table of methods to
@@ -627,6 +628,7 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
         ));
         emitter.line(&format!("{} {{", emitter.signature(function)));
         emitter.current_return = function.return_type;
+        emitter.receiver = function.by_reference;
         emitter.indent += 1;
         for parameter in &function.parameters {
             emitter.line(&format!(
@@ -694,7 +696,14 @@ fn signature_of(structs: &[StructInfo], function: &Function, name: &str) -> Stri
         function
             .parameters
             .iter()
-            .map(|p| format!("{} skuld_v{}", type_name(structs, p.ty), p.id.0))
+            .map(|p| {
+                let pointer = if function.by_reference == Some(p.id) {
+                    "*"
+                } else {
+                    ""
+                };
+                format!("{}{pointer} skuld_v{}", type_name(structs, p.ty), p.id.0)
+            })
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -735,6 +744,8 @@ struct Emitter<'a> {
     /// names is an ordinary read or write of a file-scope variable, which is
     /// why it only has to be known here.
     statics: std::collections::BTreeSet<crate::resolver::SymbolId>,
+    /// The receiver of the `var` method being emitted, if it is one.
+    receiver: Option<crate::resolver::SymbolId>,
     /// One frame per block being emitted, holding that block's `defer`red
     /// statements in the order they were registered.
     ///
@@ -1352,6 +1363,11 @@ impl<'a> Emitter<'a> {
     fn local_name(&self, id: crate::resolver::SymbolId) -> String {
         if self.statics.contains(&id) {
             return format!("skuld_g{}", id.0);
+        }
+        // A `var` method's receiver is the caller's storage, reached through
+        // the address it was handed; everything written to `this` lands there.
+        if self.receiver == Some(id) {
+            return format!("(*skuld_v{})", id.0);
         }
         if self.captures.contains(&id) {
             format!("skuld_env->skuld_v{}", id.0)
@@ -2762,6 +2778,9 @@ impl<'a> Emitter<'a> {
                 self.line("}");
                 self.store(expr.ty, &built, true)
             }
+            // No retain: the storage belongs to the caller, stays where it is
+            // for the whole call, and is changed through this address.
+            ExprKind::Receiver(place) => format!("&{}", self.place(place)),
             ExprKind::IsSome(value) | ExprKind::IsNone(value) => {
                 let value = self.expression(value);
                 let not = if matches!(expr.kind, ExprKind::IsNone(_)) {

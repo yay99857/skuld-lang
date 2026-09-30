@@ -121,6 +121,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
                     return_type: typed.signatures[&id].return_type,
                     body: block(&method.body, cx),
                     span: method.span,
+                    by_reference: method.mutating.then_some(this),
                 });
             }
         }
@@ -145,6 +146,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
                     return_type: typed.signatures[&id].return_type,
                     body: block(&function.body, cx),
                     span: function.span,
+                    by_reference: None,
                 });
             }
         }
@@ -926,8 +928,18 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     .find(|method| method.name == member.text)
                     .expect("internal compiler bug: checked call to a missing method");
                 // The receiver is an ordinary leading argument, copied like any
-                // other value-typed argument.
-                let mut values = vec![expression(object, cx)];
+                // other value-typed argument — except for a `var` method,
+                // which is handed the storage itself.
+                let receiver = if method.mutating {
+                    h::Expr {
+                        kind: h::ExprKind::Receiver(place(object, cx)),
+                        ty: cx.ty(object.span).expect("checked receiver"),
+                        span: object.span,
+                    }
+                } else {
+                    expression(object, cx)
+                };
+                let mut values = vec![receiver];
                 values.extend(arguments.iter().map(|e| expression(e, cx)));
                 return h::Expr {
                     kind: h::ExprKind::Call {

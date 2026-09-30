@@ -444,6 +444,9 @@ impl<'a> Formatter<'a> {
 
     /// A method inside a struct or class: no `func`, no visibility.
     fn format_method(&mut self, f: &FunctionDecl) {
+        if f.mutating {
+            self.push("var ");
+        }
         self.push(&f.name.text);
         self.push("(");
         self.format_parameters(&f.parameters);

@@ -159,7 +159,12 @@ behind it. The obligations above are checkable, and a persona is not.
   declared without `func`, take an implicit immutable `this`, and lower to
   functions with a leading receiver. Struct names live in a type namespace
   owned by the checker, and method names in a scope of their own, so neither
-  resolves as an ordinary value name.
+  resolves as an ordinary value name. A method declared `var name(...)` (M32)
+  receives its struct by address and may change it; its receiver at a call
+  must be a `var` local or `this` of another `var` method, through struct
+  fields only — never an array element, a class field or a temporary, which
+  the method could move or free. That restriction is the safety argument, in
+  place of an exclusivity checker. `var` on a class method is refused.
 - Classes are implemented with reference semantics: fields, methods with implicit
   `this`, `new Class(...)` construction, field access and field assignment through
   references. Assigning into a class field is allowed on `let` bindings and through

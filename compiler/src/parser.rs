@@ -835,6 +835,19 @@ impl Parser<'_> {
         let mut methods = Vec::new();
         while !self.at(&TokenKind::RightBrace) && !self.at(&TokenKind::Eof) {
             let field_start = self.current().span.start;
+            // `var name(` is a method that may change `this`. `var` is a
+            // keyword, so no field could have started this way.
+            if self.at(&TokenKind::Var)
+                && matches!(self.peek_kind(1), TokenKind::Identifier(_))
+                && matches!(self.peek_kind(2), TokenKind::LeftParen)
+            {
+                self.bump();
+                let name = self.name("a method name")?;
+                let mut method = self.nested(|parser| parser.method(name, field_start))?;
+                method.mutating = true;
+                methods.push(method);
+                continue;
+            }
             let name = self.name("a field or method name")?;
             // `name(` is a method; `name:` is a field.
             if self.at(&TokenKind::LeftParen) {
@@ -930,6 +943,7 @@ impl Parser<'_> {
             return_type,
             body,
             span,
+            mutating: false,
         })
     }
     /// Whether the `(` under the cursor opens a lambda rather than a grouped
@@ -1061,6 +1075,7 @@ impl Parser<'_> {
             return_type,
             body,
             span,
+            mutating: false,
         })
     }
     fn block(&mut self) -> Parsed<Block> {

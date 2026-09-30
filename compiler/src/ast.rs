@@ -287,6 +287,9 @@ pub struct FunctionDecl {
     pub return_type: Option<TypeRef>,
     pub body: Block,
     pub span: Span,
+    /// `var name(...)`: a struct method whose `this` is a place it may change,
+    /// reached through the caller's own storage. Always false for a function.
+    pub mutating: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

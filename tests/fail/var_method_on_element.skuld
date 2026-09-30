@@ -1,0 +1,12 @@
+struct Point {
+    x: int
+
+    var shift() {
+        this.x += 1
+    }
+}
+
+func main() {
+    let points = [Point { x: 1 }]
+    points[0].shift()
+}

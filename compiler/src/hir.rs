@@ -60,6 +60,9 @@ pub(crate) struct Function {
     pub return_type: Type,
     pub body: Block,
     pub span: Span,
+    /// The receiver of a `var` method, which arrives as the address of the
+    /// caller's storage. Every other parameter is a value.
+    pub by_reference: Option<SymbolId>,
 }
 /// A function defined in another object file. Its name is emitted verbatim,
 /// unlike every generated name, because the linker has to find it.
@@ -375,6 +378,9 @@ pub(crate) enum ExprKind {
     /// `first.then(second)`: `first` unless it is `Equal`. Both are evaluated,
     /// left to right, as every other pair of operands is.
     OrderingThen(Box<Expr>, Box<Expr>),
+    /// The address of a place, which is how a `var` method's receiver is
+    /// passed. The checker admits only a place nothing else can reach.
+    Receiver(Place),
     /// `result.map_err(function)`. The function runs only on the error side,
     /// after the result has been evaluated, and is itself evaluated first.
     ResultMapErr {
