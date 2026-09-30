@@ -47,15 +47,15 @@ pub class StringMap {
     get(key: string) -> Option<int> {
         let slot = this.find(key)
         if slot < 0 {
-            return null
+            return None
         }
         let index = this.buckets[slot]
         if index < 0 {
-            return null
+            return None
         }
         let entry = this.entries[index]
         if entry.alive == false {
-            return null
+            return None
         }
         return entry.value
     }
@@ -87,7 +87,7 @@ pub class StringMap {
                 entry.alive = true
                 entry.value = value
                 this.count += 1
-                return null
+                return None
             }
         }
         let entry = new Entry(key: key, value: value)
@@ -97,7 +97,7 @@ pub class StringMap {
         this.buckets[free] = index
         this.count += 1
         this.used += 1
-        return null
+        return None
     }
 
     // Remove a key, answering whether it was there.

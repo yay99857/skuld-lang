@@ -20,7 +20,7 @@ func first_label(items: []string) -> Result<Option<string>, string> {
         return Err("empty")
     }
     if items[0] == "" {
-        return Ok(null)
+        return Ok(None)
     }
     return Ok(items[0])
 }

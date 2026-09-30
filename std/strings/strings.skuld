@@ -26,7 +26,7 @@ pub func index_of(text: string, needle: string) -> Option<int> {
         return Some(0)
     }
     if needle.len() > text.len() {
-        return null
+        return None
     }
     var start = 0
     while start + needle.len() <= text.len() {
@@ -35,7 +35,7 @@ pub func index_of(text: string, needle: string) -> Option<int> {
         }
         start += 1
     }
-    return null
+    return None
 }
 
 pub func contains(text: string, needle: string) -> bool {

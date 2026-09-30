@@ -359,8 +359,8 @@ cargo run -p skuld-cli -- run examples/bytes.skuld
 cargo run -p skuld-cli -- run examples/ffi.skuld
 ```
 
-`Option<T>`, `Some(value)` and `None` represent optional values; contextual
-`null` is another spelling of absence, not a standalone null value.
+`Option<T>`, `Some(value)` and `None` represent optional values. Skuld has no
+`null`: writing it is an error whose fix is `None`.
 Use `if let Some(value) = expression { ... } else { ... }` to access a payload;
 `is_some()` and `is_none()` query presence. Options have value semantics and
 an inline representation, with reference counting for managed payloads.

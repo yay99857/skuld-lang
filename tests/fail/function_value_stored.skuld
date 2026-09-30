@@ -6,7 +6,7 @@ enum Wrap {
 
 func main() {
     let actions: [](int) -> int = []
-    let maybe: Option<(int) -> int> = null
+    let maybe: Option<(int) -> int> = None
 }
 
 func inferred() {

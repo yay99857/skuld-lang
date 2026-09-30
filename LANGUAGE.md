@@ -656,7 +656,7 @@ Use a weak parent link with a strong child link to avoid ownership cycles; see
 
 ## Optional values — Implemented
 
-`Option<T>` is a builtin value type representing a present value or `null` (also `None`).
+`Option<T>` is a builtin value type representing a present value or `None`.
 `T` can be any non-void implemented value type, including another Option,
 a struct, a class, an array or a weak reference. This milestone introduces
 neither general generics nor user-defined enums.
@@ -664,11 +664,11 @@ neither general generics nor user-defined enums.
 ```skuld
 func answer(found: bool) -> Option<int> {
     if found { return 42 }
-    return null
+    return None
 }
 
 func main() {
-    let missing: Option<int> = null
+    let missing: Option<int> = None
     if let value = answer(true) {
         print(value)
     } else {
@@ -680,13 +680,18 @@ func main() {
 
 Values wrap implicitly into an expected `Option<T>` (e.g. `return 42` or
 `let x: Option<int> = 42`), while `Some(value)` remains supported.
-`null` (and `None`) needs an expected Option type from an annotation, assignment, parameter,
+`None` needs an expected Option type from an annotation, assignment, parameter,
 field, return type or enclosing array/Some expression. For example,
-`let nested: Option<Option<int>> = Some(null)` is valid, while unannotated
-`let nested = null` cannot infer the payload. No implicit unwrapping,
-truthiness or numeric conversions are provided. `null()` is invalid.
-`Option` cannot be redeclared as a struct/class type; `null`, `Some` and `None` remain
+`let nested: Option<Option<int>> = Some(None)` is valid, while unannotated
+`let nested = None` cannot infer the payload. No implicit unwrapping,
+truthiness or numeric conversions are provided. `None()` is invalid.
+`Option` cannot be redeclared as a struct/class type; `Some` and `None` remain
 shadowable prelude value bindings like `print`.
+
+`None` is the one spelling of absence. `null` was a second one until M32 and is
+now an ordinary identifier: written where nothing named `null` is in scope, it
+is an error carrying the edit to `None`, and a program may declare its own
+`null`, as `std/ffi` does for the null pointer.
 
 `if let name = expression { ... } else { ... }` (and `if let Some(name)`) evaluates the expression
 once. The successful branch receives an immutable copy of the payload, retaining
@@ -868,8 +873,8 @@ element before evaluating the RHS.
 Dynamic array mutation and growth:
 - `values.push(element: T)` appends an element, growing geometric capacity.
 - `values.insert(index: int, element: T)` inserts at `0 <= index <= len()`, shifting later elements. Traps on invalid index.
-- `values.pop(): Option<T>` removes and returns the last element, or `null` if empty.
-- `values.remove(index: int): Option<T>` removes and returns element at index, shifting elements left, or `null` if out of bounds.
+- `values.pop(): Option<T>` removes and returns the last element, or `None` if empty.
+- `values.remove(index: int): Option<T>` removes and returns element at index, shifting elements left, or `None` if out of bounds.
 
 Slicing, array equality, sorting, callbacks and `for` iteration remain
 planned. Strong cycles through classes and arrays still require explicit
@@ -1593,7 +1598,7 @@ import "geometry"
 
 func place(p: geometry.Point, all: []geometry.Point) -> Option<geometry.Point> {
     match geometry.Shape.Box(p) {
-        geometry.Shape.Dot: return null
+        geometry.Shape.Dot: return None
         geometry.Shape.Box(inner): return inner
     }
 }

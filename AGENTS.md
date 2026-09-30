@@ -142,7 +142,7 @@ behind it. The obligations above are checkable, and a persona is not.
 - The resolver's declaration and use tables are keyed by file and byte offset;
   keep them with their exact AST revision. Functions are predeclared; parameters share the function
   body scope; locals become visible after initializers; child scopes shadow.
-  The prelude bindings — `print`, `Some`, `None`, `null`, `Ok`, `Err`, `ptr`, the width
+  The prelude bindings — `print`, `Some`, `None`, `Ok`, `Err`, `ptr`, the width
   conversions and `bytes_to_string` — may all be shadowed. Use resolved symbols,
   not spelling, to identify builtins. Only direct calls are supported currently.
 - HIR lowering is separate from checking. Only successful checking constructs
@@ -173,8 +173,8 @@ behind it. The obligations above are checkable, and a persona is not.
   empty `weak()`. `upgrade()` returns an owning `Option<Class>` without trapping
   on expiration; `alive()` checks liveness and `get()` retains or traps.
   Weak references do not keep managed fields alive. No normal null value exists.
-- Builtin `Option<T>` uses inline tag/payload value semantics. Contextual `null` (and
-  `None`) represents absent values; values wrap implicitly into expected Options.
+- Builtin `Option<T>` uses inline tag/payload value semantics. Contextual `None`
+  represents absent values — `null` stopped being a spelling of it in M32; values wrap implicitly into expected Options.
   `if let name = value` (and `if let Some(name)`) binds an immutable payload in its then scope.
   Managed payloads retain/release only when present. Interfaces arrived with
   M10; general generics remain future work.

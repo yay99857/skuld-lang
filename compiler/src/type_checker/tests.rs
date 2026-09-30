@@ -512,12 +512,29 @@ fn option_constructor_identity_comes_from_resolution() {
 }
 
 #[test]
-fn option_null_implicit_wrap_and_direct_if_let() {
+fn option_none_implicit_wrap_and_direct_if_let() {
     valid(
-        "func find(ok: bool) -> Option<int> {\n    if ok { return 42 }\n    return null\n}\nfunc main() {\n    let opt: Option<int> = 10\n    let empty: Option<int> = null\n    if let val = find(true) { print(val) }\n}",
+        "func find(ok: bool) -> Option<int> {\n    if ok { return 42 }\n    return None\n}\nfunc main() {\n    let opt: Option<int> = 10\n    let empty: Option<int> = None\n    if let val = find(true) { print(val) }\n}",
     );
-    fails("func main() { let x = null }", DiagnosticCode::UnknownType);
-    fails("func main() { null() }", DiagnosticCode::NotCallable);
+    fails("func main() { let x = None }", DiagnosticCode::UnknownType);
+    fails("func main() { None() }", DiagnosticCode::NotCallable);
+}
+
+#[test]
+fn null_is_not_a_spelling_of_none_and_offers_the_edit() {
+    let source = "func main() {\n    let empty: Option<int> = null\n}";
+    let errors = check(source).expect_err("`null` no longer resolves");
+    let error = errors
+        .iter()
+        .find(|error| error.code == DiagnosticCode::UnknownName)
+        .expect("an unknown-name error");
+    assert!(error.message.contains("`None`"), "{error:?}");
+    let fix = error.fix.as_ref().expect("a fix");
+    assert_eq!(&source[fix.span.start..fix.span.end], "null");
+    assert_eq!(fix.replacement, "None");
+    // A program that declares its own `null` keeps it, which is what lets
+    // `std/ffi` name the null pointer.
+    valid("func null() -> int { return 0 }\nfunc main() { print(null()) }");
 }
 
 #[test]
@@ -852,7 +869,7 @@ fn a_function_value_may_not_be_stored_where_a_managed_value_could_reach_it() {
         "enum Wrap { V((int) -> int) }\nfunc main() { }",
         "func give() -> (int) -> int { return (n: int) -> int { return n } }\nfunc main() { }",
         "func main() { let a: [](int) -> int = [] }",
-        "func main() { let o: Option<(int) -> int> = null }",
+        "func main() { let o: Option<(int) -> int> = None }",
     ] {
         fails(source, DiagnosticCode::InvalidValueType);
     }

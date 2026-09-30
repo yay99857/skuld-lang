@@ -1532,11 +1532,11 @@ impl Parser<'_> {
                 (pattern, name)
             } else {
                 let name = self.name("a binding name")?;
-                if name.text == "None" || name.text == "null" {
+                if name.text == "None" {
                     return Err(Diagnostic {
                         code: DiagnosticCode::ExpectedSyntax,
                         span: name.span,
-                        message: "cannot bind to `null` or `None` in an if-let pattern".into(),
+                        message: "cannot bind to `None` in an if-let pattern".into(),
                         help: None,
                         fix: None,
                     });

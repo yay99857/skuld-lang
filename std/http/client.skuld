@@ -61,7 +61,7 @@ pub class Response {
                 return entry.value
             }
         }
-        return null
+        return None
     }
 }
 
@@ -82,12 +82,12 @@ func lower(text: string) -> string {
 
 func digits(text: string) -> Option<int> {
     if text.len() == 0 {
-        return null
+        return None
     }
     var value = 0
     for byte in text.bytes() {
         if byte < 48 || byte > 57 {
-            return null
+            return None
         }
         value = value * 10 + (int(byte) - 48)
     }

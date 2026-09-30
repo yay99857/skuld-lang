@@ -549,8 +549,8 @@ pub func lookup(value: JsonValue, key: string) -> Option<JsonValue> {
                     return member.value
                 }
             }
-            return null
+            return None
         }
-        _: return null
+        _: return None
     }
 }

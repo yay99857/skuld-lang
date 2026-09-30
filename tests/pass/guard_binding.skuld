@@ -21,7 +21,7 @@ func maybe(n: int) -> Option<string> {
     if n > 0 {
         return "positive"
     }
-    return null
+    return None
 }
 
 func halve(n: int) -> Result<int, string> {

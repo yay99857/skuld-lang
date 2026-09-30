@@ -158,7 +158,6 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
     resolver.insert("print", SymbolKind::Builtin(Builtin::Print), None);
     resolver.insert("Some", SymbolKind::Builtin(Builtin::Some), None);
     resolver.insert("None", SymbolKind::Builtin(Builtin::None), None);
-    resolver.insert("null", SymbolKind::Builtin(Builtin::None), None);
     resolver.insert("Ok", SymbolKind::Builtin(Builtin::Ok), None);
     resolver.insert("Err", SymbolKind::Builtin(Builtin::Err), None);
     resolver.insert(
@@ -538,6 +537,26 @@ impl Resolver {
                 .references
                 .insert((self.file, name.span.start), id);
             self.capture(id, name.span);
+            return;
+        }
+        // `null` was a second spelling of `None` until M32. Only a use that
+        // reaches nothing lands here, so a program that declares its own
+        // `null` — as `std/ffi` does for the null pointer — is not touched.
+        if name.text == "null" {
+            let diagnostic = Diagnostic {
+                code: DiagnosticCode::UnknownName,
+                span: name.span,
+                message: "Skuld has no `null`; an absent Option is written `None`".into(),
+                help: Some(
+                    "`None` pairs with `Some`, and a pattern already writes it that way".into(),
+                ),
+                fix: None,
+            }
+            .with_fix(Fix::new("change to `None`", name.span, "None"));
+            self.diagnostics.push(FileDiagnostic {
+                file: self.file,
+                diagnostic,
+            });
             return;
         }
         // A name one slip away from one that is in scope is a typo, and the

@@ -52,7 +52,7 @@ syn keyword skuldBuiltin print ptr bytes_to_string
 syn keyword skuldUnsafeBuiltin load store volatile_load volatile_store
 syn keyword skuldUnsafeBuiltin offset addr ptr_from
 syn keyword skuldBuiltin size_of offset_of
-syn keyword skuldConstant Some None null Ok Err
+syn keyword skuldConstant Some None Ok Err
 syn keyword skuldBoolean  true false
 
 " --- Functions ------------------------------------------------------------

@@ -45,7 +45,7 @@ pub func usage() -> string {
 pub func parse_arguments(given: []string) -> Result<Request, ToolError> {
     var input = ""
     var path = ""
-    var output: Option<string> = null
+    var output: Option<string> = None
     var counting = false
     var positional = 0
     var index = 0
@@ -164,14 +164,14 @@ func tally(value: json.JsonValue, counts: map.StringMap) {
 // A segment as an array index: decimal digits and nothing else.
 pub func index_of(segment: string) -> Option<int> {
     if segment.len() == 0 {
-        return null
+        return None
     }
     var value = 0
     var index = 0
     while index < segment.len() {
         let byte = segment[index]
         if byte < 48 || byte > 57 {
-            return null
+            return None
         }
         value = value * 10 + (int(byte) - 48)
         index += 1

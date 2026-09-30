@@ -247,7 +247,7 @@
         },
         {
           "name": "constant.language.skuld",
-          "match": "\\b(Some|None|null|Ok|Err)\\b"
+          "match": "\\b(Some|None|Ok|Err)\\b"
         }
       ]
     },
