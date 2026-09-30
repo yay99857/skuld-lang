@@ -217,6 +217,7 @@ pub(crate) fn type_check(
         place_writes: 0,
         layout_queries: BTreeMap::new(),
         unsafe_depth: 0,
+        ordering: EnumId(0),
     };
     // Where each type was declared, aligned with the ids handed out below, so
     // that a later pass finds its syntax without searching for it.
@@ -237,6 +238,14 @@ pub(crate) fn type_check(
             });
             enum_sites.push((FileId(index), position));
         }
+    }
+    // `Ordering` comes after every declared enum, so the ids above still
+    // line up with `enum_sites`. The name is reserved, so inserting it into
+    // each module's namespace cannot hide anything a program declared.
+    checker.ordering = EnumId(checker.enums.len());
+    checker.enums.push(ordering_enum());
+    for types in &mut checker.module_types {
+        types.enums.insert("Ordering".into(), checker.ordering);
     }
     // Interface names come first so that a field, a parameter or another
     // interface's signature may mention one before it is filled in.
@@ -996,6 +1005,10 @@ struct Checker<'a> {
     /// builtins read and write memory the compiler cannot vouch for, so they
     /// are refused wherever this is zero.
     unsafe_depth: usize,
+    /// The builtin `Ordering` a comparison answers. It is an ordinary
+    /// numbered enum in every respect except where it is declared: nowhere,
+    /// and in every module's namespace at once.
+    ordering: EnumId,
 }
 
 /// One module's type namespace, which is separate from its value scope: a
@@ -1201,7 +1214,7 @@ impl Checker<'_> {
     /// Record a type in the current module's namespace. Types live apart from
     /// value names, so a struct and a function may still share a spelling.
     fn declare_type(&mut self, name: &Name, entry: TypeEntry) {
-        if matches!(name.text.as_str(), "Option" | "Result") {
+        if matches!(name.text.as_str(), "Option" | "Result" | "Ordering") {
             self.error(
                 DiagnosticCode::DuplicateDeclaration,
                 name.span,
@@ -1770,6 +1783,16 @@ impl Checker<'_> {
                 self.type_name(found)
             ),
         );
+        // A comparator written the way it had to be before M32 lands here,
+        // and the replacement is one method away.
+        if expected == Type::Enum(self.ordering)
+            && found.int_type().is_some()
+            && let Some(last) = self.diagnostics.last_mut()
+        {
+            last.diagnostic.help = Some(
+                "a comparison answers an `Ordering`: write `a.compare(b)` rather than `a - b`, which traps when the difference overflows".into(),
+            );
+        }
         false
     }
     fn block(&mut self, block: &Block) -> bool {
@@ -3576,10 +3599,12 @@ impl Checker<'_> {
                 "insert" => Some(vec![Type::INT, element]),
                 "pop" => Some(vec![]),
                 "remove" => Some(vec![Type::INT]),
-                // A comparator returns a negative, zero or positive `int`,
-                // the ordering convention the C library already uses.
+                // A comparator answers an `Ordering`. It answered an `int`
+                // until M32, and the idiom that invited, `a - b`, traps once
+                // the difference leaves `int`.
                 "sort" | "to_sorted" => {
-                    let comparator = self.function_type(vec![element, element], Type::INT);
+                    let ordering = Type::Enum(self.ordering);
+                    let comparator = self.function_type(vec![element, element], ordering);
                     Some(vec![comparator])
                 }
                 _ => None,
@@ -3627,6 +3652,54 @@ impl Checker<'_> {
             if let Some(last) = self.diagnostics.last_mut() {
                 last.diagnostic.help = Some(
                     "write `if let target = reference.upgrade() { ... }` or `let target = reference.upgrade() else { ... }`".into(),
+                );
+            }
+            for argument in arguments {
+                self.expression(argument);
+            }
+            return Type::Error;
+        }
+        // The comparisons that answer an `Ordering`. `float` has only the
+        // total one, which is IEEE 754 totalOrder: it orders `-0.0` before
+        // `0.0` and places NaN, where `<` says neither, so it cannot share the
+        // name the other types use for an order that agrees with `<`.
+        let ordering = Type::Enum(self.ordering);
+        let comparison = match (receiver, member.text.as_str()) {
+            (Type::Int(_) | Type::Char | Type::Bool | Type::String, "compare") => Some(receiver),
+            (Type::Float, "total_compare") => Some(Type::Float),
+            (Type::Enum(id), "then") if id == self.ordering => Some(ordering),
+            _ => None,
+        };
+        if let Some(operand) = comparison {
+            if arguments.len() != 1 {
+                self.error(
+                    DiagnosticCode::ArgumentCount,
+                    span,
+                    format!(
+                        "method `{}` expects 1 argument, found {}",
+                        member.text,
+                        arguments.len()
+                    ),
+                );
+            }
+            let previous = self.expected_context;
+            for argument in arguments {
+                self.expected_context = Some(operand);
+                let found = self.expression(argument);
+                self.expect_type(operand, found, argument.span);
+            }
+            self.expected_context = previous;
+            return ordering;
+        }
+        if receiver == Type::Float && member.text == "compare" {
+            self.error(
+                DiagnosticCode::UnknownName,
+                member.span,
+                "`float` has no `compare`: `<` leaves NaN unordered and treats `-0.0` and `0.0` as equal",
+            );
+            if let Some(last) = self.diagnostics.last_mut() {
+                last.diagnostic.help = Some(
+                    "`total_compare` orders every float, NaN and both zeros included, as IEEE 754 totalOrder does".into(),
                 );
             }
             for argument in arguments {
@@ -5873,6 +5946,27 @@ fn fits_int_type(value: i128, kind: IntType) -> bool {
     let low = -(kind.min_magnitude() as i128);
     let high = kind.max_magnitude() as i128;
     value >= low && value <= high
+}
+
+/// The builtin `Ordering`, numbered the way Rust's `std::cmp::Ordering` is so
+/// that `i8(order)` gives the sign a C comparator would.
+fn ordering_enum() -> EnumInfo {
+    let variant = |name: &str, value: i128| VariantInfo {
+        name: name.into(),
+        payload: None,
+        value,
+    };
+    EnumInfo {
+        name: "Ordering".into(),
+        module: ROOT,
+        visibility: Visibility::Public,
+        underlying: Some(IntType::I8),
+        variants: vec![
+            variant("Less", -1),
+            variant("Equal", 0),
+            variant("Greater", 1),
+        ],
+    }
 }
 
 /// A `Result` seen as the two-variant enum it behaves like. `Ok` is variant 0

@@ -220,7 +220,7 @@
         },
         {
           "name": "support.type.builtin.skuld",
-          "match": "\\b(Option|Result)\\b"
+          "match": "\\b(Option|Result|Ordering)\\b"
         },
         {
           "name": "entity.name.type.skuld",
@@ -252,10 +252,10 @@
       ]
     },
     "methods": {
-      "comment": "The methods the type checker knows on arrays, strings, Result and weak references.",
+      "comment": "The methods the type checker knows on arrays, strings, scalars, Result, Ordering and weak references.",
       "patterns": [
         {
-          "match": "(\\.)(len|push|insert|pop|remove|sort|to_sorted|bytes|is_ok|is_err|upgrade|alive|get)\\b",
+          "match": "(\\.)(len|push|insert|pop|remove|sort|to_sorted|bytes|is_ok|is_err|upgrade|alive|compare|total_compare|then)\\b",
           "captures": {
             "1": { "name": "punctuation.accessor.skuld" },
             "2": { "name": "support.function.method.builtin.skuld" }

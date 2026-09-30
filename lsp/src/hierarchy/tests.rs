@@ -78,7 +78,7 @@ fn the_prelude_is_not_part_of_the_graph() {
 fn a_function_named_as_a_value_is_a_call_too() {
     // Skuld turns a declared function into a function value where one is
     // expected, so the body does reach it.
-    let source = "func by_size(a: int, b: int) -> int {\n    return a - b\n}\n\nfunc main() {\n    var xs = [2, 1]\n    xs.sort(by_size)\n    print(xs[0])\n}\n";
+    let source = "func by_size(a: int, b: int) -> Ordering {\n    return a.compare(b)\n}\n\nfunc main() {\n    var xs = [2, 1]\n    xs.sort(by_size)\n    print(xs[0])\n}\n";
     let typed = checked(source);
     let (_, main) = function(&typed, source, "main");
     let called = calls_within(&typed, ENTRY, main.range);

@@ -61,13 +61,28 @@ fn a_dot_after_a_builtin_offers_what_the_checker_accepts() {
     let items = at(program, array, Some(&typed));
     assert_eq!(
         labels(&items),
-        ["len", "push", "insert", "pop", "remove", "sort"]
+        [
+            "len",
+            "push",
+            "insert",
+            "pop",
+            "remove",
+            "sort",
+            "to_sorted"
+        ]
     );
     assert_eq!(detail_of(&items, "push"), Some("(int) -> void"));
     assert_eq!(detail_of(&items, "pop"), Some("() -> Option<int>"));
+    assert_eq!(
+        detail_of(&items, "sort"),
+        Some("((int, int) -> Ordering) -> void")
+    );
 
     let string = program.find("text.len").expect("string use") + "text.".len();
-    assert_eq!(labels(&at(program, string, Some(&typed))), ["len", "bytes"]);
+    assert_eq!(
+        labels(&at(program, string, Some(&typed))),
+        ["len", "bytes", "compare"]
+    );
 }
 
 #[test]

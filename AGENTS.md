@@ -192,7 +192,11 @@ behind it. The obligations above are checkable, and a persona is not.
   `pop()`, `remove()` and `[a..b]` slicing. Capacity grows geometrically; references
   share element mutations even through `let`. Managed elements are retained and
   released. Sorting and callbacks arrived with M8: `sort()` is stable, returns
-  void and takes a non-escaping comparator.
+  void and takes a non-escaping comparator. Since M32 a comparator answers the
+  builtin `Ordering` (`Less`, `Equal`, `Greater`, worth -1, 0, 1 as an `i8`),
+  from `compare` on the integers, `char`, `bool` and `string`, `total_compare`
+  on `float` — which has no `compare`, since totalOrder disagrees with `<` —
+  and `then` for a second key. `Ordering` is a reserved type name.
 - Sized integers are `i8 i16 i32 i64` and `u8 u16 u32 u64`; `int` is a spelling of
   `i64`, not a separate type. A literal takes the width its context expects and is
   range-checked there, defaulting to `int`; a signed minimum is written as a minus

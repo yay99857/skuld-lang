@@ -369,6 +369,12 @@ pub(crate) enum ExprKind {
         variant_index: usize,
         payload: Option<Box<Expr>>,
     },
+    /// `a.compare(b)` or `a.total_compare(b)`: an `Ordering` from two values
+    /// of one scalar or string type, which is the left operand's.
+    Compare(Box<Expr>, Box<Expr>),
+    /// `first.then(second)`: `first` unless it is `Equal`. Both are evaluated,
+    /// left to right, as every other pair of operands is.
+    OrderingThen(Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug)]

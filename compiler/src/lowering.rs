@@ -827,6 +827,19 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     (Some(Type::Weak(_)), "alive") => {
                         Some(h::ExprKind::WeakAlive(Box::new(expression(object, cx))))
                     }
+                    (Some(Type::Int(_) | Type::Char | Type::Bool | Type::String), "compare")
+                    | (Some(Type::Float), "total_compare") => Some(h::ExprKind::Compare(
+                        Box::new(expression(object, cx)),
+                        Box::new(expression(&arguments[0], cx)),
+                    )),
+                    // `Ordering` is the only enum with a `then`: nobody else
+                    // can declare that name.
+                    (Some(Type::Enum(id)), "then") if cx.typed.enums[id.0].name == "Ordering" => {
+                        Some(h::ExprKind::OrderingThen(
+                            Box::new(expression(object, cx)),
+                            Box::new(expression(&arguments[0], cx)),
+                        ))
+                    }
                     _ => None,
                 };
                 if let Some(kind) = special {

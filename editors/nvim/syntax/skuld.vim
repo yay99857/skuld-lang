@@ -37,7 +37,7 @@ syn keyword skuldSelf        this
 syn keyword skuldType int float bool string void char
 syn keyword skuldType i8 i16 i32 i64 isize
 syn keyword skuldType u8 u16 u32 u64 usize
-syn keyword skuldType Option Result
+syn keyword skuldType Option Result Ordering
 
 " A user type is a capitalised identifier, which is convention rather than a
 " rule: the compiler enforces no case. `pub` is what exports, not spelling.
@@ -60,9 +60,10 @@ syn match skuldFunction /\<func\s\+\zs\w\+/
 syn match skuldFunction /\<\w\+\ze\s*(/
 
 " --- Builtin methods ------------------------------------------------------
-" Checked by the type checker on arrays, strings, Result and weak references.
+" Checked by the type checker on arrays, strings, scalars, Result, Ordering and
+" weak references.
 syn match skuldMethod /\.\@<=\<\(len\|push\|insert\|pop\|remove\|sort\|to_sorted\)\>/
-syn match skuldMethod /\.\@<=\<\(bytes\|is_ok\|is_err\|upgrade\|alive\|get\)\>/
+syn match skuldMethod /\.\@<=\<\(bytes\|is_ok\|is_err\|upgrade\|alive\|compare\|total_compare\|then\)\>/
 
 " --- Numbers --------------------------------------------------------------
 " Hexadecimal, binary and octal prefixes, with `_` as a separator in every
@@ -102,8 +103,7 @@ syn region skuldChar   start=+'+ skip=+\\\\\|\\'+ end=+'+
       \ contains=skuldEscape,skuldEscapeError
 
 " --- Operators ------------------------------------------------------------
-" `?` is postfix propagation on a Result; `->` and `:` both spell a return
-" type; `..` is a half-open range.
+" `?` is postfix propagation on a Result; `->` spells a return type; `..` is a half-open range.
 syn match skuldOperator /->\|=>\|?\|\.\.=\?\|&&\|||\|!/
 syn match skuldOperator /<<=\|>>=\|&=\|\|=\|\^=\|<<\|>>\|&\|\^\|\~/
 syn match skuldOperator /==\|!=\|<=\|>=\|<\|>/

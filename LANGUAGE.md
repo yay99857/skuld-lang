@@ -1319,10 +1319,10 @@ keyword: a method already declares itself the same way.
 ```skuld
 let increment = (n: int) -> int { return n + 1 }
 let double = (n: int) => n * 2
-numbers.sort((a, b) => a - b)
+numbers.sort((a, b) => a.compare(b))
 ```
 
-A lambda can have a block body or an expression body with `=>` (e.g. `(a, b) => a - b`).
+A lambda can have a block body or an expression body with `=>` (e.g. `(a, b) => a + b`).
 Where expected context supplies parameter and return types, annotations may be omitted.
 
 A function *type* is written `(int, int) -> int`. The result uses `->` there so
@@ -1400,19 +1400,39 @@ array no longer owns.
 
 ```skuld
 var words = ["pear", "fig", "banana", "kiwi"]
-words.sort((a, b) => a.len() - b.len())
+words.sort((a, b) => a.len().compare(b.len()))
 // fig, pear, kiwi, banana — `pear` and `kiwi` keep the order they were in
 
 let numbers = [5, 3, 9, 1]
-let sorted = numbers.to_sorted((a, b) => a - b)
+let sorted = numbers.to_sorted((a, b) => a.compare(b))
 // numbers remains [5, 3, 9, 1]; sorted is [1, 3, 5, 9]
 ```
 
-A comparator returns a negative, zero or positive `int`. Writing that as
-`a - b` is the usual shorthand and it is only safe when the values are small:
-arithmetic traps on overflow at every width, so comparing values near the
-extremes of `int` that way aborts the program. Comparing and returning `-1`,
-`0` or `1` always works.
+A comparator answers an `Ordering`, the builtin
+`enum Ordering: i8 { Less = -1, Equal = 0, Greater = 1 }`. `Ordering` is a
+reserved type name like `Option` and `Result`; its variants are written
+`Ordering.Less`, or bare in a `match` on one, and `i8(order)` gives the sign a C
+comparator would.
+
+| Receiver | Method | Order |
+| --- | --- | --- |
+| every integer width, `char`, `bool` | `a.compare(b)` | numeric; `false` before `true` |
+| `string` | `a.compare(b)` | bytewise, a shorter prefix first — no locale |
+| `float` | `a.total_compare(b)` | IEEE 754 totalOrder |
+| `Ordering` | `first.then(second)` | `first`, unless it is `Equal` |
+
+`then` is how a sort takes a second key:
+`people.sort((a, b) => a.age.compare(b.age).then(a.name.compare(b.name)))`.
+Both sides are evaluated, left to right, like any other pair of operands.
+
+`float` has no `compare`. Its order under `<` leaves NaN unordered and calls
+`-0.0` and `0.0` equal, while totalOrder puts `-0.0` first and places every
+NaN, so giving it the name the other types use for an order that agrees with
+`<` would let a sort and a later search written with `<` disagree.
+
+Until M32 a comparator returned a negative, zero or positive `int`, and the
+shorthand that invited, `a - b`, traps once the difference leaves `int`. An
+`int` comparator is now a type error whose help names `compare`.
 
 ## Interfaces — Implemented
 
@@ -1821,8 +1841,10 @@ or automatically implement every construct it contains.
   all fields and run statements inside `func main()`.
 - Array literals such as `[1, 4, 6, 7, 3]` and the type syntax `[]int` are now
   implemented; the sketch's global placement is still unsupported.
-- `numbers.sort((a, b) => a - b)` in the sketch is settled: expression lambdas
-  using `=>` are supported for inline lambdas (`(a, b) => a - b`). In-place sorting
+- `numbers.sort((a, b) => a - b)` in the sketch is settled, and its comparator
+  is where M32 changed it: expression lambdas using `=>` are supported, and a
+  comparator answers an `Ordering`, so the line is written
+  `numbers.sort((a, b) => a.compare(b))`. In-place sorting
   remains `numbers.sort(cmp)` returning `void`, while non-mutating copy sorting is
   provided by `numbers.to_sorted(cmp) -> []T`. Parameter types may be omitted
   where expected types provide them.

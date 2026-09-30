@@ -222,7 +222,7 @@ itself, and a function type keeps `->`:
 
 ```skuld
 var numbers = [5, 3, 9, 1]
-numbers.sort((a: int, b: int) -> int { return a - b })
+numbers.sort((a: int, b: int) -> Ordering { return a.compare(b) })
 
 func count_if(values: []int, keep: (int) -> bool) -> int { ... }
 ```

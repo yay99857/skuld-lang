@@ -1321,12 +1321,12 @@ fn bitwise_and_shift_type_checking() {
 #[test]
 fn expression_lambdas_and_to_sorted() {
     valid(
-        "func main() {\n    let add = (a: int, b: int) => a + b\n    let numbers = [5, 2, 8, 1]\n    let sorted_nums = numbers.to_sorted((a, b) => a - b)\n    numbers.sort((a, b) => a - b)\n}",
+        "func main() {\n    let add = (a: int, b: int) => a + b\n    let numbers = [5, 2, 8, 1]\n    let sorted_nums = numbers.to_sorted((a, b) => a.compare(b))\n    numbers.sort((a, b) => b.compare(a))\n}",
     );
 
     // Assigning the result of `sort` (which returns void) suggests `to_sorted`
     let errors = check(
-        "func main() {\n    let numbers = [1, 2]\n    var s = numbers.sort((a, b) => a - b)\n}",
+        "func main() {\n    let numbers = [1, 2]\n    var s = numbers.sort((a, b) => a.compare(b))\n}",
     )
     .expect_err("must fail");
     let diagnostic = &errors[0];

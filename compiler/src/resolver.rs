@@ -160,6 +160,9 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
     resolver.insert("None", SymbolKind::Builtin(Builtin::None), None);
     resolver.insert("Ok", SymbolKind::Builtin(Builtin::Ok), None);
     resolver.insert("Err", SymbolKind::Builtin(Builtin::Err), None);
+    // A type, like a declared enum, but declared by nobody: `Ordering.Less`
+    // resolves its left half here.
+    resolver.insert("Ordering", SymbolKind::Enum, None);
     resolver.insert(
         "bytes_to_string",
         SymbolKind::Builtin(Builtin::BytesToString),
