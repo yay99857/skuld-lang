@@ -1,0 +1,43 @@
+// `.Variant` takes its enum from what the position expects: a parameter, a
+// return type (through an Option too), an assignment or an array element.
+// Patterns name the bare variant, as they always have.
+enum Status {
+    Pending,
+    Ready(int),
+    Failed(string),
+}
+
+func show(status: Status) {
+    match status {
+        Pending: print("pending")
+        Ready(value): print(value)
+        Failed(reason): print(reason)
+    }
+}
+
+func first(ready: bool) -> Option<Status> {
+    if ready {
+        return .Ready(1)
+    }
+    return None
+}
+
+func main() {
+    show(.Pending)
+    show(.Ready(42))
+    show(.Failed("no" + "pe"))
+    var status: Status = .Pending
+    status = .Ready(7)
+    show(status)
+    if let found = first(true) {
+        show(found)
+    }
+    let order: Ordering = 1.compare(2)
+    match order {
+        Less: print("less")
+        _: print("other")
+    }
+    print(i8(order) == i8(Ordering.Less))
+    let orders: []Ordering = [.Less, .Greater]
+    print(orders.len())
+}

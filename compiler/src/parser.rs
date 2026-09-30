@@ -1634,6 +1634,14 @@ impl Parser<'_> {
                 self.bump();
                 ExprKind::Literal(Literal::Boolean(value))
             }
+            // `.Pending`: a variant of whatever enum the context expects. In
+            // prefix position a `.` can mean nothing else, so this never
+            // competes with a member access, which only ever follows a value.
+            TokenKind::Dot if matches!(self.peek_kind(1), TokenKind::Identifier(_)) => {
+                self.bump();
+                let name = self.name("a variant name after `.`")?;
+                ExprKind::ImplicitVariant(name)
+            }
             TokenKind::Identifier(text) => {
                 self.bump();
                 let name = Name {

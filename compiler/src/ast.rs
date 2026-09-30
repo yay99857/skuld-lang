@@ -456,6 +456,8 @@ pub struct Expr {
 pub enum ExprKind {
     Literal(Literal),
     Identifier(Name),
+    /// `.Variant`, whose enum is the one the context expects.
+    ImplicitVariant(Name),
     Group(Box<Expr>),
     Unary {
         op: UnaryOp,

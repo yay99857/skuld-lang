@@ -874,6 +874,10 @@ impl<'a> Formatter<'a> {
             ExprKind::Identifier(name) => {
                 self.push(&name.text);
             }
+            ExprKind::ImplicitVariant(name) => {
+                self.push(".");
+                self.push(&name.text);
+            }
             ExprKind::Group(inner) => {
                 self.push("(");
                 self.format_expr(inner);

@@ -1,0 +1,7 @@
+enum Status {
+    Pending
+}
+
+func main() {
+    let status = .Pending
+}

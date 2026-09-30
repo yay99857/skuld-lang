@@ -464,6 +464,17 @@ fn strip_groups(mut expr: &ast::Expr) -> &ast::Expr {
 }
 fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
     let kind = match &source.kind {
+        ast::ExprKind::ImplicitVariant(name) => {
+            let Some(Type::Enum(enum_id)) = cx.ty(source.span) else {
+                unreachable!("internal compiler bug: unchecked implicit variant")
+            };
+            h::ExprKind::EnumVariant {
+                variant_index: cx.typed.enums[enum_id.0]
+                    .find_variant(&name.text)
+                    .expect("checked variant"),
+                payload: None,
+            }
+        }
         ast::ExprKind::Lambda(lambda) => {
             let Some(Type::Function(ty)) = cx.ty(source.span) else {
                 unreachable!("internal compiler bug: unchecked function value")
@@ -747,6 +758,23 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
             value: Box::new(expression(value, cx)),
         },
         ast::ExprKind::Call { callee, arguments } => {
+            if let ast::ExprKind::ImplicitVariant(name) = &strip_groups(callee).kind {
+                let Some(Type::Enum(enum_id)) = cx.ty(source.span) else {
+                    unreachable!("internal compiler bug: unchecked implicit variant")
+                };
+                let variant_index = cx.typed.enums[enum_id.0]
+                    .find_variant(&name.text)
+                    .expect("checked enum variant");
+                let payload = Some(Box::new(expression(&arguments[0], cx)));
+                return wrap_expression(
+                    h::ExprKind::EnumVariant {
+                        variant_index,
+                        payload,
+                    },
+                    source,
+                    cx,
+                );
+            }
             if let ast::ExprKind::Member { object, member } = &strip_groups(callee).kind {
                 if let Some(enum_id) = cx.enum_prefix(object) {
                     let variant_index = cx.typed.enums[enum_id.0]

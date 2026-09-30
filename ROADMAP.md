@@ -1742,8 +1742,11 @@ from the `swift-book` repository), the Zig reference on enum literals, Rust's
   remains the only form where the error-handling block needs to do more than
   wrap.
 - **`.Variant` in an expression whose expected type is an enum.**
-  `show(.Ready(42))`, `let s: Status = .Pending`, and `if s == .Pending`, since
-  `==` gives its right operand the left operand's type. Under an expected
+  `show(.Ready(42))`, `let s: Status = .Pending`, an assignment or an array
+  element. The draft also promised `if s == .Pending`, on the grounds that `==`
+  hands its right operand the left operand's type. It does, but enums have no
+  `==` at all, and giving them one would be a feature of its own; `match`
+  remains how a variant is tested. Under an expected
   `Option<E>`, `.X` names a variant of `E`; Option's own absence is still
   written `None`. **Rejected: `.Variant` in patterns.** Patterns have accepted
   the bare `Variant` since M1, unqualified and undocumented until now, so a

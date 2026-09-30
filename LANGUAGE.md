@@ -939,6 +939,13 @@ enum Status {
 - Direct recursive enum variants by value (such as `enum List { Cons(List), Nil }`) are rejected as value cycles (`E0103`); indirect recursion via arrays (`[]List`) or classes is supported.
 - Enums have value semantics. Managed payloads (strings, arrays, classes) are automatically reference-counted with retain and release in C codegen.
 - Enum values implicitly wrap into `Option<Enum>` where expected.
+- Where the context expects an enum, a variant may be written `.Pending` or
+  `.Active(42)` without naming it: an argument, a `return`, an annotated
+  `let`, an assignment, a field or an array element. Under an expected
+  `Option<Enum>` the variant is looked up in `Enum` and wrapped; absence is
+  still `None`. With no expected enum, `.Name` is an error asking for the
+  enum's name (`E0101`). Added in M32; `Status.Pending` stays valid everywhere.
+- Enums have no `==`; `match` is how a variant is tested.
 
 Pattern matching is performed using the `match` statement:
 
@@ -957,7 +964,13 @@ match status {
 
 - Target expression can be an enum, a `Result` (which matches as a two-variant enum with `Ok` and `Err`), or any scalar or string type (integers, float, bool, string). Non-matchable types like structs or classes are rejected (`E0102`).
 - Arm patterns support variant patterns (`Status.Pending`, `Status.Active(code)`), literal and constant value patterns, half-open ranges `a..b`, inclusive ranges `a..=b`, and the wildcard pattern (`_`).
-- Arm separator accepts `:` or `->`.
+- A variant pattern may leave the enum out — `Pending:` and `Active(code):` —
+  since the target already says which enum it is. A pattern never takes the
+  dotted `.Pending` an expression does: the arm grammar would then depend on
+  newlines, because `A: print(1)` followed by a line `.B: ...` reads as
+  `print(1).B`.
+- Arms are separated from their bodies by `:` alone; `->` was accepted too
+  until M32.
 - Arms can have a single statement or a block `{ ... }`.
 - Variant payload bindings introduce an immutable local variable scoped to that arm's body.
 - Exhaustiveness is strictly checked: every enum variant must be covered or a wildcard `_` provided; for scalar and string matches, a wildcard `_` arm is mandatory (`E0113`).

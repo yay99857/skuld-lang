@@ -2783,6 +2783,10 @@ impl Checker<'_> {
     fn expression(&mut self, expr: &Expr) -> Type {
         let expected = self.expected_context.take();
         let ty = match &expr.kind {
+            ExprKind::ImplicitVariant(name) => match self.implicit_enum(name, expected) {
+                Some(enum_id) => self.variant_value(enum_id, name),
+                None => Type::Error,
+            },
             ExprKind::Literal(literal) => match literal {
                 Literal::Integer(value) => {
                     // An integer literal takes the width the context expects,
@@ -3132,35 +3136,7 @@ impl Checker<'_> {
                     };
                 }
                 if let Some(enum_id) = self.enum_prefix(object) {
-                    let enum_info = &self.enums[enum_id.0];
-                    if let Some(variant_index) = enum_info.find_variant(&member.text) {
-                        let variant = &enum_info.variants[variant_index];
-                        if variant.payload.is_some() {
-                            self.error(
-                                DiagnosticCode::ArgumentCount,
-                                member.span,
-                                format!(
-                                    "variant `{}` expects a payload; call it with `(...)`",
-                                    member.text
-                                ),
-                            );
-                            Type::Error
-                        } else {
-                            Type::Enum(enum_id)
-                        }
-                    } else {
-                        let message = format!(
-                            "enum `{}` has no variant `{}`",
-                            self.enums[enum_id.0].name, member.text
-                        );
-                        let variants = self.enums[enum_id.0]
-                            .variants
-                            .iter()
-                            .map(|variant| variant.name.clone())
-                            .collect();
-                        self.unknown_member(DiagnosticCode::UnknownName, member, message, variants);
-                        Type::Error
-                    }
+                    self.variant_value(enum_id, member)
                 } else {
                     let object_type = self.expression(object);
                     match object_type {
@@ -3937,6 +3913,136 @@ impl Checker<'_> {
         self.expected_context = previous;
         signature.return_type
     }
+    /// The enum a `.Variant` belongs to: the one this position expects, seen
+    /// through an expected `Option` too, since the variant wraps into it the
+    /// way any value does. Absence under an `Option` is still `None`.
+    fn implicit_enum(&mut self, name: &Name, expected: Option<Type>) -> Option<EnumId> {
+        let expected_enum = match expected {
+            Some(Type::Enum(id)) => Some(id),
+            Some(Type::Option(id)) => match self.options[id.0].element {
+                Type::Enum(id) => Some(id),
+                _ => None,
+            },
+            _ => None,
+        };
+        if expected_enum.is_none() {
+            let mut diagnostic = Diagnostic {
+                code: DiagnosticCode::UnknownType,
+                span: name.span,
+                message: format!(
+                    "`.{}` names a variant of the enum this position expects, and nothing here expects one",
+                    name.text
+                ),
+                help: Some(format!("name the enum: `Enum.{}`", name.text)),
+                fix: None,
+            };
+            if let Some(Type::Error) = expected {
+                // Whatever should have supplied the type is already reported.
+                diagnostic.help = None;
+            }
+            self.diagnostics.push(FileDiagnostic {
+                file: self.file,
+                diagnostic,
+            });
+        }
+        expected_enum
+    }
+    /// `Enum.Variant` or `.Variant` written as a value: a unit variant, since
+    /// one with a payload has to be called.
+    fn variant_value(&mut self, enum_id: EnumId, member: &Name) -> Type {
+        let enum_info = &self.enums[enum_id.0];
+        if let Some(variant_index) = enum_info.find_variant(&member.text) {
+            let variant = &enum_info.variants[variant_index];
+            if variant.payload.is_some() {
+                self.error(
+                    DiagnosticCode::ArgumentCount,
+                    member.span,
+                    format!(
+                        "variant `{}` expects a payload; call it with `(...)`",
+                        member.text
+                    ),
+                );
+                Type::Error
+            } else {
+                Type::Enum(enum_id)
+            }
+        } else {
+            let message = format!(
+                "enum `{}` has no variant `{}`",
+                self.enums[enum_id.0].name, member.text
+            );
+            let variants = self.enums[enum_id.0]
+                .variants
+                .iter()
+                .map(|variant| variant.name.clone())
+                .collect();
+            self.unknown_member(DiagnosticCode::UnknownName, member, message, variants);
+            Type::Error
+        }
+    }
+    /// `Enum.Variant(payload)` or `.Variant(payload)`.
+    fn variant_call(
+        &mut self,
+        enum_id: EnumId,
+        member: &Name,
+        arguments: &[Expr],
+        span: Span,
+    ) -> Type {
+        let enum_info = &self.enums[enum_id.0];
+        if let Some(variant_index) = enum_info.find_variant(&member.text) {
+            let variant = &enum_info.variants[variant_index];
+            match variant.payload {
+                None => {
+                    self.error(
+                        DiagnosticCode::ArgumentCount,
+                        span,
+                        format!("variant `{}` does not take arguments", member.text),
+                    );
+                    for arg in arguments {
+                        self.expression(arg);
+                    }
+                    Type::Error
+                }
+                Some(expected_payload) => {
+                    if arguments.len() != 1 {
+                        self.error(
+                            DiagnosticCode::ArgumentCount,
+                            span,
+                            format!(
+                                "variant `{}` expects 1 argument, found {}",
+                                member.text,
+                                arguments.len()
+                            ),
+                        );
+                        for arg in arguments {
+                            self.expression(arg);
+                        }
+                        Type::Error
+                    } else {
+                        let previous = self.expected_context;
+                        self.expected_context = Some(expected_payload);
+                        let found = self.expression(&arguments[0]);
+                        self.expected_context = previous;
+                        self.expect_type(expected_payload, found, arguments[0].span);
+                        Type::Enum(enum_id)
+                    }
+                }
+            }
+        } else {
+            self.error(
+                DiagnosticCode::UnknownName,
+                member.span,
+                format!(
+                    "enum `{}` has no variant `{}`",
+                    self.enums[enum_id.0].name, member.text
+                ),
+            );
+            for arg in arguments {
+                self.expression(arg);
+            }
+            Type::Error
+        }
+    }
     fn call(
         &mut self,
         callee: &Expr,
@@ -3948,62 +4054,18 @@ impl Checker<'_> {
         while let ExprKind::Group(inner) = &direct.kind {
             direct = inner;
         }
+        if let ExprKind::ImplicitVariant(name) = &direct.kind {
+            let Some(enum_id) = self.implicit_enum(name, expected) else {
+                for argument in arguments {
+                    self.expression(argument);
+                }
+                return Type::Error;
+            };
+            return self.variant_call(enum_id, name, arguments, span);
+        }
         if let ExprKind::Member { object, member } = &direct.kind {
             if let Some(enum_id) = self.enum_prefix(object) {
-                let enum_info = &self.enums[enum_id.0];
-                return if let Some(variant_index) = enum_info.find_variant(&member.text) {
-                    let variant = &enum_info.variants[variant_index];
-                    match variant.payload {
-                        None => {
-                            self.error(
-                                DiagnosticCode::ArgumentCount,
-                                span,
-                                format!("variant `{}` does not take arguments", member.text),
-                            );
-                            for arg in arguments {
-                                self.expression(arg);
-                            }
-                            Type::Error
-                        }
-                        Some(expected_payload) => {
-                            if arguments.len() != 1 {
-                                self.error(
-                                    DiagnosticCode::ArgumentCount,
-                                    span,
-                                    format!(
-                                        "variant `{}` expects 1 argument, found {}",
-                                        member.text,
-                                        arguments.len()
-                                    ),
-                                );
-                                for arg in arguments {
-                                    self.expression(arg);
-                                }
-                                Type::Error
-                            } else {
-                                let previous = self.expected_context;
-                                self.expected_context = Some(expected_payload);
-                                let found = self.expression(&arguments[0]);
-                                self.expected_context = previous;
-                                self.expect_type(expected_payload, found, arguments[0].span);
-                                Type::Enum(enum_id)
-                            }
-                        }
-                    }
-                } else {
-                    self.error(
-                        DiagnosticCode::UnknownName,
-                        member.span,
-                        format!(
-                            "enum `{}` has no variant `{}`",
-                            self.enums[enum_id.0].name, member.text
-                        ),
-                    );
-                    for arg in arguments {
-                        self.expression(arg);
-                    }
-                    Type::Error
-                };
+                return self.variant_call(enum_id, member, arguments, span);
             }
             // `geometry.area(p)` is one name in two halves: a direct call to
             // an exported function, not a method on a value called `geometry`.

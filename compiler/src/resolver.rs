@@ -857,7 +857,9 @@ impl Resolver {
     }
     fn expression(&mut self, expr: &Expr) {
         match &expr.kind {
-            ExprKind::Literal(_) => {}
+            // The name is a variant, looked up in the enum the checker finds
+            // the context expecting, so there is no value binding to find.
+            ExprKind::Literal(_) | ExprKind::ImplicitVariant(_) => {}
             ExprKind::Identifier(name) => self.reference(name),
             ExprKind::Group(inner)
             | ExprKind::Try(inner)

@@ -215,6 +215,8 @@ behind it. The obligations above are checkable, and a persona is not.
   string error side is provisional and awaits a standard library to own a real
   error type.
 - Enums are user-declared sum types with unit and payload variants: `enum Name { Variant, Variant(Type) }`.
+  Where an enum is expected, a variant is written `.Pending` or `.Active(v)`
+  without naming it (M32); patterns name it bare, `Pending:`, and never dotted.
   Pattern matching uses `match value { Pattern: stmt, Pattern: { ... }, _: ... }` with exhaustiveness
   checking, immutable payload arm bindings, and C codegen retaining/releasing managed variant payloads.
 - `for` loops iterate over half-open integer ranges `a..b` and arrays `[]T` by value:
