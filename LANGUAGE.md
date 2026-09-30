@@ -828,6 +828,22 @@ operator, so `read()? + read()?` applies it to each call. An early return throug
 `?` releases the operand and everything the scope had acquired, exactly like a
 written `return`.
 
+Where the error types differ, the conversion is written at the call:
+`result.map_err(f)` leaves `Ok` alone and passes an error through `f`, a
+non-escaping function value like a comparator, so
+
+```skuld
+let address = dns.resolve(host).map_err((reason) => HttpError.Name(reason))?
+```
+
+carries a `DnsError` out of a function returning `Result<_, HttpError>`. What
+the error becomes is what `f` answers: the result written on a block lambda,
+`(e) -> AppError { ... }`, or read off an expression body. It is never inferred
+from the `?` around the call, since a `Result` type is known whole or not at
+all. `f` runs only on the error side, after the result is evaluated. A
+`let ... else` remains the form for handling that needs more than a wrap. Added
+in M32, with `std/http` and `std/https` as its first callers.
+
 `Result` stores a tag and an inline payload, so constructing one does not
 allocate, and a value struct cannot contain itself through a `Result`. Copying
 retains a managed payload on whichever side is active. Results support neither

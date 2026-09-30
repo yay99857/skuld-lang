@@ -2723,6 +2723,45 @@ impl<'a> Emitter<'a> {
                     true,
                 )
             }
+            ExprKind::ResultMapErr { value, function } => {
+                let Type::Result(id) = value.ty else {
+                    unreachable!("checked `map_err`")
+                };
+                let Type::Function(function_ty) = function.ty else {
+                    unreachable!("checked `map_err` function")
+                };
+                let ok = self.results[id.0].ok;
+                let (success, failure) =
+                    (crate::types::ResultInfo::OK, crate::types::ResultInfo::ERR);
+                let rendered = self.expression(value);
+                // Owned for the length of the call, so the error the function
+                // borrows is alive while it runs.
+                let slot = self.temporary(value.ty, &rendered);
+                let callee = self.expression(function);
+                let mapped = self.c_type(expr.ty);
+                // Built in both branches before anything owns it, so no
+                // cleanup ever sees it half made.
+                let built = format!("skuld_t{}", self.next_temp);
+                self.next_temp += 1;
+                self.line(&format!("{mapped} {built};"));
+                let kept = self.retained(ok, &format!("{slot}.payload.v{success}"));
+                self.line(&format!("if ({slot}.tag == {success}) {{"));
+                self.indent += 1;
+                self.line(&format!(
+                    "{built} = ({mapped}){{.tag = {success}, .payload = {{.v{success} = {kept}}}}};"
+                ));
+                self.indent -= 1;
+                self.line("} else {");
+                self.indent += 1;
+                // A call's result is already owned, so it is adopted as is.
+                self.line(&format!(
+                    "{built} = ({mapped}){{.tag = {failure}, .payload = {{.v{failure} = skuld_ftcall{}({callee}, {slot}.payload.v{failure})}}}};",
+                    function_ty.0
+                ));
+                self.indent -= 1;
+                self.line("}");
+                self.store(expr.ty, &built, true)
+            }
             ExprKind::IsSome(value) | ExprKind::IsNone(value) => {
                 let value = self.expression(value);
                 let not = if matches!(expr.kind, ExprKind::IsNone(_)) {

@@ -294,6 +294,11 @@ pub fn members_of(typed: &TypedProgram, ty: Type) -> Vec<Item> {
         Type::Result(_) => {
             items.push(Item::new("is_ok", kind::METHOD, Some("() -> bool".into())));
             items.push(Item::new("is_err", kind::METHOD, Some("() -> bool".into())));
+            items.push(Item::new(
+                "map_err",
+                kind::METHOD,
+                Some("((E) -> F) -> Result<T, F>".into()),
+            ));
         }
         Type::Weak(id) => {
             let class = typed

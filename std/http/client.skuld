@@ -163,21 +163,13 @@ pub func send(details: Request) -> Result<Response, HttpError> {
     let bytes = compose(details, target.path, "${target.host}:${target.port}")?
     // The name is resolved here rather than in `std/net`: a socket takes an
     // address, and `std/dns` needs sockets, so the resolver sits above both.
-    let address = dns.resolve(target.host) else reason {
-        return Err(HttpError.Name(reason))
-    }
-    let connection = net.open(address, target.port) else reason {
-        return Err(HttpError.Network(reason))
-    }
+    let address = dns.resolve(target.host).map_err((reason) => HttpError.Name(reason))?
+    let connection = net.open(address, target.port).map_err((reason) => HttpError.Network(reason))?
     // One close, on every way out. This is what `defer` is for, and the
     // three hand-written calls it replaces were three chances to miss one.
     defer connection.close()
-    let sent = connection.send_all(bytes) else reason {
-        return Err(HttpError.Network(reason))
-    }
-    let raw = connection.receive_all() else reason {
-        return Err(HttpError.Network(reason))
-    }
+    let sent = connection.send_all(bytes).map_err((reason) => HttpError.Network(reason))?
+    let raw = connection.receive_all().map_err((reason) => HttpError.Network(reason))?
     return parse_response(raw)
 }
 

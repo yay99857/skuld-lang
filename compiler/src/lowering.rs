@@ -832,6 +832,10 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                         Box::new(expression(object, cx)),
                         Box::new(expression(&arguments[0], cx)),
                     )),
+                    (Some(Type::Result(_)), "map_err") => Some(h::ExprKind::ResultMapErr {
+                        value: Box::new(expression(object, cx)),
+                        function: Box::new(expression(&arguments[0], cx)),
+                    }),
                     // `Ordering` is the only enum with a `then`: nobody else
                     // can declare that name.
                     (Some(Type::Enum(id)), "then") if cx.typed.enums[id.0].name == "Ordering" => {

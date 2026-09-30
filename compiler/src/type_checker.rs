@@ -218,6 +218,7 @@ pub(crate) fn type_check(
         layout_queries: BTreeMap::new(),
         unsafe_depth: 0,
         ordering: EnumId(0),
+        lambda_parameters: None,
     };
     // Where each type was declared, aligned with the ids handed out below, so
     // that a later pass finds its syntax without searching for it.
@@ -1009,6 +1010,11 @@ struct Checker<'a> {
     /// numbered enum in every respect except where it is declared: nowhere,
     /// and in every module's namespace at once.
     ordering: EnumId,
+    /// Parameter types for the lambda about to be checked when its result
+    /// type is not known, which is `map_err`'s case: the error type is, the
+    /// type it maps to is whatever the lambda answers. Taken by that lambda
+    /// alone, so a lambda nested inside it does not see it.
+    lambda_parameters: Option<Vec<Type>>,
 }
 
 /// One module's type namespace, which is separate from its value scope: a
@@ -2335,6 +2341,7 @@ impl Checker<'_> {
     /// the expected type supplies it, which is the same local inference a
     /// `let` already performs.
     fn lambda(&mut self, lambda: &Lambda, expected: Option<Type>) -> Type {
+        let hint = self.lambda_parameters.take();
         let signature = match expected {
             Some(Type::Function(id)) => Some(self.function_signatures[id.0].clone()),
             _ => None,
@@ -2358,6 +2365,9 @@ impl Checker<'_> {
                 (Some(reference), _) => self.type_ref(reference, false),
                 (None, Some(signature)) if index < signature.parameters.len() => {
                     signature.parameters[index]
+                }
+                (None, None) if hint.as_ref().is_some_and(|hint| index < hint.len()) => {
+                    hint.as_ref().map_or(Type::Error, |hint| hint[index])
                 }
                 (None, _) => {
                     self.error(
@@ -3658,6 +3668,81 @@ impl Checker<'_> {
                 self.expression(argument);
             }
             return Type::Error;
+        }
+        // `result.map_err(f)`: the success passes through and the error goes
+        // through `f`. What the error becomes is what `f` answers — declared,
+        // or read off an expression body — and never guessed from a `?`
+        // around the call, since a Result type is interned whole and there is
+        // no type with a hole in it to carry half an answer.
+        if let (Type::Result(id), "map_err") = (receiver, member.text.as_str()) {
+            let info = self.results[id.0];
+            if arguments.len() != 1 {
+                self.error(
+                    DiagnosticCode::ArgumentCount,
+                    span,
+                    format!(
+                        "method `map_err` expects 1 argument, found {}",
+                        arguments.len()
+                    ),
+                );
+                for argument in arguments {
+                    self.expression(argument);
+                }
+                return Type::Error;
+            }
+            let argument = &arguments[0];
+            let previous = self.expected_context.take();
+            self.lambda_parameters = Some(vec![info.err]);
+            let found = self.expression(argument);
+            self.lambda_parameters = None;
+            self.expected_context = previous;
+            let mapped = match found {
+                Type::Function(function) => {
+                    let signature = self.function_signatures[function.0].clone();
+                    if signature.parameters.len() != 1 || signature.parameters[0] != info.err {
+                        self.error(
+                            DiagnosticCode::TypeMismatch,
+                            argument.span,
+                            format!(
+                                "`map_err` takes a function of the error, `({}) -> T`, found `{}`",
+                                self.type_name(info.err),
+                                self.type_name(found)
+                            ),
+                        );
+                        return Type::Error;
+                    }
+                    signature.return_type
+                }
+                Type::Error => return Type::Error,
+                other => {
+                    self.error(
+                        DiagnosticCode::TypeMismatch,
+                        argument.span,
+                        format!(
+                            "`map_err` takes a function of the error, found `{}`",
+                            self.type_name(other)
+                        ),
+                    );
+                    return Type::Error;
+                }
+            };
+            if mapped == Type::Void {
+                self.error(
+                    DiagnosticCode::TypeMismatch,
+                    argument.span,
+                    "the function given to `map_err` must answer the new error, and this one answers nothing",
+                );
+                if let Some(last) = self.diagnostics.last_mut() {
+                    last.diagnostic.help = Some(
+                        "write the result on a block lambda, `(e) -> AppError { ... }`, or use an expression body, `(e) => ...`".into(),
+                    );
+                }
+                return Type::Error;
+            }
+            if mapped == Type::Error {
+                return Type::Error;
+            }
+            return self.result_type(info.ok, mapped);
         }
         // The comparisons that answer an `Ordering`. `float` has only the
         // total one, which is IEEE 754 totalOrder: it orders `-0.0` before

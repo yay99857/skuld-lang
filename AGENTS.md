@@ -186,7 +186,9 @@ behind it. The obligations above are checkable, and a persona is not.
   `if let Err(e)`, `is_ok()` and `is_err()` inspect a Result. Postfix `?` yields
   the success payload or returns the error unchanged; it requires an enclosing
   function returning a Result with an identical error type and never converts
-  between error types. `Result` is a reserved type name; `Ok` and `Err` are
+  between error types; since M32 the conversion is written at the call with
+  `result.map_err(f)`, whose new error type is what the non-escaping `f`
+  answers and is never inferred from the `?`. `Result` is a reserved type name; `Ok` and `Err` are
   shadowable prelude bindings.
 - Arrays use `[]T`, literals, checked int indexes, `len()`, `push()`, `insert()`,
   `pop()`, `remove()` and `[a..b]` slicing. Capacity grows geometrically; references

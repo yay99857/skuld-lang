@@ -255,7 +255,7 @@
       "comment": "The methods the type checker knows on arrays, strings, scalars, Result, Ordering and weak references.",
       "patterns": [
         {
-          "match": "(\\.)(len|push|insert|pop|remove|sort|to_sorted|bytes|is_ok|is_err|upgrade|alive|compare|total_compare|then)\\b",
+          "match": "(\\.)(len|push|insert|pop|remove|sort|to_sorted|bytes|is_ok|is_err|upgrade|alive|map_err|compare|total_compare|then)\\b",
           "captures": {
             "1": { "name": "punctuation.accessor.skuld" },
             "2": { "name": "support.function.method.builtin.skuld" }

@@ -375,6 +375,12 @@ pub(crate) enum ExprKind {
     /// `first.then(second)`: `first` unless it is `Equal`. Both are evaluated,
     /// left to right, as every other pair of operands is.
     OrderingThen(Box<Expr>, Box<Expr>),
+    /// `result.map_err(function)`. The function runs only on the error side,
+    /// after the result has been evaluated, and is itself evaluated first.
+    ResultMapErr {
+        value: Box<Expr>,
+        function: Box<Expr>,
+    },
 }
 
 #[derive(Debug)]

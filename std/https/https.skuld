@@ -69,19 +69,13 @@ pub func send(details: http.Request) -> Result<http.Response, HttpsError> {
     // same, so the URL is handed over in the shape it understands and the
     // port that is missing from it is supplied here.
     let plain = "http://${url[8..url.len()]}"
-    let target = http.parse_url(plain) else problem {
-        return Err(HttpsError.Response(problem))
-    }
+    let target = http.parse_url(plain).map_err((problem) => HttpsError.Response(problem))?
     var port = target.port
     if port == 80 && contains_port(url) == false {
         port = 443
     }
-    let address = dns.resolve(target.host) else problem {
-        return Err(HttpsError.Name(problem))
-    }
-    let connection = tls.connect(address, port, target.host) else problem {
-        return Err(HttpsError.Transport(problem))
-    }
+    let address = dns.resolve(target.host).map_err((problem) => HttpsError.Name(problem))?
+    let connection = tls.connect(address, port, target.host).map_err((problem) => HttpsError.Transport(problem))?
     // One close, on every way out. A TLS connection holds three things — the
     // socket, the `SSL` and the context — so a path that forgets it leaks all
     // three, and there were three such paths written by hand here.
@@ -89,18 +83,10 @@ pub func send(details: http.Request) -> Result<http.Response, HttpsError> {
     // The authority carries no port here: a TLS connection on 443 is the
     // default the name already implies, and naming it again is noise a server
     // may or may not match against its certificate.
-    let bytes = http.compose(details, target.path, target.host) else problem {
-        return Err(HttpsError.Response(problem))
-    }
-    let sent = connection.send_all(bytes) else problem {
-        return Err(HttpsError.Transport(problem))
-    }
-    let raw = connection.receive_all() else problem {
-        return Err(HttpsError.Transport(problem))
-    }
-    let response = http.parse_response(raw) else problem {
-        return Err(HttpsError.Response(problem))
-    }
+    let bytes = http.compose(details, target.path, target.host).map_err((problem) => HttpsError.Response(problem))?
+    let sent = connection.send_all(bytes).map_err((problem) => HttpsError.Transport(problem))?
+    let raw = connection.receive_all().map_err((problem) => HttpsError.Transport(problem))?
+    let response = http.parse_response(raw).map_err((problem) => HttpsError.Response(problem))?
     return Ok(response)
 }
 

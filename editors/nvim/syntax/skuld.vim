@@ -63,7 +63,7 @@ syn match skuldFunction /\<\w\+\ze\s*(/
 " Checked by the type checker on arrays, strings, scalars, Result, Ordering and
 " weak references.
 syn match skuldMethod /\.\@<=\<\(len\|push\|insert\|pop\|remove\|sort\|to_sorted\)\>/
-syn match skuldMethod /\.\@<=\<\(bytes\|is_ok\|is_err\|upgrade\|alive\|compare\|total_compare\|then\)\>/
+syn match skuldMethod /\.\@<=\<\(bytes\|is_ok\|is_err\|upgrade|alive|map_err|compare\|alive\|compare\|total_compare\|then\)\>/
 
 " --- Numbers --------------------------------------------------------------
 " Hexadecimal, binary and octal prefixes, with `_` as a separator in every

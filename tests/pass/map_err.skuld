@@ -1,0 +1,52 @@
+// `map_err` maps the error side and leaves a success alone, so `?` can carry
+// one module's error out of a function that returns another's.
+enum AppError {
+    Parse(string),
+    Code(int),
+}
+
+func parse(text: string) -> Result<int, string> {
+    if text == "42" {
+        return Ok(42)
+    }
+    return Err("not a number: " + text)
+}
+
+func describe(error: AppError) -> string {
+    match error {
+        Parse(message): return "parse: " + message
+        Code(code): return "code ${code}"
+    }
+}
+
+func run(text: string) -> Result<int, AppError> {
+    let value = parse(text).map_err((e) => AppError.Parse(e))?
+    return Ok(value + 1)
+}
+
+func to_code(message: string) -> int {
+    return message.len()
+}
+
+func main() {
+    match run("42") {
+        Ok(v): print(v)
+        Err(e): print(describe(e))
+    }
+    match run("x" + "y") {
+        Ok(v): print(v)
+        Err(e): print(describe(e))
+    }
+    let coded = parse("nope").map_err(to_code)
+    if let Err(code) = coded {
+        print(code)
+    }
+    let block = parse("1").map_err((e: string) -> AppError {
+        return AppError.Code(e.len())
+    }
+    )
+    match block {
+        Ok(v): print(v)
+        Err(e): print(describe(e))
+    }
+}
