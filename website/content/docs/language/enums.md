@@ -91,8 +91,7 @@ func main() {
 
 Copies share the box. This is safe because a payload is never assigned in place. You have to write `indirect` yourself; the compiler never infers it, because boxing makes the enum a managed value. Using `indirect` on a variant without a payload, or on one that never recurses, is an error. Enums with an `indirect` variant are unavailable in freestanding builds and statics.
 
-> [!Warning]
-> Releasing a chain recurses once per link, just like a chain of classes does. On the default Windows stack, a 10,000-link list releases and a 100,000-link list overflows.
+A chain of any length is released without overflowing the stack, whether its links are boxes, classes or array elements.
 
 ## Managed payloads
 
