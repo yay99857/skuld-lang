@@ -1,0 +1,66 @@
+// What the release queue must keep true while a chain is destroyed through it:
+// a weak reference to a released node reads as dead, weak references held by
+// nodes into later nodes are dropped without freeing a header early, and a
+// chain that passes through an interface is released like any other.
+
+interface Link {
+    depth() -> int
+}
+
+class Node: Link {
+    value: int
+    next: Option<Node>
+    ahead: weak Node
+    through: Option<Link>
+
+    depth() -> int {
+        return this.value
+    }
+}
+
+func chain(count: int) -> Option<Node> {
+    var head: Option<Node> = None
+    for i in 0..count {
+        var ahead: weak Node = weak()
+        if let next = head {
+            ahead = weak(next)
+        }
+        let node = new Node(value: i, next: head, ahead: ahead, through: None)
+        head = node
+    }
+    return head
+}
+
+func main() {
+    var observer: weak Node = weak()
+    var tail_observer: weak Node = weak()
+    {
+        let head = chain(200000)
+        if let first = head {
+            observer = weak(first)
+            print(first.ahead.alive())
+            var walk = first
+            loop {
+                let next = walk.next else {
+                    break
+                }
+                walk = next
+            }
+            tail_observer = weak(walk)
+            print(walk.value)
+        }
+    }
+    print(observer.alive())
+    print(tail_observer.alive())
+
+    // A chain whose links are interface values.
+    var link: Option<Link> = None
+    for i in 0..200000 {
+        link = new Node(value: i, next: None, ahead: weak(), through: link)
+    }
+    if let top = link {
+        print(top.depth())
+    }
+    link = None
+    print("interfaces released")
+}

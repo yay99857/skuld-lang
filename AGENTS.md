@@ -173,7 +173,14 @@ behind it. The obligations above are checkable, and a persona is not.
   no cycle collector. The runtime is `runtime/strings.c`, embedded verbatim in
   generated C; do not restate retain/release in the code generator. Ownership
   is emitted with cleanup attributes: fresh values are adopted, borrowed values
-  retained on entry, arguments borrowed, returns retained.
+  retained on entry, arguments borrowed, returns retained. Since M33 a release
+  nested past 1000 levels is queued and drained by the outermost one, so a
+  chain of any length is freed without a stack frame per link. A queued
+  object's count stays zero, and the queue is a side array rather than a
+  header field. Always-queueing was rejected after measuring an eight per cent
+  cost. The order queued objects die in is unobservable only because no user
+  code runs in a destroy, which is one more reason there is no user-written
+  destructor.
 - Weak class references use `weak Class`, `weak(value)` and contextually typed
   empty `weak()`. `upgrade()` returns an owning `Option<Class>` without trapping
   on expiration and `alive()` checks liveness; the trapping `get()` was removed in

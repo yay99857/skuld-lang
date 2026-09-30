@@ -536,8 +536,9 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
     }
     // A box's destructor releases the payload it holds. It is written after
     // every helper, since that payload may be the struct whose helpers
-    // release the enum that owns the box. Releasing a very long chain this
-    // way recurses once per link, as a long chain of classes already does.
+    // release the enum that owns the box. A long chain of boxes is released
+    // through the runtime's queue, like a long chain of classes, so it does
+    // not recurse once per link.
     for (enum_index, variant_index, payload) in &boxes {
         let name = format!("skuld_b{enum_index}_{variant_index}");
         emitter.line(&format!(

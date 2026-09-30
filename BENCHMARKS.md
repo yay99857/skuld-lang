@@ -164,6 +164,17 @@ third target would have to settle properly.
 
 ## What this does not claim
 
+## After M33
+
+Releasing a chain of objects now goes through a queue past a nesting depth,
+so a long chain no longer overflows the stack. This was measured against the
+build before it on Windows with clang 23, using the fastest of five runs
+repeated three times. `arrays`, `strings` and `dispatch` are unchanged within
+noise. `json_parse` is about seven per cent slower and `map_lookup` about
+five, with identical checksums. `ROADMAP.md` records why the cost is where it
+is and which cheaper designs were tried and measured. The tables above
+predate M33 and were not re-run against Rust and Go.
+
 No speed ratio is promised, and none of these numbers is a reason to change
 copy semantics, the memory model or the backend. A future optimisation needs
 before-and-after evidence from these same benchmarks and unchanged semantics,

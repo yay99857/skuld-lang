@@ -1,0 +1,60 @@
+// A chain is released link by link without a C stack frame per link. Before
+// this, each object's destroy released the next one from inside itself, and a
+// list a hundred thousand links long overflowed the stack when it was dropped.
+
+class Node {
+    value: int
+    next: Option<Node>
+}
+
+enum List {
+    Empty
+    indirect Cons(Cell)
+}
+
+struct Cell {
+    value: int
+    rest: List
+}
+
+func build_nodes(count: int) -> Option<Node> {
+    var head: Option<Node> = None
+    for i in 0..count {
+        head = new Node(value: i, next: head)
+    }
+    return head
+}
+
+func build_list(count: int) -> List {
+    var list: List = .Empty
+    for i in 0..count {
+        list = .Cons(Cell { value: i, rest: list })
+    }
+    return list
+}
+
+func main() {
+    let count = 1000000
+    {
+        let nodes = build_nodes(count)
+        if let first = nodes {
+            print(first.value)
+        }
+    }
+    print("classes released")
+    {
+        let list = build_list(count)
+        match list {
+            Empty: print("empty")
+            Cons(cell): print(cell.value)
+        }
+    }
+    print("enum released")
+    // An array of chains: the array's own destroy releases each element,
+    // and each element starts a chain of its own.
+    {
+        let chains = [build_nodes(1000), build_nodes(1000), build_nodes(1000)]
+        print(chains.len())
+    }
+    print("array released")
+}
