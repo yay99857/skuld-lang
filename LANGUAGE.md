@@ -643,10 +643,10 @@ operation. A live target produces `Some(user)` owning a strong reference; an
 empty or expired weak reference produces `None` without trapping. Handle the
 result with `if let Some(user) = observer.upgrade() { ... } else { ... }`.
 
-`alive() -> bool` remains a liveness query. The existing `get() -> User` retains
-the target or traps with `expired weak reference` and a source byte offset.
-Prefer `upgrade()` when expiration is an expected outcome: it combines the
-check and promotion. All three methods take no arguments.
+`alive() -> bool` remains a liveness query that neither retains nor traps.
+Both methods take no arguments. There is no `get()`: until M32 it retained the
+target or trapped, the only unwrap in the language that did, and a program
+now writes the expired case down with `if let` or `let ... else`.
 
 Weak values can be copied, assigned, passed, returned and stored in structs,
 classes and arrays. They keep allocation bookkeeping alive, not the target's

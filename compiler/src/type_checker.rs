@@ -3615,6 +3615,25 @@ impl Checker<'_> {
                 };
             }
         }
+        // `get()` retained a live target or trapped, the only unwrap in the
+        // language that did; M32 removed it in favour of `upgrade()`, which
+        // makes the expired case something the program writes down.
+        if matches!(receiver, Type::Weak(_)) && member.text == "get" {
+            self.error(
+                DiagnosticCode::UnknownName,
+                member.span,
+                "a weak reference has no `get()`; `upgrade()` answers an Option instead of trapping",
+            );
+            if let Some(last) = self.diagnostics.last_mut() {
+                last.diagnostic.help = Some(
+                    "write `if let target = reference.upgrade() { ... }` or `let target = reference.upgrade() else { ... }`".into(),
+                );
+            }
+            for argument in arguments {
+                self.expression(argument);
+            }
+            return Type::Error;
+        }
         let builtin = match (receiver, member.text.as_str()) {
             (Type::Array(_) | Type::FixedArray(_), "len") => Some(Type::INT),
             // A string's length is its byte count, matching what indexing and
@@ -3625,7 +3644,6 @@ impl Checker<'_> {
                 Some(self.array_type(byte))
             }
             (Type::Weak(_), "alive") => Some(Type::Bool),
-            (Type::Weak(id), "get") => Some(Type::Struct(id)),
             (Type::Weak(id), "upgrade") => Some(self.option_type(Type::Struct(id))),
             (Type::Option(_), "is_some" | "is_none") => Some(Type::Bool),
             (Type::Result(_), "is_ok" | "is_err") => Some(Type::Bool),

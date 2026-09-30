@@ -340,7 +340,7 @@ heap-based and reference counted.
 
 `weak User` holds a non-owning class reference. `weak(user)` creates one,
 `upgrade()` returns `Some(user)` or `None` and safely retains a live target.
-`alive()` and trapping `get()` remain available. Weak parent
+`alive()` checks liveness without retaining. Weak parent
 links avoid ownership cycles without introducing null or a cycle collector.
 
 Arrays use `[]int` and `[1, 2, 3]`, with shared references, checked indexes and

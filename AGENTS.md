@@ -171,7 +171,8 @@ behind it. The obligations above are checkable, and a persona is not.
   retained on entry, arguments borrowed, returns retained.
 - Weak class references use `weak Class`, `weak(value)` and contextually typed
   empty `weak()`. `upgrade()` returns an owning `Option<Class>` without trapping
-  on expiration; `alive()` checks liveness and `get()` retains or traps.
+  on expiration and `alive()` checks liveness; the trapping `get()` was removed in
+  M32.
   Weak references do not keep managed fields alive. No normal null value exists.
 - Builtin `Option<T>` uses inline tag/payload value semantics. Contextual `None`
   represents absent values — `null` stopped being a spelling of it in M32; values wrap implicitly into expected Options.

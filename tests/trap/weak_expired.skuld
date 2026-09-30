@@ -1,3 +1,0 @@
-class A {}
-func expired() -> weak A { return weak(new A()) }
-func main() { expired().get() }

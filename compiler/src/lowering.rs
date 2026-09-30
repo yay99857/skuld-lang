@@ -827,9 +827,6 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     (Some(Type::Weak(_)), "alive") => {
                         Some(h::ExprKind::WeakAlive(Box::new(expression(object, cx))))
                     }
-                    (Some(Type::Weak(_)), "get") => {
-                        Some(h::ExprKind::WeakGet(Box::new(expression(object, cx))))
-                    }
                     _ => None,
                 };
                 if let Some(kind) = special {

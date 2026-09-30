@@ -195,10 +195,6 @@ static inline void *skuld_weak_upgrade(skuld_weak value) {
     if (!skuld_weak_alive(value)) return NULL;
     return skuld_object_retain(value);
 }
-static inline void *skuld_weak_get(skuld_weak value, size_t byte) {
-    if (!skuld_weak_alive(value)) skuld_fail("expired weak reference", byte);
-    return skuld_object_retain(value);
-}
 static inline void *skuld_allocate(size_t base, size_t count, size_t element, size_t byte) {
     size_t bytes;
     if (__builtin_mul_overflow(count, element, &bytes) ||

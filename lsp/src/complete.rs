@@ -264,11 +264,6 @@ pub fn members_of(typed: &TypedProgram, ty: Type) -> Vec<Item> {
                 .unwrap_or_else(|| "Class".to_owned());
             items.push(Item::new("alive", kind::METHOD, Some("() -> bool".into())));
             items.push(Item::new(
-                "get",
-                kind::METHOD,
-                Some(format!("() -> {class}")),
-            ));
-            items.push(Item::new(
                 "upgrade",
                 kind::METHOD,
                 Some(format!("() -> Option<{class}>")),

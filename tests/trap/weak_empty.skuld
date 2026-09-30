@@ -1,3 +1,0 @@
-class A {}
-func main() { let x: weak A = weak()
-x.get() }

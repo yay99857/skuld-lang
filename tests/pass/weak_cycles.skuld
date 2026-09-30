@@ -16,9 +16,13 @@ func main() {
         parent.add(child)
         observer = weak(child)
         print(child.parent.alive())
-        print(child.parent.get().name)
+        if let parent_now = child.parent.upgrade() {
+            print(parent_now.name)
+        }
         let shared = observer
-        let promoted = shared.get()
+        let promoted = shared.upgrade() else {
+            return
+        }
         print(promoted.name)
     }
     print(observer.alive())

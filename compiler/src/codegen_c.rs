@@ -2714,14 +2714,6 @@ impl<'a> Emitter<'a> {
                 ));
                 result
             }
-            ExprKind::WeakGet(object) => {
-                let value = self.expression(object);
-                self.store(
-                    expr.ty,
-                    &format!("skuld_weak_get({value}, {})", expr.span.start),
-                    true,
-                )
-            }
             ExprKind::Interpolation(parts) => {
                 // Folded left into concatenations. Each piece becomes a string
                 // that owns itself, and each intermediate result is released by

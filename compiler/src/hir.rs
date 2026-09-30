@@ -344,7 +344,6 @@ pub(crate) enum ExprKind {
         arguments: Vec<Expr>,
     },
     WeakAlive(Box<Expr>),
-    WeakGet(Box<Expr>),
     WeakUpgrade(Box<Expr>),
     Some(Box<Expr>),
     None,
