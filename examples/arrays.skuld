@@ -1,4 +1,4 @@
-func sum(values: []int): int {
+func sum(values: []int) -> int {
     var total = 0
     var index = 0
     while index < values.len() {

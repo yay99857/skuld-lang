@@ -47,7 +47,7 @@ func main() {
         values.push(state % 1000000)
         index += 1
     }
-    values.sort((a: int, b: int): int {
+    values.sort((a: int, b: int) -> int {
         return a - b
     }
     )

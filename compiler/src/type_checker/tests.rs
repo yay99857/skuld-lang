@@ -514,7 +514,7 @@ fn option_constructor_identity_comes_from_resolution() {
 #[test]
 fn option_null_implicit_wrap_and_direct_if_let() {
     valid(
-        "func find(ok: bool): Option<int> {\n    if ok { return 42 }\n    return null\n}\nfunc main() {\n    let opt: Option<int> = 10\n    let empty: Option<int> = null\n    if let val = find(true) { print(val) }\n}",
+        "func find(ok: bool) -> Option<int> {\n    if ok { return 42 }\n    return null\n}\nfunc main() {\n    let opt: Option<int> = 10\n    let empty: Option<int> = null\n    if let val = find(true) { print(val) }\n}",
     );
     fails("func main() { let x = null }", DiagnosticCode::UnknownType);
     fails("func main() { null() }", DiagnosticCode::NotCallable);
@@ -850,7 +850,7 @@ fn a_function_value_may_not_be_stored_where_a_managed_value_could_reach_it() {
     for source in [
         "class Holder { action: (int) -> int }\nfunc main() { }",
         "enum Wrap { V((int) -> int) }\nfunc main() { }",
-        "func give() -> (int) -> int { return (n: int): int { return n } }\nfunc main() { }",
+        "func give() -> (int) -> int { return (n: int) -> int { return n } }\nfunc main() { }",
         "func main() { let a: [](int) -> int = [] }",
         "func main() { let o: Option<(int) -> int> = null }",
     ] {
@@ -861,7 +861,7 @@ fn a_function_value_may_not_be_stored_where_a_managed_value_could_reach_it() {
 #[test]
 fn a_lambda_parameter_needs_a_type_when_nothing_supplies_one() {
     fails(
-        "func main() { let f = (n): int { return n } }",
+        "func main() { let f = (n) -> int { return n } }",
         DiagnosticCode::UnknownType,
     );
 }

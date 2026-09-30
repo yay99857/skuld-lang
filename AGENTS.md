@@ -268,8 +268,8 @@ behind it. The obligations above are checkable, and a persona is not.
   M11 (the official formatter) is complete: `skuld fmt <file>` formats in-place
   and `skuld fmt --check <file>` detects drift without writing. It preserves all
   `//` comments, exact literal representations, statement boundaries and AST
-  semantics. Return types normalize to `-> Type` while `:` remains fully accepted
-  in source. All fixtures and examples format idempotently and execute cleanly.
+  semantics. Return types are written `-> Type`; the `:` spelling it once
+  normalized was removed by M32. All fixtures and examples format idempotently and execute cleanly.
   M12 (references and rename in the LSP) is complete; its two open decisions
   were taken as recorded below and in `ROADMAP.md`.
   M13 (local CLI applications and `skuld test`) is complete, with its file,
@@ -579,7 +579,7 @@ behind it. The obligations above are checkable, and a persona is not.
   builtin `bytes_to_string` keeps returning `Result<string, string>`: making it
   return a library type would invert the dependency.
 - Function values are implemented and non-escaping. A lambda is written
-  `(a: int, b: int): int { ... }` — no keyword, the shape a method already uses
+  `(a: int, b: int) -> int { ... }` — no keyword, the shape a method already uses
   — and a function type is `(int, int) -> int`, which keeps `->` so a parameter
   is not spelled `compare: (int, int): int`. Parameter and result types may be
   omitted where the expected type supplies them, and a declared function named
@@ -648,8 +648,8 @@ behind it. The obligations above are checkable, and a persona is not.
 - The official formatter is implemented: `skuld fmt <file>` formats in place and
   `skuld fmt --check <file>` reports drift without modifying the file. Formatting
   preserves all line comments (`//`), literal byte choices, statement boundaries
-  and AST semantics. Top-level and method signatures normalize to `-> Type`, while
-  colon return type syntax remains accepted. Match arms normalize to `Pattern: ...`.
+  and AST semantics. Signatures are written `-> Type` — since M32 the only
+  spelling — and match arms `Pattern: ...`, their only separator.
   Idempotency and native output preservation are tested across all fixtures.
 - The language server finds references and renames. A workspace is the set of
   programs the editor has open: each document is compiled as the entry file of

@@ -593,12 +593,7 @@ impl Parser<'_> {
             .start;
         let name = self.name("a function name")?;
         let parameters = self.parameter_list()?;
-        let return_type =
-            if self.take(&TokenKind::Colon).is_some() || self.take(&TokenKind::Arrow).is_some() {
-                Some(self.type_ref()?)
-            } else {
-                None
-            };
+        let return_type = self.return_type()?;
         if self.at(&TokenKind::LeftBrace) {
             return Err(self
                 .error(
@@ -722,13 +717,7 @@ impl Parser<'_> {
             let method_start = self.current().span.start;
             let name = self.name("a method name")?;
             let parameters = self.parameter_list()?;
-            let return_type = if self.take(&TokenKind::Colon).is_some()
-                || self.take(&TokenKind::Arrow).is_some()
-            {
-                Some(self.type_ref()?)
-            } else {
-                None
-            };
+            let return_type = self.return_type()?;
             methods.push(MethodSignature {
                 name,
                 parameters,
@@ -929,12 +918,7 @@ impl Parser<'_> {
     /// The name and `(` are already known; methods carry no `func` keyword.
     fn method(&mut self, name: Name, start: usize) -> Parsed<FunctionDecl> {
         let parameters = self.parameter_list()?;
-        let return_type =
-            if self.take(&TokenKind::Colon).is_some() || self.take(&TokenKind::Arrow).is_some() {
-                Some(self.type_ref()?)
-            } else {
-                None
-            };
+        let return_type = self.return_type()?;
         let body = self.block()?;
         let span = Span::new(start, body.span.end);
         Ok(FunctionDecl {
@@ -954,6 +938,27 @@ impl Parser<'_> {
     /// A condition disables this the same way it disables a bare struct
     /// literal, so `if (flag) { ... }` keeps its ordinary reading.
     /// Whether a line break separates the token at `offset` from the next.
+    /// `-> Type` after a signature, or nothing for `void`. A `:` in the same
+    /// place was a second spelling until M32 and is refused with the edit that
+    /// replaces it, since a program written before then says exactly this.
+    fn return_type(&mut self) -> Parsed<Option<TypeRef>> {
+        if self.take(&TokenKind::Arrow).is_some() {
+            return Ok(Some(self.type_ref()?));
+        }
+        if self.at(&TokenKind::Colon) {
+            let colon = self.current().span;
+            let spaced = self.source[..colon.start].ends_with([' ', '\t']);
+            let replacement = if spaced { "->" } else { " ->" };
+            return Err(self
+                .error(
+                    DiagnosticCode::ExpectedSyntax,
+                    "a return type is written `-> Type`, not `: Type`",
+                )
+                .with_help("`:` names the type of a binding or a field; `->` names what a function returns")
+                .with_fix(Fix::new("write `->`", colon, replacement)));
+        }
+        Ok(None)
+    }
     fn newline_after(&self, offset: usize) -> bool {
         let index = (self.position + offset).min(self.tokens.len() - 1);
         let end = self.tokens[index].span.end;
@@ -1046,12 +1051,7 @@ impl Parser<'_> {
         let start = self.expect(&TokenKind::Function, "`func`")?.span.start;
         let name = self.name("a function name")?;
         let parameters = self.parameter_list()?;
-        let return_type =
-            if self.take(&TokenKind::Colon).is_some() || self.take(&TokenKind::Arrow).is_some() {
-                Some(self.type_ref()?)
-            } else {
-                None
-            };
+        let return_type = self.return_type()?;
         let body = self.block()?;
         let span = Span::new(start, body.span.end);
         Ok(FunctionDecl {
@@ -1400,8 +1400,8 @@ impl Parser<'_> {
                     }
                 }
             };
-            if self.take(&TokenKind::Colon).is_none() && self.take(&TokenKind::Arrow).is_none() {
-                return Err(self.expected("`:` or `->` after match pattern"));
+            if self.take(&TokenKind::Colon).is_none() {
+                return Err(self.expected("`:` after match pattern"));
             }
             let body = if self.at(&TokenKind::LeftBrace) {
                 self.block()?
@@ -1662,18 +1662,12 @@ impl Parser<'_> {
                 }
             }
             TokenKind::LeftParen if self.struct_literals && self.at_lambda() => {
-                // `(a: int, b: int): int { ... }`. Methods already declare
+                // `(a: int, b: int) -> int { ... }`. Methods already declare
                 // themselves without a keyword; a lambda is the same shape
                 // without a name.
                 let start = self.current().span.start;
                 let parameters = self.lambda_parameters()?;
-                let return_type = if self.take(&TokenKind::Arrow).is_some()
-                    || self.take(&TokenKind::Colon).is_some()
-                {
-                    Some(self.type_ref()?)
-                } else {
-                    None
-                };
+                let return_type = self.return_type()?;
                 let (body, is_expression) = if self.take(&TokenKind::FatArrow).is_some() {
                     let expr = self.expression()?;
                     let span = expr.span;

@@ -2308,7 +2308,7 @@ impl Checker<'_> {
             }
         }
     }
-    /// `(a: int, b: int): int { ... }`. A parameter type may be omitted when
+    /// `(a: int, b: int) -> int { ... }`. A parameter type may be omitted when
     /// the expected type supplies it, which is the same local inference a
     /// `let` already performs.
     fn lambda(&mut self, lambda: &Lambda, expected: Option<Type>) -> Type {

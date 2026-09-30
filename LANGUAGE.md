@@ -60,7 +60,7 @@ The old words are ordinary identifiers and can be explicitly declared by users.
 
 Keywords: `func let var return if else while loop for in break continue new weak class struct
 impl enum match import pub extern unsafe interface`. A lambda needs none of them: it is
-written `(a: int): int { ... }`, the shape a method already uses.
+written `(a: int) -> int { ... }`, the shape a method already uses.
 Reserved future keywords: `static`.
 `true` and `false` produce boolean literal tokens. Type names, `print`, `Some`,
 `None`, `Ok` and `Err` are identifiers. `Option<T>` and `Result<T, E>` are
@@ -192,6 +192,10 @@ func main() {
 ```
 
 Parameters and return signatures are explicit; omitted return type means void.
+A return type is written `-> Type` and nowhere else: `: Type` after a
+signature, method, interface method, extern function or lambda is a syntax
+error carrying the edit to `->`, since `:` names the type of a binding or a
+field. It was accepted as a second spelling until M32.
 The entrypoint is `func main()`. Executable global statements are forbidden.
 `print` is a special builtin returning `void`. `print()` emits a blank line;
 `print(value)` accepts one `int`, `float`, `bool` or `string` and appends a newline.
@@ -658,7 +662,7 @@ a struct, a class, an array or a weak reference. This milestone introduces
 neither general generics nor user-defined enums.
 
 ```skuld
-func answer(found: bool): Option<int> {
+func answer(found: bool) -> Option<int> {
     if found { return 42 }
     return null
 }
@@ -1308,7 +1312,7 @@ A lambda is a function declaration without a name, which is why it needs no
 keyword: a method already declares itself the same way.
 
 ```skuld
-let increment = (n: int): int { return n + 1 }
+let increment = (n: int) -> int { return n + 1 }
 let double = (n: int) => n * 2
 numbers.sort((a, b) => a - b)
 ```
@@ -1318,8 +1322,8 @@ Where expected context supplies parameter and return types, annotations may be o
 
 A function *type* is written `(int, int) -> int`. The result uses `->` there so
 that a parameter is not spelled `compare: (int, int): int`, with `:` meaning
-"has type" and "returns" in the same declaration; inside a literal both `:` and
-`->` introduce the result, as they do on a method.
+"has type" and "returns" in the same declaration; a literal introduces its
+result with `->` too, as a method does.
 
 ```skuld
 func count_if(values: []int, keep: (int) -> bool) -> int {
@@ -1338,7 +1342,7 @@ local inference `let` performs — and a declared function named where a value i
 expected becomes one:
 
 ```skuld
-print(count_if(numbers, (n): bool { return n > 1 }))
+print(count_if(numbers, (n) -> bool { return n > 1 }))
 print(apply(10, double))
 ```
 
@@ -1363,10 +1367,10 @@ the two rules are one rule.
 
 ```skuld
 let base = 100
-print(apply(5, (n: int): int { return n + base }))   // captures `base`
+print(apply(5, (n: int) -> int { return n + base }))   // captures `base`
 
 var running = 0
-print(apply(5, (n: int): int { return n + running })) // rejected
+print(apply(5, (n: int) -> int { return n + running })) // rejected
 ```
 
 **A chosen limit.** Because a function value cannot be stored, a callback
