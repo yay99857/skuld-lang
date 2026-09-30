@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Skuld">
+  <title>Skuld</title>
+  <!-- An S cut the way a rune is cut: straight strokes only, no curve a knife
+       would not make. It is the mark the terminal draws too, where the glyph
+       is a boxed letter, so the logo and the file icon read as one thing. -->
+  <rect width="64" height="64" rx="15" fill="#262626" />
+  <path d="M45 18H19v14h26v14H19" fill="none" stroke="#FFFFFF" stroke-width="6.5"
+        stroke-linecap="butt" stroke-linejoin="miter" />
+</svg>
+
