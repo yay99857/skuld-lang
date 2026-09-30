@@ -28,6 +28,7 @@ that builds the `skuld` binary. The pipeline is
 | `tests/pass|fail|trap/` | Language golden fixtures, run by `cli/tests/golden.rs` (see `tests/README.md`) |
 | `runtime/strings.c` | The managed-memory runtime: retain, release, allocation, the checks that trap |
 | `runtime/platform.c` | The platform layer: what the OS is called, behind names `std/` speaks. Compiled as its own translation unit, so its headers never reach the program |
+| `website/` | The documentation site: Markdown in `content/`, built by `npm run build`; `npm test` compiles every complete example against `../target/debug/skuld` |
 
 Unit tests live in `compiler/src/<stage>/tests.rs` next to the stage they cover.
 
