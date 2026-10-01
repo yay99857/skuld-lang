@@ -890,12 +890,7 @@ impl<'a> Formatter<'a> {
                 self.push(")");
             }
             ExprKind::Unary { op, operand, .. } => {
-                match op {
-                    UnaryOp::Positive => self.push("+"),
-                    UnaryOp::Negative => self.push("-"),
-                    UnaryOp::Not => self.push("!"),
-                    UnaryOp::BitNot => self.push("~"),
-                }
+                self.push(op.symbol());
                 self.format_expr(operand);
             }
             ExprKind::Binary {
@@ -903,7 +898,7 @@ impl<'a> Formatter<'a> {
             } => {
                 self.format_expr(left);
                 self.push(" ");
-                self.push(binary_op_str(*op));
+                self.push(op.symbol());
                 self.push(" ");
                 self.format_expr(right);
             }
@@ -1106,29 +1101,6 @@ impl<'a> Formatter<'a> {
                 self.format_type(pointee);
             }
         }
-    }
-}
-
-fn binary_op_str(op: BinaryOp) -> &'static str {
-    match op {
-        BinaryOp::Or => "||",
-        BinaryOp::And => "&&",
-        BinaryOp::BitOr => "|",
-        BinaryOp::BitXor => "^",
-        BinaryOp::BitAnd => "&",
-        BinaryOp::Equal => "==",
-        BinaryOp::NotEqual => "!=",
-        BinaryOp::Less => "<",
-        BinaryOp::Greater => ">",
-        BinaryOp::LessEqual => "<=",
-        BinaryOp::GreaterEqual => ">=",
-        BinaryOp::ShiftLeft => "<<",
-        BinaryOp::ShiftRight => ">>",
-        BinaryOp::Add => "+",
-        BinaryOp::Subtract => "-",
-        BinaryOp::Multiply => "*",
-        BinaryOp::Divide => "/",
-        BinaryOp::Modulo => "%",
     }
 }
 

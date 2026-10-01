@@ -3051,7 +3051,11 @@ impl Checker<'_> {
                         self.error(
                             DiagnosticCode::InvalidOperator,
                             *op_span,
-                            format!("unary operator `{op:?}` does not accept `{ty}`"),
+                            format!(
+                                "unary `{}` does not accept `{}`",
+                                op.symbol(),
+                                self.type_name(ty)
+                            ),
                         );
                         Type::Error
                     } else {
@@ -3629,7 +3633,11 @@ impl Checker<'_> {
             self.error(
                 DiagnosticCode::InvalidOperator,
                 span,
-                format!("operator `{op:?}` does not accept `{left}` operands"),
+                format!(
+                    "operator `{}` does not accept `{}` operands",
+                    op.symbol(),
+                    self.type_name(left)
+                ),
             );
             return Type::Error;
         }
