@@ -243,3 +243,13 @@ jobs:
           npm run lint
           npm run build
           npm test
+
+      # The browser tests drive the built site the way a reader does: search,
+      # the theme, copying code, the installation tabs, the mobile drawer and
+      # an accessibility scan. Nothing ran them before, so they described the
+      # site only on the day they were written.
+      - name: Install the browser the site is tested in
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the browser tests
+        run: npx playwright test
