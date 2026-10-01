@@ -1870,6 +1870,87 @@ fixes the one type, and a user's `Box` list still recurses.
   inside a destroy, which is a third reason, after M25's and M30's, why
   Skuld has no destructor a user can write.
 
+## M34 — Equality for values — In progress
+
+M32 promised `if s == .Pending` and withdrew it, because enums had no `==`.
+Testing one variant took a whole `match`. The user chose this as the next
+milestone. A second agent was then asked for the strongest case against the
+draft before any code moved. It found a bug the draft would have shipped, and
+it changed four of the draft's choices.
+
+Sources read, not recalled:
+- **Go:** the specification's "Comparison operators" section. Structs are
+  comparable when every field is, are compared in source order, and stop at
+  the first difference. Floats compare as IEEE 754 says. Slices, maps and
+  functions are not comparable.
+- **Swift:** SE-0185. Equatable is synthesised only when every stored
+  property or associated value is Equatable. Synthesis is opt-in, and classes
+  are excluded. `Optional.swift` lets `x == nil` work even when the wrapped
+  type is not Equatable.
+- **Zig:** the language reference. `==` is defined for integers, floats,
+  `bool`, `type` and `packed struct`, enum tags compare as `tag == .ok`, and
+  an ordinary struct has no `==`.
+
+The decisions:
+
+- **Decision taken: `==` converts nothing.** The draft let `binary()` accept
+  `int` where `Option<int>` was expected, through `expect_type`. That would
+  have recorded an implicit wrap under the operator's span, which lowering
+  never looks up, so `opt == 5` would have compiled into C that compares a
+  tagged struct with an integer. It would also have been asymmetric:
+  `opt == 5` accepted and `5 == opt` refused. Both operands of `==` and `!=`
+  must now have one type once the right operand is typed against the left.
+  Comparing with a present value is written `opt == Some(5)`. Rust refuses
+  `Option<i32> == i32` for the same reason.
+- **Decision taken: structural and automatic.** A value `struct`, an enum, a
+  fixed array, an `Option` and a `Result` compare structurally when every
+  part of them can be compared. Fields compare in declaration order and stop
+  at the first difference, as in Go. Swift's argument for opt-in is that a
+  type should not fall into a public promise by accident. That weighs less
+  here, because Skuld has no registry and no semver, and losing equality is a
+  compile error at the comparison rather than a silent change. A conformance
+  marker would also be new syntax, since interfaces belong to classes. The
+  cost is recorded instead: **that a type in `std/` happens to be comparable
+  is not a promise**, and adding a field to it may take that away.
+- **Decision taken: comparing with a payload-less variant is a tag test.**
+  `v == .Null` or `s != Status.Pending` is allowed on any enum, including one
+  whose other variants carry values that cannot be compared. Matching a
+  variant with no payload means the tags are equal, and nothing else is
+  needed. This is what makes the motivating case work on `std/json`'s
+  `JsonValue`, whose arrays and classes would refuse a structural `==`.
+  `opt == None` is refused with a fix to `is_none()`, and `!= None` with a
+  fix to `is_some()`, so absence keeps one spelling.
+- **Decision taken: the payload-less variant goes on the right.** `.Pending`
+  takes its enum from the left operand. Written on the left, it is an error
+  whose fix swaps the operands.
+- **Not comparable, each for its own reason:**
+  - **Classes:** two objects with equal fields are not therefore the same
+    object, and Skuld has no identity operator. SE-0185 excludes them for
+    the same reason.
+  - **`[]T`:** a shared reference, as Go's slices are.
+  - **Interfaces, `weak` and function values.**
+  - **Raw pointers:** `ffi.is_null()` already answers the useful question,
+    and comparing addresses outside `unsafe` would blur the line M23 drew.
+  - **`extern struct` and `extern union`:** C padding, and a union cannot be
+    compared without knowing which member is live.
+  - **Any type that reaches an `indirect` variant:** a structural comparison
+    of a long chain would recurse once per link, which is the failure M33
+    just removed from release. The draft's shortcut, "a shared box is
+    equal", would also have broken M32's rule that sharing a box cannot be
+    told apart from copying it: with a NaN inside, a shared box would compare
+    equal while a rebuilt copy compared unequal. An iterative comparison with
+    an explicit worklist and no shortcut is the way to lift this, and it is
+    its own change.
+
+  The diagnostic names the field or payload that refuses and says why.
+- **Floats stay IEEE.** A struct holding NaN is not equal to itself, exactly
+  as the scalar is not. The backend never compares bytes: padding, `-0.0`
+  against `0.0`, and NaN would all make that wrong.
+- **What would make this wrong:** that real programs mostly compare deep
+  `indirect` values, or values of types this refuses. The reviewer noted that
+  the evidence for the structural half is thin: no caller in `std/` compares
+  a struct field by field. The tag test is what the motivating case needs.
+
 ## Open design questions
 
 These are not settled by this document and change the shape of the milestones
