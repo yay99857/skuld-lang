@@ -1655,3 +1655,20 @@ fn equality_fixes_rewrite_what_cannot_be_written() {
         apply("func f() -> Option<int> { return None }\nfunc main() { print(None != f()) }");
     assert!(negated.contains("print(f().is_some())"), "{negated}");
 }
+
+#[test]
+fn an_expression_lambda_reports_each_mistake_once() {
+    // Inferring the result used to check the body a second time.
+    let errors =
+        check("func main() {\n    let f = (a: int) => a + \"x\"\n}").expect_err("must fail");
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    // The inferred result still reaches the function value's type.
+    valid(
+        "func main() {\n    let twice = (n: int) => n * 2\n    let four: int = twice(2)\n    let shout = (s: string) => s + \"!\"\n    let text: string = shout(\"hi\")\n}",
+    );
+    // And a result that may not escape is still refused.
+    fails(
+        "func main() {\n    let make = () => (n: int) => n\n}",
+        DiagnosticCode::InvalidValueType,
+    );
+}

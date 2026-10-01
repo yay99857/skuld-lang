@@ -29,7 +29,12 @@ test('installation tabs and remembered navigation', async ({ page }) => {
   await page.keyboard.press('ArrowRight');
   await expect(page.getByRole('tabpanel')).toContainText('Windows x86_64');
   const group = page.locator('.sidebar details').filter({ has: page.locator('summary', { hasText: 'Advanced' }) });
-  await group.locator('summary').click(); await page.reload(); await expect(group).not.toHaveAttribute('open');
+  await group.locator('summary').click();
+  // The browser fires `toggle` after the attribute changes, and that is when
+  // the preference is saved; reloading before it lands tests nothing.
+  const key = `skuld-group-${await group.getAttribute('data-group')}`;
+  await expect.poll(() => page.evaluate(name => localStorage.getItem(name), key)).toBe('closed');
+  await page.reload(); await expect(group).not.toHaveAttribute('open');
 });
 
 test('mobile drawer, examples and honest playground', async ({ page }) => {
