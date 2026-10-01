@@ -1948,7 +1948,7 @@ impl Checker<'_> {
             StatementKind::Return(value) => {
                 self.reject_jump_from_defer("return", statement.span);
                 let previous_expected = self.expected_context;
-                self.expected_context = Some(self.return_type);
+                self.expected_context = Some(self.return_type).filter(|ty| *ty != Type::Error);
                 let found = value
                     .as_ref()
                     .map(|e| self.expression(e))
@@ -2464,29 +2464,33 @@ impl Checker<'_> {
             self.symbol_types[id.0] = ty;
             parameters.push(ty);
         }
-        let return_type = match (&lambda.return_type, signature.as_ref()) {
-            (Some(reference), _) => self.type_ref(reference, true),
-            (None, Some(signature)) => signature.return_type,
-            (None, None) if lambda.is_expression => {
-                if let Some(Statement {
+        // An expression body with nothing to say what it returns answers
+        // whatever the expression is. It is checked once, as the body, with a
+        // result that accepts anything, and its type is read back afterwards;
+        // checking it a second time to find the type reported every mistake
+        // in it twice.
+        let inferred_from = match (&lambda.return_type, signature.as_ref()) {
+            (None, None) if lambda.is_expression => match lambda.body.statements.first() {
+                Some(Statement {
                     kind: StatementKind::Return(Some(expr)),
                     ..
-                }) = lambda.body.statements.first()
-                {
-                    let previous_expected = self.expected_context.take();
-                    let inferred = self.expression(expr);
-                    self.expected_context = previous_expected;
-                    inferred
-                } else {
-                    Type::Void
-                }
-            }
+                }) => Some(expr),
+                _ => None,
+            },
+            _ => None,
+        };
+        let declared = match (&lambda.return_type, signature.as_ref()) {
+            (Some(reference), _) => self.type_ref(reference, true),
+            (None, Some(signature)) => signature.return_type,
+            (None, None) if inferred_from.is_some() => Type::Error,
             (None, None) => Type::Void,
         };
-        self.reject_stored_function(return_type, lambda.span, "the result of a function value");
+        if inferred_from.is_none() {
+            self.reject_stored_function(declared, lambda.span, "the result of a function value");
+        }
         // The body returns from the lambda, not from the enclosing function,
         // and a `break` inside it has no enclosing loop to bind to.
-        let outer_return = std::mem::replace(&mut self.return_type, return_type);
+        let outer_return = std::mem::replace(&mut self.return_type, declared);
         let outer_loops = std::mem::take(&mut self.loops);
         // A `return` inside a lambda leaves the lambda, not the block that
         // built it, so it settles nothing about an enclosing escape block.
@@ -2497,6 +2501,18 @@ impl Checker<'_> {
         self.jumps_escape = outer_jumps;
         self.loops = outer_loops;
         self.return_type = outer_return;
+        let return_type = match inferred_from {
+            Some(expr) => {
+                let inferred = self.expression_type_of(expr).unwrap_or(Type::Error);
+                self.reject_stored_function(
+                    inferred,
+                    lambda.span,
+                    "the result of a function value",
+                );
+                inferred
+            }
+            None => declared,
+        };
         if return_type != Type::Void && return_type != Type::Error && !returns {
             self.error(
                 DiagnosticCode::MissingReturn,
