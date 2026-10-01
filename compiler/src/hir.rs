@@ -28,6 +28,9 @@ pub struct Program {
     /// Declared functions the program turns into values, each needing a thunk
     /// that gives it the shape every function value has.
     pub(crate) function_values: Vec<(SymbolId, crate::types::FunctionTypeId)>,
+    /// Aggregate types some `==` compares structurally, each needing one
+    /// generated comparison.
+    pub(crate) equalities: Vec<Type>,
     /// Array types the program sorts, with the comparator signature each one
     /// takes, so that a sort is generated only where it is used.
     pub(crate) sorts: Vec<(crate::types::ArrayId, crate::types::FunctionTypeId)>,
@@ -378,6 +381,12 @@ pub(crate) enum ExprKind {
     /// `first.then(second)`: `first` unless it is `Equal`. Both are evaluated,
     /// left to right, as every other pair of operands is.
     OrderingThen(Box<Expr>, Box<Expr>),
+    /// `value == .Variant` against a variant with no payload: the tag alone.
+    TagIs {
+        value: Box<Expr>,
+        variant_index: usize,
+        negated: bool,
+    },
     /// The address of a place, which is how a `var` method's receiver is
     /// passed. The checker admits only a place nothing else can reach.
     Receiver(Place),

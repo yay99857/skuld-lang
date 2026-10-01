@@ -1,0 +1,4 @@
+func main() {
+    let value: Option<int> = 3
+    print(value == 3)
+}

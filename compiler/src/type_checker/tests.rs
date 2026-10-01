@@ -1631,3 +1631,27 @@ fn a_freestanding_program_holds_what_it_can_count_for_itself() {
     // of there being one language.
     valid("pub func boot() {\n    print(1)\n}\n\nfunc main() {\n    boot()\n}");
 }
+
+#[test]
+fn equality_fixes_rewrite_what_cannot_be_written() {
+    let apply = |source: &str| -> String {
+        let errors = check(source).expect_err("must fail");
+        let fix = errors
+            .iter()
+            .find_map(|error| error.fix.as_ref())
+            .unwrap_or_else(|| panic!("{source}: no fix in {errors:?}"));
+        let mut fixed = source.to_owned();
+        fixed.replace_range(fix.span.start..fix.span.end, &fix.replacement);
+        fixed
+    };
+    // A variant without its enum goes where the enum is known.
+    let swapped = apply("enum S { A, B }\nfunc main() {\n    let s = S.B\n    print(.A != s)\n}");
+    assert!(swapped.contains("print(s != .A)"), "{swapped}");
+    assert!(check(&swapped).is_ok(), "{swapped}");
+    // Absence is a method, parenthesised where the operand needs it.
+    let method = apply("func main() {\n    let o: Option<int> = 3\n    print(o == None)\n}");
+    assert!(method.contains("print(o.is_none())"), "{method}");
+    let negated =
+        apply("func f() -> Option<int> { return None }\nfunc main() { print(None != f()) }");
+    assert!(negated.contains("print(f().is_some())"), "{negated}");
+}

@@ -1,0 +1,9 @@
+enum Status {
+    Pending
+    Ready(int)
+}
+
+func main() {
+    let s = Status.Pending
+    print(.Pending == s)
+}

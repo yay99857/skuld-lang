@@ -1,0 +1,9 @@
+enum List {
+    Nil
+    indirect Cons(List)
+}
+
+func main() {
+    let a = List.Cons(.Nil)
+    print(a == a)
+}

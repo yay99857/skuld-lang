@@ -1870,7 +1870,7 @@ fixes the one type, and a user's `Box` list still recurses.
   inside a destroy, which is a third reason, after M25's and M30's, why
   Skuld has no destructor a user can write.
 
-## M34 — Equality for values — In progress
+## M34 — Equality for values — Implemented
 
 M32 promised `if s == .Pending` and withdrew it, because enums had no `==`.
 Testing one variant took a whole `match`. The user chose this as the next
@@ -1950,6 +1950,19 @@ The decisions:
   `indirect` values, or values of types this refuses. The reviewer noted that
   the evidence for the structural half is thin: no caller in `std/` compares
   a struct field by field. The tag test is what the motivating case needs.
+- **Closing marker: met.** `tests/pass/equality` covers each case, and runs
+  under the address and undefined-behaviour sanitizers with the rest of the
+  suite:
+  - tag tests, among them `value == .Null` on a parsed `JsonValue`;
+  - structural `==` on an enum, a struct holding strings, a nested struct
+    and a fixed array, built from fresh temporaries on both sides;
+  - Option and Result;
+  - a struct holding NaN that is not equal to itself.
+
+  Six `tests/fail` fixtures cover the refusals: a variant on the left, `==
+  None`, a conversion, a class field, an array and an `indirect` enum. A
+  unit test applies the swap and `is_none()`/`is_some()` fixes and checks
+  that the swapped program compiles.
 
 ## Open design questions
 
