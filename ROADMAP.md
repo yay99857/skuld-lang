@@ -1964,6 +1964,71 @@ The decisions:
   unit test applies the swap and `is_none()`/`is_some()` fixes and checks
   that the swapped program compiles.
 
+## M35 — `var` methods on array elements — Proposed, and its main design rejected
+
+M32 refuses a `var` method on an array element or a class field. Calling one
+there would hand the method the address of storage the method itself could
+move or free. The diagnostic writes the alternative out by hand:
+`var p = points[i]; p.translate(1, 0); points[i] = p`. M35 proposed to
+accept `points[i].translate(1, 0)` directly. The proposal copied the element
+into a temporary, called the method on that, and wrote it back, which is
+Swift's in-out rule. The second agent rejected that design, and the
+rejection stands.
+
+Sources read, not recalled:
+- **Go:** the specification. `x.m()` is `(&x).m()` when `x` is addressable,
+  a slice index is addressable, and `append` "allocates a new ... underlying
+  array" when it runs out of room. A method that appends to the slice it was
+  called through therefore keeps writing into the old array. Go stays memory
+  safe because of its collector, and the write is lost.
+- **Swift:** the reference on in-out parameters ("the value of the argument
+  is copied ... the copy is modified ... the copy's value is assigned to the
+  original argument").
+- **Swift:** SE-0176, "mutating an element of an array will require
+  exclusive access to the entire array". For arrays and class properties,
+  that requirement is enforced at run time.
+
+- **Rejected: copy-in, copy-out without an exclusivity check.** Swift's copy
+  is sound because of two things Skuld lacks. Swift arrays are values, and
+  Swift traps on overlapping access. Skuld arrays are shared references,
+  writable through `let`, and reachable from an argument, a captured `let`,
+  or a field of the element itself. Without the check, the copy silently
+  changes what a program means:
+  - A method on `pts[0]` that inserts at the front of `pts` writes its copy
+    over the new first element and leaves the original, now at index 1,
+    stale. The index is still in bounds, so nothing traps.
+  - A method that replaces the array the element came from writes its copy
+    into an array nobody can reach any more. Re-reading the array instead
+    writes it into whichever array replaced it.
+  - A nested call on the same element writes back first, and the outer
+    call's write-back then overwrites it.
+  - With the copy taken before the arguments are evaluated, anything an
+    argument writes to the element is lost.
+
+  None of these is a memory error. Each is a wrong answer with no
+  diagnostic, which this project ranks below a refusal.
+- **Kept: M32's rule.** The explicit three-line form stays the way to change
+  an element. In that form a reader can see the copy, and can see that
+  anything else writing the element in between is overwritten.
+- **What would make the feature sound, and its cost:** a dynamic
+  exclusivity check, as SE-0176 has. The array, or the class object, would be
+  marked busy for the duration of the call. Any structural change to it would
+  then trap: an insert, a remove, a pop, a push, a sort, an element store, a
+  field store, or a nested `var` call on it. That puts a check on every
+  mutation of every array and every class field, including the ones that
+  never meet a `var` method. M33 has just measured that a single check on
+  the release path costs up to seven per cent. So this is a runtime and
+  performance decision, not a syntax one. It needs its own authorization,
+  with before-and-after numbers.
+- **If the check is ever built, the order is settled.** The parts of the
+  place are pinned left to right, then the arguments are evaluated, then the
+  copy is taken immediately before the call, then the call runs, then the
+  copy is written back unconditionally, even when the method answers `Err`.
+  Dropping the method's changes on `Err` would make an array element behave
+  differently from a `var` local. Only the receiver's own sub-place is
+  copied, never the whole element. Copying the whole element would also
+  overwrite sibling fields the call changed.
+
 ## Open design questions
 
 These are not settled by this document and change the shape of the milestones
