@@ -1,0 +1,60 @@
+// `==` compares two values of one type and converts nothing. Against a variant
+// with no payload it tests the tag, so it works on any enum, `JsonValue`
+// included; otherwise it compares structurally, field by field. A float is
+// IEEE inside an aggregate too, so a struct holding NaN is not equal to itself.
+import "std/json"
+
+enum Status {
+    Pending,
+    Ready(int),
+    Failed(string),
+}
+
+struct Point {
+    x: int
+    y: int
+}
+
+struct Labelled {
+    name: string
+    at: Point
+    weight: float
+    grid: [2]int
+}
+
+class Box {
+    value: int
+}
+
+enum Holder {
+    Empty,
+    Holding(Box),
+}
+
+func make(name: string) -> Labelled {
+    return Labelled { name: name, at: Point { x: 1, y: 2 }, weight: 0.5, grid: [3, 4] }
+}
+
+func main() {
+    let s = Status.Ready(2)
+    print(s == .Pending)
+    print(s != .Pending)
+    print(s == .Ready(2))
+    print(s == Status.Ready(3))
+    print(Status.Failed("a" + "b") == .Failed("ab"))
+    print(Point { x: 1, y: 2 } == Point { x: 1, y: 2 })
+    print(make("a" + "b") == make("ab"))
+    print(make("x") != make("y"))
+    let nan = 0.0 / 0.0
+    let odd = Labelled { name: "n", at: Point { x: 0, y: 0 }, weight: nan, grid: [0, 0] }
+    print(odd == odd)
+    let some: Option<int> = 5
+    print(some == Some(5))
+    let r: Result<int, string> = Ok(1)
+    print(r == Ok(1))
+    print(Holder.Holding(new Box(value: 1)) == .Empty)
+    match json.parse("null") {
+        Ok(value): print(value == .Null)
+        Err(_): print("parse failed")
+    }
+}

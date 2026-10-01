@@ -348,9 +348,8 @@ than the integer width in bits, or the runtime traps with "shift amount out of r
 The left operand of a binary expression supplies the expected width to the right one,
 so `byte * 2` or `byte << 2` types the literal as the left operand's width; put the typed
 operand first, or annotate, when both sides could be literals. Numeric ordering
-returns bool. Equality and inequality work on matching int, float, bool or
-string values. Strings
-compare byte content, not pointer identity. `&&`, `||` and `!` require bool;
+returns bool. Strings compare byte content, not pointer identity. Equality is
+described under "Equality" below. `&&`, `||` and `!` require bool;
 there is no truthiness or implicit int/float conversion. Unary `+` and `-`
 require numbers; unary `~` requires integers. Function values, chars, invalid member accesses and unknown types produce
 explicit diagnostics rather than reaching code generation.
@@ -748,8 +747,9 @@ a return for the statement to satisfy a non-void function's return requirement.
 General patterns and `match` remain planned. There is no direct payload field or unchecked Option extraction API.
 
 `is_some(): bool` and `is_none(): bool` query the tag and take no arguments.
-Use `if let` to obtain the payload. Options do not support equality, printing or
-interpolation as a whole; extract and use their payload instead.
+Use `if let` to obtain the payload. Two Options compare with `==` when their
+payload type can (see "Equality"); absence is tested with `is_none()`, never
+`== None`. Options do not support printing or interpolation as a whole.
 
 Options store a tag and an inline payload; constructing an Option itself does
 not allocate. Copying a Some copies value payloads and retains managed payloads.
@@ -893,11 +893,64 @@ in M32, with `std/http` and `std/https` as its first callers.
 
 `Result` stores a tag and an inline payload, so constructing one does not
 allocate, and a value struct cannot contain itself through a `Result`. Copying
-retains a managed payload on whichever side is active. Results support neither
-equality, printing nor interpolation as a whole; extract the payload instead.
+retains a managed payload on whichever side is active. Two Results compare
+with `==` when both sides' types can; they support neither printing nor
+interpolation as a whole.
 Automatic error conversion, backtraces and recoverable panics are out of scope.
 
 See [examples/results.skuld](examples/results.skuld).
+
+## Equality — Implemented (M34)
+
+`==` and `!=` compare two values of **one type** and convert nothing: no
+implicit wrap into an Option and no widening, so `opt == 5` is an error whose
+help writes `opt == Some(5)`. The right operand is typed against the left, which
+is what lets a literal take the left operand's width and a `.Variant` its enum.
+
+```skuld
+enum Status {
+    Pending
+    Ready(int)
+}
+
+struct Point {
+    x: int
+    y: int
+}
+
+func main() {
+    let s = Status.Ready(2)
+    print(s == .Pending)          // false: a tag test
+    print(s == .Ready(2))         // true: structural
+    print(Point { x: 1, y: 2 } == Point { x: 1, y: 2 })
+}
+```
+
+- **A tag test.** Comparing with a variant that carries no payload —
+  `.Pending`, `Status.Pending` — tests the tag and nothing else, so it works on
+  any enum, including one whose other variants hold values that cannot be
+  compared, such as `std/json`'s `JsonValue`. The variant is written on the
+  right; `.Pending == s` is an error whose fix swaps the operands.
+- **Structural comparison** applies to the scalars, `string` (bytewise), value
+  `struct`s, enums, fixed arrays, `Option` and `Result`, whenever every part of
+  the type can be compared. Fields compare in declaration order and stop at the
+  first difference; a tagged value compares its tag, then the active payload.
+  Floats are IEEE 754 here as everywhere, so an aggregate holding NaN is not
+  equal to itself. Nothing is compared by its bytes in memory.
+- **Not comparable**, each refused with the field or payload that refuses:
+  classes (equal fields do not make the same object, and there is no identity
+  operator), `[]T` (a shared reference), interfaces, `weak`, function values,
+  raw pointers (`ffi.is_null()` answers the useful question), `extern struct`
+  and `extern union` (C padding, and a union's live member is unknown), and any
+  type reaching an `indirect` variant, whose comparison would recurse once per
+  link. A tag test still works on those enums.
+- **Absence** is `is_none()` or `is_some()`; `opt == None` is an error with that
+  fix, so absence keeps one spelling.
+
+Equality is structural and automatic, as Go's is: a type does not declare that
+it can be compared. That a type in `std/` happens to be comparable is therefore
+not a promise, since adding a field may take it away. There is no user-defined
+`==`, no ordering of aggregates and no hashing.
 
 ## Arrays — Implemented
 
@@ -1008,7 +1061,8 @@ enum Status {
   `Option<Enum>` the variant is looked up in `Enum` and wrapped; absence is
   still `None`. With no expected enum, `.Name` is an error asking for the
   enum's name (`E0101`). Added in M32; `Status.Pending` stays valid everywhere.
-- Enums have no `==`; `match` is how a variant is tested.
+- `value == .Pending` tests the tag against a variant with no payload, on any
+  enum; a variant with a payload compares structurally (see "Equality").
 
 Pattern matching is performed using the `match` statement:
 

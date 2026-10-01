@@ -187,6 +187,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
         function_types: typed.function_signatures.clone(),
         function_values,
         sorts,
+        equalities: typed.equalities.iter().copied().collect(),
         vtables,
         interfaces: typed.interfaces.clone(),
         structs: typed.structs.clone(),
@@ -724,6 +725,25 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     op_span: *op_span,
                     operand: Box::new(expression(operand, cx)),
                 }
+            }
+        }
+        // A comparison with a variant that has no payload reads the tag of
+        // the other operand, which is all the checker allowed it to need.
+        ast::ExprKind::Binary {
+            left, op, right, ..
+        } if cx.typed.tag_tests.contains_key(&(
+            cx.file.get(),
+            source.span.start,
+            source.span.end,
+        )) =>
+        {
+            let (variant_index, on_left) =
+                cx.typed.tag_tests[&(cx.file.get(), source.span.start, source.span.end)];
+            let value = if on_left { right } else { left };
+            h::ExprKind::TagIs {
+                value: Box::new(expression(value, cx)),
+                variant_index,
+                negated: *op == ast::BinaryOp::NotEqual,
             }
         }
         ast::ExprKind::Binary {

@@ -560,6 +560,18 @@ pub enum UnaryOp {
     BitNot,
 }
 
+impl UnaryOp {
+    /// How the operator is written, for the formatter and for diagnostics.
+    pub const fn symbol(self) -> &'static str {
+        match self {
+            Self::Positive => "+",
+            Self::Negative => "-",
+            Self::Not => "!",
+            Self::BitNot => "~",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
     Or,
@@ -580,6 +592,32 @@ pub enum BinaryOp {
     Multiply,
     Divide,
     Modulo,
+}
+
+impl BinaryOp {
+    /// How the operator is written, for the formatter and for diagnostics.
+    pub const fn symbol(self) -> &'static str {
+        match self {
+            Self::Or => "||",
+            Self::And => "&&",
+            Self::BitOr => "|",
+            Self::BitXor => "^",
+            Self::BitAnd => "&",
+            Self::Equal => "==",
+            Self::NotEqual => "!=",
+            Self::Less => "<",
+            Self::Greater => ">",
+            Self::LessEqual => "<=",
+            Self::GreaterEqual => ">=",
+            Self::ShiftLeft => "<<",
+            Self::ShiftRight => ">>",
+            Self::Add => "+",
+            Self::Subtract => "-",
+            Self::Multiply => "*",
+            Self::Divide => "/",
+            Self::Modulo => "%",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

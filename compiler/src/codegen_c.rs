@@ -534,6 +534,19 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
     for ty in managed {
         emitter.aggregate_helpers(ty);
     }
+    // One comparison per aggregate type some `==` compares. They read their
+    // operands and retain nothing, and they are prototyped first because a
+    // struct's comparison calls the comparisons of what it holds.
+    for &ty in &program.equalities {
+        emitter.line(&format!(
+            "static inline bool skuld_eq_{}({name} a, {name} b);",
+            emitter.aggregate_prefix(ty),
+            name = emitter.c_type(ty)
+        ));
+    }
+    for &ty in &program.equalities {
+        emitter.equality_helper(ty);
+    }
     // A box's destructor releases the payload it holds. It is written after
     // every helper, since that payload may be the struct whose helpers
     // release the enum that owns the box. A long chain of boxes is released
@@ -914,6 +927,100 @@ impl<'a> Emitter<'a> {
             Type::Enum(id) => format!("skuld_e{}", id.0),
             _ => unreachable!("aggregate type"),
         }
+    }
+    /// How two values of one type are compared: the scalars as C compares
+    /// them, which for a float is IEEE 754, so NaN is unequal to itself; a
+    /// string by its bytes; an aggregate through its own comparison. Never by
+    /// bytes in memory, which padding and the two zeros would make wrong.
+    fn equal(&self, ty: Type, a: &str, b: &str) -> String {
+        match ty {
+            Type::String => format!("skuld_string_equal({a}, {b})"),
+            Type::Struct(_)
+            | Type::Enum(_)
+            | Type::FixedArray(_)
+            | Type::Option(_)
+            | Type::Result(_) => format!("skuld_eq_{}({a}, {b})", self.aggregate_prefix(ty)),
+            _ => format!("({a} == {b})"),
+        }
+    }
+    /// Field by field in declaration order, stopping at the first difference,
+    /// as Go compares a struct; a tagged value compares its tag, then the
+    /// active payload.
+    fn equality_helper(&mut self, ty: Type) {
+        let name = self.c_type(ty);
+        let prefix = self.aggregate_prefix(ty);
+        self.line(&format!(
+            "static inline bool skuld_eq_{prefix}({name} a, {name} b) {{"
+        ));
+        self.indent += 1;
+        match ty {
+            Type::Struct(id) => {
+                let fields: Vec<String> = self.structs[id.0]
+                    .fields
+                    .iter()
+                    .enumerate()
+                    .map(|(i, f)| self.equal(f.ty, &format!("a.f{i}"), &format!("b.f{i}")))
+                    .collect();
+                if fields.is_empty() {
+                    self.line("(void)a; (void)b;");
+                    self.line("return true;");
+                } else {
+                    self.line(&format!("return {};", fields.join(" && ")));
+                }
+            }
+            Type::FixedArray(id) => {
+                let info = self.fixed_arrays[id.0];
+                let element = self.equal(info.element, "a.data[i]", "b.data[i]");
+                self.line(&format!(
+                    "for (size_t i = 0; i < {}; ++i) if (!{element}) return false;",
+                    info.size
+                ));
+                self.line("return true;");
+            }
+            Type::Option(id) => {
+                let element = self.options[id.0].element;
+                let value = self.equal(element, "a.value", "b.value");
+                self.line("if (a.some != b.some) return false;");
+                self.line(&format!("return !a.some || {value};"));
+            }
+            Type::Enum(_) | Type::Result(_) => {
+                let payloads: Vec<Option<Type>> = match ty {
+                    Type::Enum(id) => self.enums[id.0]
+                        .variants
+                        .iter()
+                        .map(|v| v.payload)
+                        .collect(),
+                    Type::Result(id) => {
+                        let info = self.results[id.0];
+                        vec![Some(info.ok), Some(info.err)]
+                    }
+                    _ => unreachable!(),
+                };
+                self.line("if (a.tag != b.tag) return false;");
+                if payloads.iter().any(Option::is_some) {
+                    self.line("switch (a.tag) {");
+                    self.indent += 1;
+                    for (index, payload) in payloads.iter().enumerate() {
+                        if let Some(payload) = payload {
+                            let value = self.equal(
+                                *payload,
+                                &format!("a.payload.v{index}"),
+                                &format!("b.payload.v{index}"),
+                            );
+                            self.line(&format!("case {index}: return {value};"));
+                        }
+                    }
+                    self.line("default: return true;");
+                    self.indent -= 1;
+                    self.line("}");
+                } else {
+                    self.line("return true;");
+                }
+            }
+            _ => unreachable!("internal compiler bug: no structural equality for this type"),
+        }
+        self.indent -= 1;
+        self.line("}");
     }
     fn enum_helpers(&mut self, id: crate::types::EnumId) {
         let managed_variants: Vec<(usize, Type)> = self.enums[id.0]
@@ -2911,6 +3018,18 @@ impl<'a> Emitter<'a> {
             // No retain: the storage belongs to the caller, stays where it is
             // for the whole call, and is changed through this address.
             ExprKind::Receiver(place) => format!("&{}", self.place(place)),
+            ExprKind::TagIs {
+                value,
+                variant_index,
+                negated,
+            } => {
+                let value = self.expression(value);
+                let operator = if *negated { "!=" } else { "==" };
+                self.temporary(
+                    Type::Bool,
+                    &format!("({value}.tag {operator} {variant_index})"),
+                )
+            }
             ExprKind::IsSome(value) | ExprKind::IsNone(value) => {
                 let value = self.expression(value);
                 let not = if matches!(expr.kind, ExprKind::IsNone(_)) {
@@ -3174,6 +3293,19 @@ fn binary_value(op: BinaryOp, ty: Type, left: &str, right: &str, byte: usize) ->
     if ty == Type::String {
         let negate = if op == NotEqual { "!" } else { "" };
         return format!("{negate}skuld_string_equal({left}, {right})");
+    }
+    // A structural comparison, through the helper written for the type.
+    let aggregate = match ty {
+        Type::Struct(id) => Some(format!("s{}", id.0)),
+        Type::Enum(id) => Some(format!("e{}", id.0)),
+        Type::FixedArray(id) => Some(format!("fa{}", id.0)),
+        Type::Option(id) => Some(format!("o{}", id.0)),
+        Type::Result(id) => Some(format!("r{}", id.0)),
+        _ => None,
+    };
+    if let Some(suffix) = aggregate {
+        let negate = if op == NotEqual { "!" } else { "" };
+        return format!("{negate}skuld_eq_skuld_{suffix}({left}, {right})");
     }
     let operator = match op {
         Add => "+",

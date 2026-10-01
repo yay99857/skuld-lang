@@ -51,7 +51,9 @@ func main() {
 }
 ```
 
-This works for arguments, returns, annotated bindings, assignments, fields and array elements. Under an expected `Option<Status>`, `.Ready(1)` wraps automatically. Without an expected enum type, `.Name` is an error. Enums have no `==`; use `match` to test a variant.
+This works for arguments, returns, annotated bindings, assignments, fields and array elements. Under an expected `Option<Status>`, `.Ready(1)` wraps automatically. Without an expected enum type, `.Name` is an error.
+
+`status == .Pending` tests the tag against a variant with no payload, and works on any enum. Comparing with a variant that has a payload, such as `status == .Ready(42)`, compares structurally, which requires every payload type to be comparable. See [operators](/docs/language/operators/#equality).
 
 ## Value and range patterns
 

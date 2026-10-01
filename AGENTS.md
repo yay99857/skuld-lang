@@ -233,6 +233,13 @@ behind it. The obligations above are checkable, and a persona is not.
   like `packed`, refused without a payload or where nothing recurses.
   Where an enum is expected, a variant is written `.Pending` or `.Active(v)`
   without naming it (M32); patterns name it bare, `Pending:`, and never dotted.
+  `==`/`!=` (M34) compare two values of one type and convert nothing. Against
+  a variant with no payload they test the tag, on any enum. Otherwise they
+  compare structurally where every part can: scalars, strings, value structs,
+  enums, fixed arrays, Option and Result. Classes, `[]T`, interfaces, `weak`,
+  function values, pointers, extern layouts and anything reaching `indirect`
+  are refused, each with the part that refuses. `== None` is refused for
+  `is_none()`, and a float is IEEE inside an aggregate too.
   Pattern matching uses `match value { Pattern: stmt, Pattern: { ... }, _: ... }` with exhaustiveness
   checking, immutable payload arm bindings, and C codegen retaining/releasing managed variant payloads.
 - `for` loops iterate over half-open integer ranges `a..b` and arrays `[]T` by value:

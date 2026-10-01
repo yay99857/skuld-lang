@@ -1,0 +1,12 @@
+class Box {
+    value: int
+}
+
+struct Wrap {
+    inner: Box
+}
+
+func main() {
+    let a = Wrap { inner: new Box(value: 1) }
+    print(a == a)
+}

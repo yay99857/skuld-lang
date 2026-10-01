@@ -56,6 +56,13 @@ pub struct TypedProgram {
     pub(crate) results: Vec<ResultInfo>,
     pub(crate) implicit_wraps: BTreeMap<(FileId, usize, usize), Type>,
     pub(crate) slice_coercions: BTreeMap<(FileId, usize, usize), Type>,
+    /// `value == .Variant` against a variant with no payload, by the span of
+    /// the comparison: the variant's index, and whether the variant was
+    /// written on the left. Such a comparison tests the tag and nothing else.
+    pub(crate) tag_tests: BTreeMap<(FileId, usize, usize), (usize, bool)>,
+    /// Every aggregate type some `==` compares structurally, with the
+    /// aggregates inside it, so the backend writes one comparison for each.
+    pub(crate) equalities: BTreeSet<Type>,
     /// The type, and field where there is one, that a `size_of` or `offset_of`
     /// call asked about, by call position.
     pub(crate) layout_queries: BTreeMap<(FileId, usize, usize), (StructId, Option<usize>)>,
@@ -198,6 +205,8 @@ pub(crate) fn type_check(
         fixed_arrays: Vec::new(),
         fixed_array_types: BTreeMap::new(),
         slice_coercions: BTreeMap::new(),
+        tag_tests: BTreeMap::new(),
+        equalities: BTreeSet::new(),
         options: Vec::new(),
         option_types: BTreeMap::new(),
         results: Vec::new(),
@@ -954,6 +963,8 @@ pub(crate) fn type_check(
         externs,
         implicit_wraps,
         slice_coercions,
+        tag_tests,
+        equalities,
         layout_queries,
         constants,
         statics,
@@ -976,6 +987,8 @@ pub(crate) fn type_check(
         results,
         implicit_wraps,
         slice_coercions,
+        tag_tests,
+        equalities,
         layout_queries,
         expressions,
         symbol_types,
@@ -1042,6 +1055,8 @@ struct Checker<'a> {
     function_types: BTreeMap<FunctionTypeInfo, FunctionTypeId>,
     expected_context: Option<Type>,
     implicit_wraps: BTreeMap<(FileId, usize, usize), Type>,
+    tag_tests: BTreeMap<(FileId, usize, usize), (usize, bool)>,
+    equalities: BTreeSet<Type>,
     constants: BTreeMap<SymbolId, ConstValue>,
     statics: BTreeMap<SymbolId, StaticInfo>,
     evaluating_constants: Vec<SymbolId>,
@@ -3051,13 +3066,25 @@ impl Checker<'_> {
                         self.error(
                             DiagnosticCode::InvalidOperator,
                             *op_span,
-                            format!("unary operator `{op:?}` does not accept `{ty}`"),
+                            format!(
+                                "unary `{}` does not accept `{}`",
+                                op.symbol(),
+                                self.type_name(ty)
+                            ),
                         );
                         Type::Error
                     } else {
                         ty
                     }
                 }
+            }
+            ExprKind::Binary {
+                left,
+                op,
+                right,
+                op_span,
+            } if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) => {
+                self.equality(expr, *op, left, right, *op_span, expected)
             }
             ExprKind::Binary {
                 left,
@@ -3618,18 +3645,18 @@ impl Checker<'_> {
             Less | Greater | LessEqual | GreaterEqual => left.is_numeric() || left == Type::Char,
             Modulo | BitAnd | BitOr | BitXor | ShiftLeft | ShiftRight => left.int_type().is_some(),
             And | Or => left == Type::Bool,
-            Equal | NotEqual => {
-                matches!(
-                    left,
-                    Type::Int(_) | Type::Float | Type::Bool | Type::String | Type::Char
-                )
-            }
+            // `==` and `!=` are checked by `equality`, which converts nothing.
+            Equal | NotEqual => false,
         };
         if !valid {
             self.error(
                 DiagnosticCode::InvalidOperator,
                 span,
-                format!("operator `{op:?}` does not accept `{left}` operands"),
+                format!(
+                    "operator `{}` does not accept `{}` operands",
+                    op.symbol(),
+                    self.type_name(left)
+                ),
             );
             return Type::Error;
         }
@@ -3639,6 +3666,307 @@ impl Checker<'_> {
         match op {
             And | Or | Equal | NotEqual | Less | Greater | LessEqual | GreaterEqual => Type::Bool,
             _ => left,
+        }
+    }
+    /// `==` and `!=`, which convert nothing: both operands have one type once
+    /// the right one has been typed against the left. Comparing with a variant
+    /// that carries no payload is a tag test and works on any enum; anything
+    /// else compares structurally, where every part of the type can be.
+    fn equality(
+        &mut self,
+        expr: &Expr,
+        op: BinaryOp,
+        left: &Expr,
+        right: &Expr,
+        op_span: Span,
+        expected: Option<Type>,
+    ) -> Type {
+        let negated = op == BinaryOp::NotEqual;
+        // `.Pending` takes its enum from the other operand, which only the
+        // right side has. The fix writes the operands the other way round.
+        if matches!(strip_groups_ref(left).kind, ExprKind::ImplicitVariant(_)) {
+            let left_text = self.span_text(left.span);
+            let right_text = self.span_text(right.span);
+            let diagnostic = Diagnostic {
+                code: DiagnosticCode::UnknownType,
+                span: left.span,
+                message: format!(
+                    "`{left_text}` takes its enum from the value it is compared with, so it goes on the right of `{}`",
+                    op.symbol()
+                ),
+                help: None,
+                fix: None,
+            }
+            .with_fix(Fix::new(
+                "swap the operands",
+                expr.span,
+                format!("{right_text} {} {left_text}", op.symbol()),
+            ));
+            self.diagnostics.push(FileDiagnostic {
+                file: self.file,
+                diagnostic,
+            });
+            self.expression(right);
+            return Type::Error;
+        }
+        // `None` on the left has nothing to take an Option type from, so it is
+        // answered before either side is typed.
+        let none_on_left = self.is_none_literal(left);
+        let (left_type, right_type) = if none_on_left {
+            (Type::Error, self.expression(right))
+        } else {
+            self.expected_context = expected;
+            let left_type = self.expression(left);
+            self.expected_context = Some(left_type);
+            let right_type = self.expression(right);
+            self.expected_context = None;
+            (left_type, right_type)
+        };
+        // Absence has one spelling, and it is a method.
+        let none_side = if none_on_left {
+            Some(right)
+        } else if self.is_none_literal(right) && matches!(left_type, Type::Option(_)) {
+            Some(left)
+        } else {
+            None
+        };
+        if let Some(other) = none_side
+            && matches!(self.expression_type_of(other), Some(Type::Option(_)))
+        {
+            let method = if negated { "is_some" } else { "is_none" };
+            let receiver = self.receiver_text(other);
+            let diagnostic = Diagnostic {
+                code: DiagnosticCode::InvalidOperator,
+                span: expr.span,
+                message: format!("absence is tested with `{method}()`, not compared with `None`"),
+                help: None,
+                fix: None,
+            }
+            .with_fix(Fix::new(
+                format!("use `{method}()`"),
+                expr.span,
+                format!("{receiver}.{method}()"),
+            ));
+            self.diagnostics.push(FileDiagnostic {
+                file: self.file,
+                diagnostic,
+            });
+            return Type::Error;
+        }
+        if none_on_left && right_type != Type::Error {
+            self.error(
+                DiagnosticCode::TypeMismatch,
+                left.span,
+                format!(
+                    "`None` is the absence of an Option, and this compares it with `{}`",
+                    self.type_name(right_type)
+                ),
+            );
+            return Type::Error;
+        }
+        if left_type == Type::Error || right_type == Type::Error {
+            return Type::Error;
+        }
+        if left_type != right_type {
+            let mut diagnostic = Diagnostic {
+                code: DiagnosticCode::TypeMismatch,
+                span: expr.span,
+                message: format!(
+                    "`{}` compares two values of one type, and these are `{}` and `{}`",
+                    op.symbol(),
+                    self.type_name(left_type),
+                    self.type_name(right_type)
+                ),
+                help: None,
+                fix: None,
+            };
+            if let Type::Option(id) = left_type
+                && self.options[id.0].element == right_type
+            {
+                diagnostic.help = Some("compare with a present value as `Some(value)`".into());
+            }
+            self.diagnostics.push(FileDiagnostic {
+                file: self.file,
+                diagnostic,
+            });
+            return Type::Error;
+        }
+        // A variant with no payload says everything with its tag, so the
+        // comparison needs nothing else to be comparable.
+        for (side, on_left) in [(right, false), (left, true)] {
+            if let Some(index) = self.unit_variant(side, left_type) {
+                self.tag_tests.insert(
+                    (self.file, expr.span.start, expr.span.end),
+                    (index, on_left),
+                );
+                return Type::Bool;
+            }
+        }
+        if let Some((path, reason)) = self.not_comparable(left_type) {
+            let subject = if path.is_empty() {
+                format!("`{}`", self.type_name(left_type))
+            } else {
+                format!("`{}` (through `{path}`)", self.type_name(left_type))
+            };
+            self.error(
+                DiagnosticCode::InvalidOperator,
+                op_span,
+                format!(
+                    "{subject} cannot be compared with `{}`: {reason}",
+                    op.symbol()
+                ),
+            );
+            return Type::Error;
+        }
+        self.record_equality(left_type);
+        Type::Bool
+    }
+    fn span_text(&self, span: Span) -> String {
+        self.files[self.file.0].source[span.start..span.end].to_owned()
+    }
+    /// An operand as the receiver of a method call, parenthesised unless it
+    /// already binds tighter than `.`.
+    fn receiver_text(&self, expr: &Expr) -> String {
+        let text = self.span_text(expr.span);
+        match &expr.kind {
+            ExprKind::Identifier(_)
+            | ExprKind::Member { .. }
+            | ExprKind::Call { .. }
+            | ExprKind::Index { .. }
+            | ExprKind::Group(_) => text,
+            _ => format!("({text})"),
+        }
+    }
+    fn is_none_literal(&self, expr: &Expr) -> bool {
+        let ExprKind::Identifier(name) = &strip_groups_ref(expr).kind else {
+            return false;
+        };
+        self.resolution
+            .references
+            .get(&(self.file, name.span.start))
+            .is_some_and(|id| {
+                self.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::None)
+            })
+    }
+    /// The variant an operand names, when it is written as a variant with no
+    /// payload of `ty`'s enum: `.Pending`, `Status.Pending`, `mod.Status.Pending`.
+    fn unit_variant(&mut self, expr: &Expr, ty: Type) -> Option<usize> {
+        let Type::Enum(enum_id) = ty else {
+            return None;
+        };
+        let name = match &strip_groups_ref(expr).kind {
+            ExprKind::ImplicitVariant(name) => name.clone(),
+            ExprKind::Member { object, member } => {
+                if self.enum_prefix(object) != Some(enum_id) {
+                    return None;
+                }
+                member.clone()
+            }
+            _ => return None,
+        };
+        let index = self.enums[enum_id.0].find_variant(&name.text)?;
+        self.enums[enum_id.0].variants[index]
+            .payload
+            .is_none()
+            .then_some(index)
+    }
+    /// Why a type cannot be compared structurally, and the field or payload
+    /// that says so, or nothing when every part of it can be.
+    fn not_comparable(&self, ty: Type) -> Option<(String, String)> {
+        let inner = |path: String, (rest, reason): (String, String)| {
+            let joined = if rest.is_empty() {
+                path
+            } else {
+                format!("{path}.{rest}")
+            };
+            (joined, reason)
+        };
+        match ty {
+            Type::Int(_) | Type::Float | Type::Bool | Type::Char | Type::String => None,
+            Type::Struct(id) => {
+                let info = &self.structs[id.0];
+                if info.reference {
+                    return Some((
+                        String::new(),
+                        "a class has no `==`: two objects with equal fields are not the same object, and Skuld has no identity operator".into(),
+                    ));
+                }
+                if !matches!(info.layout, crate::ast::Layout::Skuld) || info.union {
+                    return Some((
+                        String::new(),
+                        "an `extern` layout belongs to C, with padding and, in a union, a live member the compiler does not know".into(),
+                    ));
+                }
+                info.fields.iter().find_map(|field| {
+                    self.not_comparable(field.ty)
+                        .map(|found| inner(field.name.clone(), found))
+                })
+            }
+            Type::Enum(id) => {
+                let info = &self.enums[id.0];
+                if let Some(variant) = info.variants.iter().find(|variant| variant.indirect) {
+                    return Some((
+                        variant.name.clone(),
+                        "it is `indirect`, and comparing a chain would recurse once per link; compare against a variant with no payload, or `match`".into(),
+                    ));
+                }
+                info.variants.iter().find_map(|variant| {
+                    variant.payload.and_then(|payload| {
+                        self.not_comparable(payload)
+                            .map(|found| inner(variant.name.clone(), found))
+                    })
+                })
+            }
+            Type::FixedArray(id) => self
+                .not_comparable(self.fixed_arrays[id.0].element)
+                .map(|found| inner("[]".into(), found)),
+            Type::Option(id) => self
+                .not_comparable(self.options[id.0].element)
+                .map(|found| inner("Some".into(), found)),
+            Type::Result(id) => {
+                let info = self.results[id.0];
+                self.not_comparable(info.ok)
+                    .map(|found| inner("Ok".into(), found))
+                    .or_else(|| {
+                        self.not_comparable(info.err)
+                            .map(|found| inner("Err".into(), found))
+                    })
+            }
+            Type::Array(_) => Some((
+                String::new(),
+                "an array is a shared reference, so two arrays with equal elements are still two arrays".into(),
+            )),
+            Type::Pointer(_) => Some((
+                String::new(),
+                "an address is not compared outside `unsafe`; `ffi.is_null()` answers whether it is null".into(),
+            )),
+            Type::Interface(_) | Type::Weak(_) => Some((
+                String::new(),
+                "it refers to a class object, which has no equality".into(),
+            )),
+            Type::Function(_) => Some((String::new(), "a function value has no equality".into())),
+            Type::Void | Type::Error => Some((String::new(), "it has no value".into())),
+        }
+    }
+    /// Remember an aggregate a comparison reaches, and everything inside it,
+    /// so the backend writes one comparison per type and no more.
+    fn record_equality(&mut self, ty: Type) {
+        let parts: Vec<Type> = match ty {
+            Type::Struct(id) => self.structs[id.0].fields.iter().map(|f| f.ty).collect(),
+            Type::Enum(id) => self.enums[id.0]
+                .variants
+                .iter()
+                .filter_map(|v| v.payload)
+                .collect(),
+            Type::FixedArray(id) => vec![self.fixed_arrays[id.0].element],
+            Type::Option(id) => vec![self.options[id.0].element],
+            Type::Result(id) => vec![self.results[id.0].ok, self.results[id.0].err],
+            _ => return,
+        };
+        if self.equalities.insert(ty) {
+            for part in parts {
+                self.record_equality(part);
+            }
         }
     }
     fn method_call(
