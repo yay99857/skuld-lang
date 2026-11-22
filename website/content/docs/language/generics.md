@@ -11,7 +11,7 @@ General user-defined generics are not implemented. There is no supported `func i
 
 ## What remains undecided
 
-Constraints, representation and the relationship between builtin and user-defined parameterized types require language design work. This page intentionally provides no proposed syntax as executable code.
+A design for unconstrained type parameters on functions, structs, classes and enums is recorded in the roadmap as M36 and is not implemented, so nothing on this page compiles yet. Constraints, and with them a general `Map<K, V>`, are a later decision.
 
 ## Current alternatives
 
