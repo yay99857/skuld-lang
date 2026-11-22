@@ -392,8 +392,14 @@ evaluated.
 
 Floats use binary64 operations without fast-math, with normal IEEE infinities
 and NaNs possible during arithmetic; literal parsing still rejects non-finite
-literals. Float printing uses 17 significant digits. Bool prints `true` or
-`false`; int prints decimal. Every print appends a newline.
+literals. A float prints as the shortest decimal that reads back as the same
+double, which is what Go, Rust and Python print: `0.1` is `0.1`, `0.1 + 0.2` is
+`0.30000000000000004`, and a whole number has no point, so `1.0` prints `1`.
+Exponents from -5 to 20 are written out positionally (`0.00001`,
+`100000000000000000000`) and others in scientific form (`1e-6`, `1e+21`).
+Infinities and NaN print `inf`, `-inf` and `nan`, and negative zero `-0`.
+Interpolation uses the same rendering. Bool prints `true` or `false`; int
+prints decimal. Every print appends a newline.
 
 A string is a pointer, a length and an owner. Literals keep the owner null and
 point at static bytes that live for the program duration; concatenation

@@ -3725,7 +3725,9 @@ static inline void skuld_print_uint(uint64_t value, size_t byte) {
     if (printf("%" PRIu64 "\n", value) < 0) skuld_fail("stdout write failed", byte);
 }
 static inline void skuld_print_float(double value, size_t byte) {
-    if (printf("%.17g\n", value) < 0) skuld_fail("stdout write failed", byte);
+    char digits[32];
+    skuld_format_float(value, digits);
+    if (printf("%s\n", digits) < 0) skuld_fail("stdout write failed", byte);
 }
 static inline void skuld_print_bool(bool value, size_t byte) {
     if (puts(value ? "true" : "false") == EOF) skuld_fail("stdout write failed", byte);
