@@ -1089,15 +1089,20 @@ let header: [4]u8 = [0x7F, 'E', 'L', 'F']
   repeated-element literal `[elem; N]`, list literals `[a, b, c]`, indexing with
   bounds checking both at compile time (for constant indices) and runtime,
   `len()` as a compile-time constant, fixed arrays as struct and class fields,
-  slice coercion `[N]T -> []T` producing immortal stack views without heap
-  allocation, compile-time escape checks preventing stack buffers from outliving
-  their scope, runtime traps on mutating fixed-array views, and `ptr(arr)`
-  borrowing `*T`.
-- **Semantics settled:** `N` is a constant expression evaluated at compile time;
-  `[N]T` coerces to `[]T` slice views without allocating, with mutating operations
-  trapping at runtime via `*capacity == 0` in `skuld_array_reserve`; compile-time
-  checks reject returning a fixed array as a dynamic slice or storing it into a
-  heap slice field.
+  slicing `arr[a..b]` into an owned `[]T`, and `ptr(arr)` borrowing `*T`.
+- **Semantics settled:** `N` is a constant expression evaluated at compile time.
+  `[N]T` and `[]T` are different types with no conversion between them;
+  `arr[0..N]` copies.
+- **Reversed after the milestone — the stack view.** M22 shipped `[N]T`
+  widening implicitly into a `[]T` view of its storage, mutation trapping
+  through `*capacity == 0` and three escape routes refused by name. An audit
+  under AddressSanitizer found the routes nobody had named — through a `let`,
+  through a call, a push, a callee storing its parameter, a view of a dying
+  object or of a temporary — all reading a dead frame, and the trap fired only
+  on growth, so the view wrote through a `let`. The view is gone rather than
+  patched, for the reasons and with the costs recorded in `AGENTS.md`; a
+  non-escaping slice type, which is how C# and Swift make a view sound, remains
+  open as a milestone of its own.
 - **Decision taken — a fixed array lives in a class field inline.** A class field
   allocation embeds the fixed array buffer inline, with the same rules its other
   fields have.
@@ -2029,6 +2034,322 @@ Sources read, not recalled:
   copied, never the whole element. Copying the whole element would also
   overwrite sibling fields the call changed.
 
+## M36 — Type parameters, checked once — Implemented
+
+**Authorized, by delegation.** The owner asked for this design and delegated
+the language decisions in it, stating that the purpose of the project is now
+to build programs in Skuld. That is direction and not evidence, and it is
+recorded as such: see "What this does not answer" below. It is implemented as
+designed, and the closing marker below is met: `tests/pass/generics.skuld`
+runs clean under the sanitizers, with the fail fixtures `tests/fail/generic_*`
+beside it. Two details were settled while building it: an instance's fields
+are read from the declaration rather than from the declaration's own field
+list, which may not exist yet when `struct B { a: A<B> }` asks for `A<B>`; and
+a type that grows without end is refused at its declaration even when nothing
+uses it, while a function that does is found when its instances are made, so
+only the first is reported when both occur.
+
+This reopens open question 1, where generics were proposed and withdrawn on
+three objections. Each is answered or conceded below, by name.
+
+### The design
+
+- **What can be generic.** Top-level functions, structs, classes and enums:
+
+  ```text
+  func first<T>(xs: []T) -> Option<T>
+  struct Pair<A, B> { first: A  second: B }
+  class Stack<T> { items: []T = [] }
+  enum Tree<T> { Leaf, indirect Node(Branch<T>) }
+  ```
+
+  A method uses the parameters of the type that owns it and declares none of
+  its own. Not generic, each refused where it is written: an interface, and an
+  interface method signature mentioning a type parameter; an `extern struct`
+  or `extern union`; a numbered enum; `main`; a `test_` function; a `pub func`
+  under `--freestanding`, which is emitted under the one name it was written
+  with and a generic has no one name. A generic class may declare a
+  non-generic interface.
+- **Unconstrained, and opaque.** Inside a generic body a `T` supports what
+  every storable type supports and nothing else: bind, assign, pass, return,
+  store in a field, an array, an `Option` or a `Result`, capture in a lambda.
+  No `==`, no `compare`, no method, no `print` or interpolation, no `ptr`, no
+  conversion, no `weak(T)`, no `size_of`. There is **no constraint syntax**.
+  An operation that needs a capability arrives as a function value, which is
+  what `sort(comparator)` and `map_err(f)` already do. The shape to write is
+  the predicate — `index_where(xs, (item) => item == wanted)` — because a
+  lambda captures immutables and that form stays right when capabilities
+  arrive. Go ships both to this day: `slices.Index` beside `slices.IndexFunc`.
+- **Checked once, where it is declared**, with each parameter an opaque type.
+  A generic nobody calls is still checked, and a mistake in a body is reported
+  once, in the body. Two diagnostics are located at a use by nature, and say
+  which instance: an instantiation that does not end, and a value type that
+  contains itself only once instantiated (`struct A<T> { x: T }` with
+  `struct B { a: A<B> }`).
+- **Monomorphized.** Each distinct tuple of type arguments is its own function,
+  its own struct and its own C type, which is what `[]int` and `[]string`
+  already are in the backend (`skuld_a0`, `skuld_o0`). Whether an instance is
+  managed, how it is retained and released, its layout and whether it can be
+  compared are decided per instance, so a generic costs what the copy written
+  by hand costs and reference counting needs nothing new. `==` between two
+  `Pair<int, int>` outside generic code works exactly as M34 says, because
+  there the type is concrete.
+- **Type arguments are written only where a type is written**: annotations,
+  signatures, fields, `weak Stack<int>`, and after `new` — `new Stack<int>()`.
+  In an expression they are inferred and cannot be written: there is no
+  `first<int>(xs)`, no `Pair<int, string> { ... }` and no `Tree<int>.Leaf`, so
+  `a < b > (c)` never becomes ambiguous. M23 refused `load<u32>(p)` for the
+  same reason. A variant of a generic enum is written `.Leaf` or `Tree.Leaf`
+  under an expected type, as a unit variant already needs one.
+- **Inference never looks through a conversion.** A type parameter is fixed
+  only by an exact structural match, in this order:
+  1. every argument that has a type of its own, matched against its parameter
+     type;
+  2. for parameters still unfixed, the expected type of the call matched
+     against the declared result type;
+  3. then, and only then, the arguments whose type comes from their context —
+     an integer literal, an array literal, `None`, `[]`, `.Variant`, `Ok(..)`,
+     `Err(..)`, `weak()`, `ptr_from(..)`, a lambda — are checked against the
+     parameter types with the parameters substituted. A lambda's result may
+     fix a parameter that appears nowhere else, as `map_err` already takes its
+     new error type from what `f` answers.
+
+  Implicit wrapping into an `Option` and widening into an interface apply
+  after every parameter is fixed, never during. Two matches that disagree are
+  an error, and so is a parameter nothing fixed, with help asking for an
+  annotated `let`. A generic function named where a function value is expected
+  is accepted when the expected function type fixes every parameter.
+
+  The rule exists because the obvious ones are wrong in opposite directions.
+  With `func unwrap_or<T>(o: Option<T>, d: T) -> T` and `maybe: Option<int>`,
+  `let y: Option<int> = unwrap_or(maybe, 0)` would check with `T = int` and
+  with `T = Option<int>`, since today's checker wraps `Option<int>` into an
+  expected `Option<Option<int>>` silently — two programs that behave
+  differently. Expected-type-first picks the wrong one. Arguments-first
+  without step 3 breaks `let o: Option<u8> = first([1, 2])`, which a builtin
+  would accept. Under the rule above the first has one reading (`T = int`,
+  fixed by `maybe`) and the second checks (`T = u8`, fixed by the expected
+  type, the literal checked last).
+- **What a type argument may be.** Anything an array element may be: not
+  `void`, not a function value. A fixed array's size is not a parameter.
+- **`Option<T>` and `Result<T, E>` stay builtin.** What they have that a user
+  type cannot is sugar — the implicit wrap, contextual `None`, `?`, `if let`,
+  `let ... else` — not parameterization. Go kept slices, maps and channels
+  builtin after 1.18; Swift's is `public enum Optional<Wrapped>` in
+  `stdlib/public/core/Optional.swift` plus compiler sugar; Rust's is
+  `#[lang = "Option"] pub enum Option<T>` in `library/core/src/option.rs`.
+  The consistency owed is in the rules: a user generic type and a builtin one
+  are spelled the same way, accept the same type arguments, are monomorphized
+  the same way and are values or references by the same rule.
+- **Instantiation is finite.** A function that instantiates itself at an ever
+  larger type (`func f<T>(x: T) { f([x]) }`) and a type that does
+  (`class C<T> { next: Option<C<[]T>> }`) are refused by a depth limit, with
+  the chain named.
+
+### What was rejected
+
+- **Checking each instantiation instead of the declaration.** Zig's model: its
+  language reference calls it "compile-time duck typing", where a type error
+  appears "when the function is analyzed" for a given call. It would give `==`
+  on `T` for free. `LANGUAGE.md` promises that even unreachable source is
+  type-checked and that a diagnostic sits where the mistake is; an unused
+  generic that is never checked breaks the first and "in instantiation with
+  T = User" breaks the second.
+- **Shared instantiations with run-time dictionaries.** Go 1.18's gcshape
+  stenciling (`design/generics-implementation-dictionaries-go1.18.md` in
+  golang/proposal). It bounds code size under separate compilation, which
+  Skuld does not have: a program is compiled whole, `std/` included. It would
+  also be the first run-time type information in the language.
+- **Constraints through interfaces**, the withdrawn proposal's shape. Still
+  impossible for the reason recorded then: only a class implements an
+  interface.
+- **A compiler-known equality capability now.** Considered seriously, because
+  the review showed what its absence costs (below). Set aside because a `Set`
+  or a `Map<K, V>` needs hashing as well as equality, hashing does not exist,
+  and deciding one capability without the others would fix a constraint
+  syntax on a third of its evidence. Adding capabilities later does not change
+  what `<T>` means, which Go's `Index`/`IndexFunc` pair demonstrates.
+- **Explicit type arguments at a call**, for the ambiguity above. An annotated
+  `let` always works while generics are unconstrained; expect this to be
+  reopened once a capability lets a result type alone mention `T`.
+- **Redefining `Option` and `Result` in a prelude** through lang items.
+- **`StringMap<V>` as the closing marker**, proposed in the first draft and
+  withdrawn. `AGENTS.md` records `StringMap` as "an index ... not a general
+  collection", every use in the repository wants `int`, and a marker met by
+  the milestone's own artefacts is the M27 mistake.
+
+### What this does not answer — the three objections
+
+1. **Demand.** Conceded. The evidence inside the repository is what it was:
+   one concrete map, and the fact that every array operation is a compiler
+   builtin because no Skuld function can be written over `[]T`. No existing
+   example or module was found that gets shorter. The case rests on the
+   owner's direction, and the milestone is scoped small because of it.
+2. **`largest<T: Comparable>` cannot be written.** Answered by not having
+   constraints, which also means it still cannot be written.
+3. **Builtin beside user generics is an inconsistency.** Answered for
+   spelling, type arguments, representation and — with the inference rule —
+   literal flow. Two asymmetries remain and are owned rather than hidden:
+   `Result.map_err(f)` is a method with a type parameter of its own, which no
+   user type can declare; and the implicit wrap exists only for `Option`.
+
+**What M36 yields, plainly:** `Stack`, `Pair`, `Tree`, and `map`, `filter`,
+`reverse` and `index_where` over arrays. It does **not** yield `Set<T>`,
+`Map<K, V>` or any ordered container: there is no equality on `T`, and a
+stored comparator is a stored function value, which the language refuses. A
+heap would take its comparator at every call with nothing enforcing that it
+is the same one. Those wait for the capabilities decision, which is the
+milestone that makes generics pay for themselves.
+
+### Out, each needing its own decision
+
+Constraints and capabilities of any kind; `Map<K, V>` and `Set<T>`; methods
+with their own type parameters; generic interfaces; default type arguments;
+const generics; specialization; explicit type arguments at a call; any
+addition to `std/`, which still needs a caller.
+
+### How it is to be built
+
+The review found that "check once, then substitute while lowering" does not
+fit this compiler, and the plan is changed accordingly.
+
+- `Type` is `Copy` over interned ids and `TypedProgram` is immutable after
+  checking, so only the checker can mint the `ArrayId` of `[]int` from `[]T`.
+  **The checker enumerates every instance** with a worklist that starts at the
+  concrete uses, interns each instance's types and records its substitution;
+  lowering only looks instances up.
+- The checker's tables — `expressions`, `implicit_wraps`, `interface_wraps`,
+  `tag_tests`, `layout_queries` — hold one value per `(file, span)`, and
+  `symbol_types` one per symbol. A generic body is recorded once in terms of
+  its parameters, as a template; an instance is the template plus a
+  substitution. Functions and locals are identified through HIR by bare
+  `SymbolId`, so an instance needs an identity of its own — an item and its
+  type arguments — through HIR and into the generated names.
+- Template entries (`[]T`) must not reach the backend, which emits one C type
+  per interned array, Option and Result.
+- The by-value containment check is indexed by `StructId` and runs before
+  instances exist; it has to run over the closure of instances, and a type
+  instantiated while its own fields are still being declared needs the
+  declaration pass split in two.
+- The language server reads the template tables, so hover shows `T`.
+
+Suggested order, one commit each: the parser and AST for parameter lists and
+applied types; the resolver, with type parameters in scope; `Type::Param` and
+the opaque check of generic functions; inference; the instance worklist and
+lowering for functions; generic structs and enums; generic classes and
+`new C<T>()`; the finiteness limits; the fixtures; the documents.
+
+### Closing marker
+
+`tests/pass/generics.skuld`: a generic function, struct, class and recursive
+enum, each instantiated over a scalar, a string, a class and an array, clean
+under the address, leak and undefined-behaviour sanitizers and identical on
+i686. Fail fixtures for: an operation on an opaque `T`; each of the three
+inference programs above (`unwrap_or` with a second reading, a disagreement,
+a parameter nothing fixes); an instantiation that does not end, for a function
+and for a type; a value cycle that exists only once instantiated; and each
+declaration that may not be generic. No change to `std/`.
+
+## M37 — Capabilities a type parameter can require — Implemented
+
+**Authorized, by the same delegation as M36.** M36 named this as the decision
+that makes generics pay for themselves: an unconstrained `T` has no equality
+and no order, so no searching container and no ordered one can be written.
+The demand objection M36 conceded is conceded again. No existing example or
+module gets shorter for this; the case is the owner's direction. Implemented
+as designed; `tests/pass/capabilities.skuld` meets the closing marker below,
+with `tests/fail/capability_*` beside it.
+
+M36 set aside "a compiler-known equality capability now" because deciding one
+capability without the others would fix a constraint syntax on a third of its
+evidence. What changed is that two of the three can be decided without fixing
+anything the third needs: hashing is the one left out, and nothing below
+forecloses how it will combine with these two.
+
+### The design
+
+- **Two capabilities.** `T: Equatable` allows `==` and `!=` on `T` inside the
+  generic body. `T: Comparable` allows `a.compare(b)`, answering `Ordering`,
+  and implies `Equatable`. Nothing else becomes available: there is no `<` on
+  `T`, because `<` is not defined on `string` either.
+
+  ```text
+  func index_of<T: Equatable>(items: []T, wanted: T) -> Option<int>
+  class SortedMap<K: Comparable, V>
+  ```
+- **What satisfies them is one predicate each, used everywhere.** `Comparable`
+  is exactly the types that have `compare`: every integer width, `char`,
+  `bool` and `string`, or a parameter that is itself `Comparable`. `Equatable`
+  is the types M34's `==` accepts **that hold no `float` anywhere**, or a
+  parameter bound by either capability. The same functions answer whether a
+  type argument satisfies a bound and whether the body may use the operation,
+  so a body that passes for its parameters cannot fail for an instance.
+  "Checked once" depends on that.
+- **`float` is not `Equatable`.** A generic algorithm over `==` relies on it
+  being an equivalence: a set relies on `a == a`. IEEE 754 `==` is not one,
+  since NaN is unequal to itself, which is the reason M32 gave `float` no
+  `compare`. Swift's `Equatable` states reflexivity as a requirement, in the
+  doc comment of `Equatable.swift`, and makes `Float` conform anyway. The Go
+  specification's `comparable` includes floats. Rust, recalled rather than
+  read here, keeps `f64` out of `Eq`. Skuld takes the reading that keeps its
+  own rule. `==` on a `float` outside generic code is unchanged.
+- **Written only after a type parameter's name.** `<T: Equatable>` on any
+  generic declaration. The two names are read as capabilities in that one
+  position and are ordinary identifiers everywhere else, as `packed`, `align`
+  and `indirect` are. A program may declare a type called `Comparable`: one
+  fixture already declares a `class Ordered`. Any other name after `T:` is an
+  error. `Ordering` gets its own message, since it is the near-miss.
+- **One capability per parameter, for now.** The two form a chain, so one
+  always says it. `+` is not refused; it is not needed until hashing arrives,
+  and that milestone decides how a hashable and comparable key is written.
+- **Checked wherever an instance is made**:
+  - at a call, with the span of the argument that fixed the parameter;
+  - at a type written with arguments;
+  - inside a generic declaration that names a constrained type over its own
+    parameters. `func g<T>(s: SortedMap<T, int>)` is refused in `g`'s
+    signature, unless `T` is bound, and `T: Comparable` satisfies
+    `Equatable`.
+
+  Structural types satisfy through their parts: `Option<T>` is `Equatable`
+  when `T` is.
+- **Codegen needs nothing.** An instance is concrete, and `==` and `compare`
+  on a concrete type are already emitted.
+
+### What was rejected
+
+- **Interfaces as constraints**: only classes implement one, so no scalar
+  could satisfy it. That is open question 1's reason, unchanged.
+- **User-declared traits or protocols**, as in Rust and Swift. They need
+  conformance for builtin types and coherence rules, which is a milestone of
+  its own.
+- **Go's type sets** (`~int | ~string`). They expose union types to users,
+  which the language does not have.
+- **Reserved names.** Reserving them would break a fixture, and the position
+  already says what the word is.
+- **`Set<T: Equatable>` as the closing marker.** Without hashing it is a list
+  with no duplicates, built in quadratic time. The sorted container is the
+  real deliverable: binary search over `compare` gives logarithmic lookup.
+
+### Out
+
+Hashing, and with it `Map<K, V>` and `Set<T>`. Also out: `<` on `T`, combining
+capabilities, a capability on an interface, and any change to `std/`.
+
+### Closing marker
+
+`tests/pass/capabilities.skuld` runs clean under the sanitizers and on i686.
+It contains:
+
+- `index_of` and `contains` over `Equatable`, instantiated with `int`, a value
+  struct and an enum;
+- `max` over `Comparable`;
+- a `SortedMap<K: Comparable, V>` doing binary-search lookup and insertion
+  over `int` and `string` keys.
+
+The fail fixtures cover: an operation on a parameter without its bound; `float`
+and a class given for `Equatable`, with the span on the argument; a declaration
+naming a constrained type over an unbound parameter; and an unknown capability.
+
 ## Open design questions
 
 These are not settled by this document and change the shape of the milestones
@@ -2036,7 +2357,10 @@ above.
 
 1. ~~Builtin `Result` or general generics?~~ Answered: M3 shipped `Result` as a
    builtin. Whether general generics ever enter the project, and how they would
-   reconcile with the builtin `Option` and `Result`, remains open.
+   reconcile with the builtin `Option` and `Result`, is taken up by M36, which
+   is designed and not implemented. M36 answers the second and third
+   objections below and concedes the first; read it before reading what
+   follows as the last word.
 
    General generics were **proposed as a milestone and withdrawn**, and the
    reasons are worth keeping so they are not reproposed on the same footing.

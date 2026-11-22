@@ -387,6 +387,7 @@ impl<'a> Formatter<'a> {
             TypeDeclKind::Union => self.push("union "),
         }
         self.push(&st.name.text);
+        self.format_type_params(&st.type_params);
         // `packed` and `align N` sit between the name and the body, in that
         // order however they were written.
         if let Layout::Foreign { packed, align } = &st.layout {
@@ -463,6 +464,7 @@ impl<'a> Formatter<'a> {
         self.format_visibility(en.visibility);
         self.push("enum ");
         self.push(&en.name.text);
+        self.format_type_params(&en.type_params);
         if let Some(underlying) = &en.underlying {
             self.push(": ");
             self.format_type(underlying);
@@ -531,6 +533,7 @@ impl<'a> Formatter<'a> {
         self.format_visibility(f.visibility);
         self.push("func ");
         self.push(&f.name.text);
+        self.format_type_params(&f.type_params);
         self.push("(");
         self.format_parameters(&f.parameters);
         self.push(")");
@@ -939,10 +942,15 @@ impl<'a> Formatter<'a> {
                 self.format_field_inits(fields);
                 self.push(" }");
             }
-            ExprKind::New { name, fields } => {
+            ExprKind::New {
+                name,
+                type_arguments,
+                fields,
+            } => {
                 // Construction uses parentheses: `new Class(field: value)`
                 self.push("new ");
                 self.format_path(name);
+                self.format_type_arguments(type_arguments);
                 self.push("(");
                 self.format_field_inits(fields);
                 self.push(")");
@@ -1048,6 +1056,38 @@ impl<'a> Formatter<'a> {
         self.push(&path.name.text);
     }
 
+    /// `<int, string>`, or nothing when there are no arguments.
+    fn format_type_arguments(&mut self, arguments: &[TypeRef]) {
+        if arguments.is_empty() {
+            return;
+        }
+        self.push("<");
+        for (i, argument) in arguments.iter().enumerate() {
+            if i > 0 {
+                self.push(", ");
+            }
+            self.format_type(argument);
+        }
+        self.push(">");
+    }
+    /// `<T, U>` after a declaration's name, or nothing.
+    fn format_type_params(&mut self, params: &[TypeParam]) {
+        if params.is_empty() {
+            return;
+        }
+        self.push("<");
+        for (i, param) in params.iter().enumerate() {
+            if i > 0 {
+                self.push(", ");
+            }
+            self.push(&param.name.text);
+            if let Some(bound) = &param.bound {
+                self.push(": ");
+                self.push(&bound.text);
+            }
+        }
+        self.push(">");
+    }
     fn format_type(&mut self, t: &TypeRef) {
         match t {
             TypeRef::Named(path) => self.format_path(path),
@@ -1063,9 +1103,18 @@ impl<'a> Formatter<'a> {
                 self.format_type(err);
                 self.push(">");
             }
-            TypeRef::Weak { class, .. } => {
+            TypeRef::Weak {
+                class, arguments, ..
+            } => {
                 self.push("weak ");
                 self.format_path(class);
+                self.format_type_arguments(arguments);
+            }
+            TypeRef::Applied {
+                path, arguments, ..
+            } => {
+                self.format_path(path);
+                self.format_type_arguments(arguments);
             }
             TypeRef::Array { element, .. } => {
                 self.push("[]");

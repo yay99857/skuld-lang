@@ -1,0 +1,43 @@
+// A generic linked list of a hundred thousand class nodes. Dropping it at the
+// end of `main` releases a chain far deeper than any stack, which M33's queued
+// release handles for a generic instance exactly as for a written class; the
+// sanitizers check that every node is freed.
+class Node<T> {
+    value: T
+    next: Option<Node<T>> = None
+}
+
+class List<T> {
+    head: Option<Node<T>> = None
+    count: int = 0
+
+    prepend(value: T) {
+        let node = new Node<T>(value: value)
+        node.next = this.head
+        this.head = node
+        this.count += 1
+    }
+}
+
+func sum(list: List<int>) -> int {
+    var total = 0
+    var cursor = list.head
+    while true {
+        if let node = cursor {
+            total += node.value
+            cursor = node.next
+        } else {
+            break
+        }
+    }
+    return total
+}
+
+func main() {
+    let list = new List<int>()
+    for i in 0..100000 {
+        list.prepend(i % 10)
+    }
+    print(list.count)
+    print(sum(list))
+}

@@ -53,4 +53,4 @@ func main() {
 
 `[N]T` is an inline value with a positive constant length. Use a repeated literal such as `var buffer: [16]u8 = [0; 16]` or a list checked against an expected fixed-array type. Assignment copies the array.
 
-A fixed array can widen to a read-only `[]T` view without allocation. It must not escape its storage lifetime; visible escapes are rejected and mutation through the view traps. Slice it when an owned dynamic copy is needed.
+A fixed array never becomes a `[]T` by itself. Where a dynamic array is wanted, `buffer[0..16]` copies into one; the compiler's error offers that edit. A function that only reads a fixed array can take `[16]u8` itself.

@@ -383,7 +383,9 @@ fn exports(typed: &TypedProgram, module: ModuleId) -> Vec<Item> {
         .map(|(name, id)| item_for(typed, name, *id))
         .collect();
     // A type is not a value name, so it lives in the checker's tables instead.
-    for info in typed.structs().iter().filter(|info| info.module == module) {
+    for (_, info) in typed.structs().iter().enumerate().filter(|(id, info)| {
+        info.module == module && typed.is_declared_struct(skuld_compiler::types::StructId(*id))
+    }) {
         let kind = if info.reference {
             kind::CLASS
         } else {
@@ -435,7 +437,12 @@ fn names(checked: Option<&TypedProgram>) -> Vec<Item> {
             items.push(item_for(typed, &symbol.name, id));
         }
     }
-    for info in typed.structs() {
+    for (_, info) in typed
+        .structs()
+        .iter()
+        .enumerate()
+        .filter(|(id, _)| typed.is_declared_struct(skuld_compiler::types::StructId(*id)))
+    {
         let kind = if info.reference {
             kind::CLASS
         } else {
@@ -443,7 +450,12 @@ fn names(checked: Option<&TypedProgram>) -> Vec<Item> {
         };
         items.push(Item::new(&info.name, kind, None));
     }
-    for info in typed.enums() {
+    for (_, info) in typed
+        .enums()
+        .iter()
+        .enumerate()
+        .filter(|(id, _)| typed.is_declared_enum(skuld_compiler::types::EnumId(*id)))
+    {
         items.push(Item::new(&info.name, kind::ENUM, None));
     }
     items.sort_by(|left, right| left.label.cmp(&right.label));
@@ -548,6 +560,7 @@ pub fn type_name(typed: &TypedProgram, ty: Type) -> String {
                 )
             })
             .unwrap_or_else(|| "<function>".to_owned()),
+        Type::Param(id) => typed.type_param_name(id).to_owned(),
         other => other.to_string(),
     }
 }

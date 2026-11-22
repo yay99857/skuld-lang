@@ -299,6 +299,28 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
                 }
             }
         }
+        // A type is resolved wherever one is written, because `[N]T` names a
+        // constant: a payload or an interface signature the resolver skipped
+        // left the checker looking up a use nobody had recorded.
+        for declaration in &syntax.enums {
+            resolver.current = file_scope;
+            for variant in &declaration.variants {
+                if let Some(payload) = &variant.payload {
+                    resolver.type_ref(payload);
+                }
+            }
+        }
+        for declaration in &syntax.interfaces {
+            resolver.current = file_scope;
+            for method in &declaration.methods {
+                for parameter in &method.parameters {
+                    resolver.type_ref(&parameter.type_ref);
+                }
+                if let Some(t) = &method.return_type {
+                    resolver.type_ref(t);
+                }
+            }
+        }
         // Methods get symbols, but in a scope of their own so they never
         // resolve as bare identifiers: a method is reached through `this` or a
         // value.
@@ -918,7 +940,20 @@ impl Resolver {
             }
             // The type name and the field labels are not value names; only the
             // field values are resolved here.
-            ExprKind::StructLiteral { fields, .. } | ExprKind::New { fields, .. } => {
+            ExprKind::StructLiteral { fields, .. } => {
+                for field in fields {
+                    self.expression(&field.value);
+                }
+            }
+            ExprKind::New {
+                type_arguments,
+                fields,
+                ..
+            } => {
+                // A type argument may be sized by a constant: `new Grid<[N]u8>()`.
+                for argument in type_arguments {
+                    self.type_ref(argument);
+                }
                 for field in fields {
                     self.expression(&field.value);
                 }
@@ -998,7 +1033,12 @@ impl Resolver {
                     self.type_ref(ret);
                 }
             }
-            TypeRef::Named(_) | TypeRef::Weak { .. } => {}
+            TypeRef::Applied { arguments, .. } | TypeRef::Weak { arguments, .. } => {
+                for argument in arguments {
+                    self.type_ref(argument);
+                }
+            }
+            TypeRef::Named(_) => {}
         }
     }
 }

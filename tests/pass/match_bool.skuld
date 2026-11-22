@@ -1,0 +1,13 @@
+// A `bool` match is complete when it names both values, the way an enum
+// match is complete when it names every variant.
+func describe(flag: bool) -> string {
+    match flag {
+        true: return "yes"
+        false: return "no"
+    }
+}
+
+func main() {
+    print(describe(true))
+    print(describe(false))
+}

@@ -1,0 +1,13 @@
+// A function that calls itself at an ever larger type would need infinitely
+// many instances. It is found while instances are made, so the error names
+// the call that asks for the next one.
+func grow<T>(value: T, depth: int) -> int {
+    if depth == 0 {
+        return 0
+    }
+    return grow([value], depth - 1)
+}
+
+func main() {
+    print(grow(1, 3))
+}

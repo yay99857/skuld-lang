@@ -1,0 +1,10 @@
+// A `for` visits the elements there when it began, so pushing in the body
+// is bounded: it used to be a loop that never ended.
+func main() {
+    let items: []int = [1, 2, 3]
+    for item in items {
+        items.push(item * 10)
+    }
+    print(items.len())
+    print(items[5])
+}

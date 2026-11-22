@@ -1,0 +1,11 @@
+// A check inside a generic body traps in the instance that ran it, and the
+// site it reports is the line in the generic body.
+func at<T>(items: []T, i: int) -> T {
+    return items[i]
+}
+
+func main() {
+    let words: []string = ["only" + ""]
+    print(at(words, 0))
+    print(at(words, 3))
+}

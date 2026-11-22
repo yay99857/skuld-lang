@@ -1,0 +1,15 @@
+// A range that holds no value is an arm that can never match, which is
+// almost always its ends written the wrong way round.
+func main() {
+    let n = 5
+    match n {
+        10..=1: print("never")
+        3..3: print("never either")
+        _: print("other")
+    }
+    let c = 'q'
+    match c {
+        'z'..'a': print("never")
+        _: print("other")
+    }
+}

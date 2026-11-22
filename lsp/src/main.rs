@@ -73,6 +73,12 @@ fn decide(arguments: &[String]) -> Startup {
 }
 
 fn main() {
+    // Every check the server runs recurses over a program's syntax, on a
+    // stack sized for it rather than on the one the system happened to give.
+    skuld_compiler::with_compiler_stack(serve)
+}
+
+fn serve() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     match decide(&arguments) {
         Startup::Print(message) => print!("{message}"),

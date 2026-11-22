@@ -1,0 +1,17 @@
+// A type parameter is fixed only by an exact match, and fixed once. Two
+// arguments that disagree are an error, and so is a parameter nothing fixes;
+// the type a call is expected to have only fills in what is left.
+func same<T>(a: T, b: T) -> T {
+    return a
+}
+
+func empty<T>() -> []T {
+    let out: []T = []
+    return out
+}
+
+func main() {
+    let n = 1
+    let both = same(n, "s")
+    let unknown = empty()
+}

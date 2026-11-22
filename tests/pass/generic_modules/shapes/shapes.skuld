@@ -1,0 +1,36 @@
+// The module half of `generic_modules`: a public generic class and function,
+// and a public struct whose name the entry file declares again.
+pub struct Item {
+    width: int
+}
+
+pub class Holder<T> {
+    held: []T = []
+
+    put(value: T) {
+        this.held.push(value)
+    }
+
+    count() -> int {
+        return this.held.len()
+    }
+}
+
+pub func largest<T: Comparable>(items: []T) -> Option<T> {
+    if items.len() == 0 {
+        return None
+    }
+    var best = items[0]
+    for item in items {
+        if best.compare(item) == .Less {
+            best = item
+        }
+    }
+    return best
+}
+
+pub func wrap_item(width: int) -> Holder<Item> {
+    let h = new Holder<Item>()
+    h.put(Item { width: width })
+    return h
+}

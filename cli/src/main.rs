@@ -296,6 +296,11 @@ fn nearest_command(given: &str) -> Option<&'static str> {
 }
 
 fn main() -> ExitCode {
+    // Compiling recurses over the program's syntax, on a stack sized for it.
+    skuld_compiler::with_compiler_stack(run)
+}
+
+fn run() -> ExitCode {
     let arguments: Vec<OsString> = env::args_os().skip(1).collect();
     let invocation = match parse_arguments(&arguments) {
         Command::Print(text) => return write_output(&text),

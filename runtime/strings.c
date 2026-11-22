@@ -105,10 +105,44 @@ static inline skuld_string skuld_string_from_uint(uint64_t value) {
     return skuld_string_from_bytes(digits, (size_t)len);
 }
 
+/* The shortest decimal that reads back as the same double, which is what
+ * Go, Rust, Python and JavaScript print: `0.1` rather than the
+ * `0.10000000000000001` that seventeen significant digits always show.
+ *
+ * The shortest digit count is found by trying each one, since C has no
+ * conversion that asks for it, and every try is checked with `strtod` rather
+ * than reasoned about. Positional notation is used for exponents from -5 up to
+ * 20, as JavaScript does, so `100` stays `100` and `1e21` does not become
+ * twenty-two digits. Infinities and NaN read `inf`, `-inf` and `nan`.
+ *
+ * `out` holds at least 32 bytes; the length written is returned. */
+static int skuld_format_float(double value, char *out) {
+    if (isnan(value)) return snprintf(out, 32, "nan");
+    if (isinf(value)) return snprintf(out, 32, value < 0 ? "-inf" : "inf");
+    if (value == 0) return snprintf(out, 32, signbit(value) ? "-0" : "0");
+    char scientific[32];
+    int digits = 1;
+    for (; digits < 17; ++digits) {
+        snprintf(scientific, sizeof scientific, "%.*e", digits - 1, value);
+        if (strtod(scientific, NULL) == value) break;
+    }
+    snprintf(scientific, sizeof scientific, "%.*e", digits - 1, value);
+    const char *mark = strchr(scientific, 'e');
+    int exponent = mark != NULL ? atoi(mark + 1) : 0;
+    if (exponent < -5 || exponent > 20) {
+        /* `1.5e+21`, without the zero padding C gives an exponent. */
+        int length = (int)(mark - scientific);
+        return snprintf(out, 32, "%.*se%c%d", length, scientific, exponent < 0 ? '-' : '+',
+                        exponent < 0 ? -exponent : exponent);
+    }
+    int decimals = digits - 1 - exponent;
+    return snprintf(out, 32, "%.*f", decimals > 0 ? decimals : 0, value);
+}
+
 /* Matches `print`, so a value reads the same interpolated or printed. */
 static inline skuld_string skuld_string_from_float(double value) {
-    char digits[64];
-    int len = snprintf(digits, sizeof digits, "%.17g", value);
+    char digits[32];
+    int len = skuld_format_float(value, digits);
     if (len < 0) {
         skuld_fail("could not format a float", 0);
     }
@@ -347,7 +381,6 @@ static inline size_t skuld_array_next_length(size_t length, size_t byte) {
 }
 static inline void *skuld_array_reserve(void *data, size_t *capacity,
                                        size_t needed, size_t element, size_t byte) {
-    if (data != NULL && *capacity == 0) skuld_fail("cannot mutate a fixed array view", byte);
     if ((uint64_t)needed > INT64_MAX) skuld_fail("array length overflow", byte);
     if (needed <= *capacity) return data;
     size_t next = *capacity == 0 ? 4 : *capacity;

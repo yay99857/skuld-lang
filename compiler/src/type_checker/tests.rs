@@ -1672,3 +1672,35 @@ fn an_expression_lambda_reports_each_mistake_once() {
         DiagnosticCode::InvalidValueType,
     );
 }
+
+#[test]
+fn a_fixed_array_is_copied_into_a_dynamic_one_where_it_is_written() {
+    // There is no implicit widening; the fix writes the copy, and the program
+    // it leaves checks.
+    let source = "func total(xs: []int) -> int {\n    var sum = 0\n    for x in xs { sum += x }\n    return sum\n}\nfunc make() -> [3]int { return [1, 2, 3] }\nfunc main() {\n    let local: [3]int = [1, 2, 3]\n    print(total(local))\n    print(total(make()))\n    print(total([7; 2]))\n}";
+    let errors = check(source).expect_err("a fixed array is not a `[]int`");
+    assert_eq!(errors.len(), 3, "{errors:?}");
+    assert!(
+        errors
+            .iter()
+            .all(|error| error.code == DiagnosticCode::TypeMismatch)
+    );
+    let fixed = apply_fixes(source);
+    assert!(fixed.contains("total(local[0..3])"), "{fixed}");
+    assert!(fixed.contains("total(make()[0..3])"), "{fixed}");
+    assert!(fixed.contains("total([7; 2][0..2])"), "{fixed}");
+    assert!(check(&fixed).is_ok(), "{fixed}");
+}
+
+#[test]
+fn a_function_value_is_named_by_a_let() {
+    let source = "func main() {\n    let base = 1\n    var f = (x: int) -> int { return x + base }\n    print(f(1))\n}";
+    let errors = check(source).expect_err("a `var` cannot hold a function value");
+    assert_eq!(errors[0].code, DiagnosticCode::InvalidValueType);
+    let fixed = apply_fixes(source);
+    assert!(fixed.contains("    let f = (x: int)"), "{fixed}");
+    assert!(check(&fixed).is_ok(), "{fixed}");
+    // Reassigning one is then the ordinary immutable assignment it always
+    // was for a `let`.
+    assert!(check("func one() -> int { return 1 }\nfunc two() -> int { return 2 }\nfunc main() {\n    let f = one\n    f = two\n    print(f())\n}").is_err());
+}

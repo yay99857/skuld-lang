@@ -45,7 +45,7 @@ func main() {
 }
 ```
 
-Lambdas capture immutable bindings by value. A mutable `var` cannot be captured.
+Lambdas capture immutable bindings by value. A mutable `var` cannot be captured, and a function value is always named by `let`: a `var` holding one is refused, because a `var` given a lambda inside a loop could be called after the loop had ended. Where the function depends on a condition, call the one you mean in each branch.
 
 ## Non-escaping values
 

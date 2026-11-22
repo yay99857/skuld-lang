@@ -38,6 +38,9 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
         statics: program.statics.iter().map(|(id, _)| *id).collect(),
         receiver: None,
         defers: Vec::new(),
+        file: crate::module::FileId(0),
+        sites: std::cell::RefCell::new(Vec::new()),
+        site_ids: std::cell::RefCell::new(std::collections::BTreeMap::new()),
     };
     // An interface value is a pair: the object, and the table of methods to
     // call on it. The pair is declared before the aggregates, because an array
@@ -667,6 +670,7 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
         ));
     }
     for lambda in &program.lambdas {
+        emitter.file = lambda.file;
         emitter.line("");
         emitter.line(&format!(
             "/* function value: source bytes {}..{} */",
@@ -693,6 +697,7 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
         emitter.captures.clear();
     }
     for function in &program.functions {
+        emitter.file = function.file;
         emitter.line("");
         emitter.line(&format!(
             "/* {}: source bytes {}..{} */",
@@ -730,6 +735,9 @@ pub fn emit_c(program: &Program, mode: crate::type_checker::Mode) -> String {
         emitter.line("return fflush(stdout) == 0 ? 0 : 1;");
         emitter.indent -= 1;
         emitter.line("}");
+    }
+    if !freestanding {
+        emitter.sites_table(&program.sources);
     }
     emitter.output
 }
@@ -827,6 +835,14 @@ struct Emitter<'a> {
     /// exit rather than jumped to, which is what keeps them able to read the
     /// locals they were written next to.
     defers: Vec<DeferScope<'a>>,
+    /// The file whose offsets the spans being emitted are.
+    file: crate::module::FileId,
+    /// Every place a run-time failure can be reported from, as a file and an
+    /// offset into it. A generated program passes the index of one of these
+    /// to `skuld_fail` rather than the offset itself, which on its own said
+    /// neither which file nor which line; index 0 means nowhere in particular.
+    sites: std::cell::RefCell<Vec<(crate::module::FileId, usize)>>,
+    site_ids: std::cell::RefCell<std::collections::BTreeMap<(crate::module::FileId, usize), usize>>,
 }
 
 /// The `defer`red statements of one block, and whether leaving that block is
@@ -878,6 +894,7 @@ fn type_name(structs: &[StructInfo], ty: Type) -> String {
         Type::Struct(id) if structs[id.0].reference => format!("skuld_s{} *", id.0),
         Type::Struct(id) => format!("skuld_s{}", id.0),
         Type::Error => unreachable!("internal compiler bug: error type in HIR"),
+        Type::Param(_) => unreachable!("internal compiler bug: a type parameter in HIR"),
     }
 }
 impl<'a> Emitter<'a> {
@@ -1313,7 +1330,7 @@ impl<'a> Emitter<'a> {
         // comparator's signature to name the helper it calls.
         let first_type = arguments.first().map(|argument| argument.ty);
         let arguments: Vec<_> = arguments.iter().map(|arg| self.expression(arg)).collect();
-        let byte = expr.span.start;
+        let byte = self.at(expr.span.start);
         match method {
             ArrayMethod::Sort => {
                 let Some(Type::Function(comparator)) = first_type else {
@@ -1464,7 +1481,7 @@ impl<'a> Emitter<'a> {
         let subscript = self.expression(index);
         format!(
             "{value}->data[skuld_index({subscript}, {value}->len, {})]",
-            index.span.start
+            self.at(index.span.start)
         )
     }
 
@@ -1475,14 +1492,14 @@ impl<'a> Emitter<'a> {
             Type::INT,
             &format!(
                 "(int64_t)skuld_index({subscript}, {value}->len, {})",
-                index.span.start
+                self.at(index.span.start)
             ),
         );
         // Re-read storage and recheck bounds whenever the place is used: an
         // assignment RHS can grow, shrink or reorder this shared array.
         format!(
             "{value}->data[skuld_index({checked}, {value}->len, {})]",
-            index.span.start
+            self.at(index.span.start)
         )
     }
     fn place(&mut self, place: &Place) -> String {
@@ -1502,7 +1519,7 @@ impl<'a> Emitter<'a> {
                 let subscript = self.expression(index);
                 format!(
                     "{base}.data[skuld_index({subscript}, {size}, {})]",
-                    index.span.start
+                    self.at(index.span.start)
                 )
             }
         }
@@ -1529,14 +1546,14 @@ impl<'a> Emitter<'a> {
                     let subscript = self.expression(index);
                     Some(format!(
                         "{base}.data[skuld_index({subscript}, {size}, {})]",
-                        index.span.start
+                        self.at(index.span.start)
                     ))
                 } else if let Type::Array(_) = object.ty {
                     let obj = self.expression(object);
                     let subscript = self.expression(index);
                     Some(format!(
                         "{obj}->data[skuld_index({subscript}, {obj}->len, {})]",
-                        index.span.start
+                        self.at(index.span.start)
                     ))
                 } else {
                     None
@@ -1673,6 +1690,67 @@ impl<'a> Emitter<'a> {
             Type::Enum(id) if self.managed(ty) => Some(format!("skuld_e{}_assign", id.0)),
             _ => None,
         }
+    }
+    /// The site a failure at `offset` in the current file is reported as.
+    fn at(&self, offset: usize) -> usize {
+        let key = (self.file, offset);
+        if let Some(&id) = self.site_ids.borrow().get(&key) {
+            return id;
+        }
+        let mut sites = self.sites.borrow_mut();
+        sites.push(key);
+        let id = sites.len();
+        self.site_ids.borrow_mut().insert(key, id);
+        id
+    }
+    /// Where each site is, in the coordinates a reader uses: the file's name,
+    /// its line and its column, derived here from the source rather than
+    /// stored anywhere earlier. Only the sites the program can fail at are
+    /// written down.
+    fn sites_table(&mut self, sources: &[crate::span::SourceFile]) {
+        let sites = self.sites.borrow().clone();
+        let mut names: Vec<usize> = Vec::new();
+        let mut entries = Vec::new();
+        for (file, offset) in &sites {
+            let Some(source) = sources.get(file.0) else {
+                entries.push("{ 0, 0, 0 }".to_owned());
+                continue;
+            };
+            let name = match names.iter().position(|&n| n == file.0) {
+                Some(index) => index,
+                None => {
+                    names.push(file.0);
+                    names.len() - 1
+                }
+            };
+            let (line, column) = source.location(*offset);
+            entries.push(format!("{{ {}, {line}, {column} }}", name + 1));
+        }
+        self.line("");
+        // Names are written byte by byte in octal, like every string literal
+        // the backend emits, so a path is never C syntax.
+        let mut table = String::from("static const char *const skuld_site_files[] = { NULL");
+        for &file in &names {
+            table.push_str(", \"");
+            for byte in sources[file].name.bytes() {
+                table.push_str(&format!("\\{byte:03o}"));
+            }
+            table.push('"');
+        }
+        table.push_str(" };");
+        self.line(&table);
+        self.line(&format!(
+            "static const struct {{ uint32_t file; uint32_t line; uint32_t column; }} skuld_site_table[] = {{ {{ 0, 0, 0 }}{}{} }};",
+            if entries.is_empty() { "" } else { ", " },
+            entries.join(", ")
+        ));
+        self.line("static void skuld_where(size_t site) {");
+        self.line(&format!(
+            "    if (site == 0 || site > {} || skuld_site_table[site].file == 0) return;",
+            entries.len()
+        ));
+        self.line("    fprintf(stderr, \"  --> %s:%u:%u\\n\", skuld_site_files[skuld_site_table[site].file], (unsigned)skuld_site_table[site].line, (unsigned)skuld_site_table[site].column);");
+        self.line("}");
     }
     fn line(&mut self, line: &str) {
         self.output.push_str(&"    ".repeat(self.indent));
@@ -2180,10 +2258,25 @@ impl<'a> Emitter<'a> {
                         self.line(&format!("{arr_c_ty} skuld_t{arr_temp} = {arr_val};"));
                         let idx_temp = self.next_temp;
                         self.next_temp += 1;
+                        // The elements visited are the ones there when the
+                        // loop began. Reading the length each time made a
+                        // `push` in the body a loop that never ended; a body
+                        // that shortens the array is a trap, as it is for a
+                        // comparator during `sort`, rather than a loop that
+                        // quietly stops early or reads what was released.
+                        let count_temp = self.next_temp;
+                        self.next_temp += 1;
                         self.line(&format!(
-                            "for (int64_t skuld_t{idx_temp} = 0; skuld_t{idx_temp} < skuld_t{arr_temp}->len; skuld_t{idx_temp}++) {{"
+                            "const int64_t skuld_t{count_temp} = (int64_t)skuld_t{arr_temp}->len;"
+                        ));
+                        self.line(&format!(
+                            "for (int64_t skuld_t{idx_temp} = 0; skuld_t{idx_temp} < skuld_t{count_temp}; skuld_t{idx_temp}++) {{"
                         ));
                         self.indent += 1;
+                        let site = self.at(collection.span.start);
+                        self.line(&format!(
+                            "if ((size_t)skuld_t{idx_temp} >= skuld_t{arr_temp}->len) skuld_fail(\"the array was shortened while it was being iterated\", {site});"
+                        ));
                         let Type::Array(array_id) = collection.ty else {
                             unreachable!("checked array for loop")
                         };
@@ -2305,6 +2398,12 @@ impl<'a> Emitter<'a> {
                 }
                 self.temporary(expr.ty, &name)
             }
+            ExprKind::InFile { file, value } => {
+                let outer = std::mem::replace(&mut self.file, *file);
+                let result = self.expression(value);
+                self.file = outer;
+                result
+            }
             ExprKind::Lambda { index } => {
                 let Type::Function(ty) = expr.ty else {
                     unreachable!("internal compiler bug: lambda without a function type")
@@ -2396,7 +2495,7 @@ impl<'a> Emitter<'a> {
                         true,
                     );
                 }
-                let name = self.allocate(expr.ty, "0", expr.span.start);
+                let name = self.allocate(expr.ty, "0", self.at(expr.span.start));
                 for (position, value) in values {
                     self.line(&format!("{name}->f{position} = {value};"));
                 }
@@ -2411,7 +2510,11 @@ impl<'a> Emitter<'a> {
                     .iter()
                     .map(|element| self.expression(element))
                     .collect();
-                let name = self.allocate(expr.ty, &elements.len().to_string(), expr.span.start);
+                let name = self.allocate(
+                    expr.ty,
+                    &elements.len().to_string(),
+                    self.at(expr.span.start),
+                );
                 for (position, value) in values.iter().enumerate() {
                     self.line(&format!(
                         "{name}->data[{position}] = {};",
@@ -2430,7 +2533,7 @@ impl<'a> Emitter<'a> {
                     .map(|element| self.expression(element))
                     .collect();
                 let type_str = self.c_type(expr.ty);
-                let name = self.store(expr.ty, &format!("({type_str}){{0}}"), false);
+                let name = self.store(expr.ty, &format!("({type_str}){{0}}"), true);
                 for (position, value) in values.iter().enumerate() {
                     self.line(&format!(
                         "{name}.data[{position}] = {};",
@@ -2446,29 +2549,12 @@ impl<'a> Emitter<'a> {
                 let element_type = self.fixed_arrays[id.0].element;
                 let val = self.expression(element);
                 let type_str = self.c_type(expr.ty);
-                let name = self.store(expr.ty, &format!("({type_str}){{0}}"), false);
+                let name = self.store(expr.ty, &format!("({type_str}){{0}}"), true);
                 self.line(&format!(
                     "for (size_t skuld_i = 0; skuld_i < {size}; ++skuld_i) {{ {name}.data[skuld_i] = {}; }}",
                     self.retained(element_type, &val)
                 ));
                 name
-            }
-            ExprKind::FixedArrayToSlice { object, array_id } => {
-                let val = if let Some(lv) = self.lvalue(object) {
-                    lv
-                } else {
-                    self.expression(object)
-                };
-                let Type::FixedArray(fa_id) = object.ty else {
-                    unreachable!("checked fixed array to slice")
-                };
-                let size = self.fixed_arrays[fa_id.0].size;
-                let slice_type = format!("skuld_a{}", array_id.0);
-                self.store(
-                    expr.ty,
-                    &format!("(&( {slice_type} ){{ .header = {{ .strong = SIZE_MAX / 2, .weak = SIZE_MAX / 2, .destroy = NULL }}, .len = {size}, .capacity = 0, .data = {val}.data }})"),
-                    true,
-                )
             }
             ExprKind::Index { object, index } if object.ty == Type::String => {
                 // A byte read out of settled storage borrows it: nothing
@@ -2481,7 +2567,7 @@ impl<'a> Emitter<'a> {
                         expr.ty,
                         &format!(
                             "skuld_string_byte({storage}, {subscript}, {})",
-                            index.span.start
+                            self.at(index.span.start)
                         ),
                     );
                 }
@@ -2491,7 +2577,7 @@ impl<'a> Emitter<'a> {
                     expr.ty,
                     &format!(
                         "skuld_string_byte({value}, {subscript}, {})",
-                        index.span.start
+                        self.at(index.span.start)
                     ),
                 )
             }
@@ -2499,7 +2585,7 @@ impl<'a> Emitter<'a> {
                 let value = self.expression(object);
                 let from = self.expression(start);
                 let to = self.expression(end);
-                let byte = expr.span.start;
+                let byte = self.at(expr.span.start);
                 if object.ty == Type::String {
                     return self.store(
                         expr.ty,
@@ -2555,7 +2641,7 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::BytesToString(value) => {
                 let bytes = self.expression(value);
-                let byte = expr.span.start;
+                let byte = self.at(expr.span.start);
                 let result = self.store(expr.ty, &format!("({}){{0}}", self.c_type(expr.ty)), true);
                 let offset = format!("skuld_t{}", self.next_temp);
                 self.next_temp += 1;
@@ -2676,7 +2762,11 @@ impl<'a> Emitter<'a> {
                 let rendered = self.expression(value);
                 self.temporary(
                     expr.ty,
-                    &format!("skuld_e{}_from({rendered}, {})", id.0, expr.span.start),
+                    &format!(
+                        "skuld_e{}_from({rendered}, {})",
+                        id.0,
+                        self.at(expr.span.start)
+                    ),
                 )
             }
             ExprKind::LayoutOf { id, field } => {
@@ -2700,7 +2790,7 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::StringBytes(value) => {
                 let value = self.expression(value);
-                let byte = expr.span.start;
+                let byte = self.at(expr.span.start);
                 let result = self.allocate(expr.ty, &format!("{value}.len"), byte);
                 self.line(&format!(
                     "if ({value}.len != 0) memcpy({result}->data, {value}.data, {value}.len);"
@@ -2716,7 +2806,7 @@ impl<'a> Emitter<'a> {
                         let subscript = self.expression(index);
                         let read = format!(
                             "{storage}.data[skuld_index({subscript}, {size}, {})]",
-                            index.span.start
+                            self.at(index.span.start)
                         );
                         return self.temporary(expr.ty, &read);
                     }
@@ -2724,7 +2814,7 @@ impl<'a> Emitter<'a> {
                     let subscript = self.expression(index);
                     let read = format!(
                         "{value}.data[skuld_index({subscript}, {size}, {})]",
-                        index.span.start
+                        self.at(index.span.start)
                     );
                     return self.temporary(expr.ty, &read);
                 }
@@ -2734,7 +2824,7 @@ impl<'a> Emitter<'a> {
                     let subscript = self.expression(index);
                     let read = format!(
                         "{storage}->data[skuld_index({subscript}, {storage}->len, {})]",
-                        index.span.start
+                        self.at(index.span.start)
                     );
                     return self.temporary(expr.ty, &read);
                 }
@@ -2805,7 +2895,7 @@ impl<'a> Emitter<'a> {
                         &format!(
                             "skuld_f_to_{}({rendered}, {})",
                             target.suffix(),
-                            expr.span.start
+                            self.at(expr.span.start)
                         ),
                     );
                 }
@@ -2815,7 +2905,7 @@ impl<'a> Emitter<'a> {
                         &format!(
                             "skuld_u_to_{}((uint64_t)({rendered}), {})",
                             target.suffix(),
-                            expr.span.start
+                            self.at(expr.span.start)
                         ),
                     );
                 }
@@ -2831,7 +2921,7 @@ impl<'a> Emitter<'a> {
                     &format!(
                         "skuld_{family}_to_{}({rendered}, {})",
                         target.suffix(),
-                        expr.span.start
+                        self.at(expr.span.start)
                     ),
                 )
             }
@@ -2852,7 +2942,7 @@ impl<'a> Emitter<'a> {
                         expr.ty,
                         &format!(
                             "skuld_i_to_char((int64_t)({rendered}), {})",
-                            expr.span.start
+                            self.at(expr.span.start)
                         ),
                     )
                 } else {
@@ -2860,7 +2950,7 @@ impl<'a> Emitter<'a> {
                         expr.ty,
                         &format!(
                             "skuld_u_to_char((uint64_t)({rendered}), {})",
-                            expr.span.start
+                            self.at(expr.span.start)
                         ),
                     )
                 }
@@ -2926,7 +3016,7 @@ impl<'a> Emitter<'a> {
                     self.next_temp += 1;
                     self.line(&format!(
                         "{name} *{slot} = skuld_allocate(sizeof({name}), 0, 0, {});",
-                        expr.span.start
+                        self.at(expr.span.start)
                     ));
                     self.line(&format!(
                         "skuld_object_init(&{slot}->header, {name}_destroy);"
@@ -3104,7 +3194,10 @@ impl<'a> Emitter<'a> {
                         }
                         Some(left) => self.store(
                             Type::String,
-                            &format!("skuld_string_concat({left}, {piece}, {})", expr.span.start),
+                            &format!(
+                                "skuld_string_concat({left}, {piece}, {})",
+                                self.at(expr.span.start)
+                            ),
                             true,
                         ),
                     });
@@ -3134,7 +3227,11 @@ impl<'a> Emitter<'a> {
                     // Unsigned types never reach here: the checker rejects
                     // negating one, since only zero would have a result.
                     UnaryOp::Negative if let Type::Int(kind) = expr.ty => {
-                        format!("skuld_neg_{}({value}, {})", kind.suffix(), op_span.start)
+                        format!(
+                            "skuld_neg_{}({value}, {})",
+                            kind.suffix(),
+                            self.at(op_span.start)
+                        )
                     }
                     UnaryOp::Negative => format!("(-{value})"),
                     UnaryOp::Not => format!("(!{value})"),
@@ -3168,8 +3265,13 @@ impl<'a> Emitter<'a> {
                     result
                 } else {
                     let right_value = self.expression(right);
-                    let result =
-                        binary_value(*op, left.ty, &left_value, &right_value, op_span.start);
+                    let result = binary_value(
+                        *op,
+                        left.ty,
+                        &left_value,
+                        &right_value,
+                        self.at(op_span.start),
+                    );
                     // Concatenation is the only binary result that owns memory,
                     // and it is freshly allocated.
                     let fresh = expr.ty == Type::String;
@@ -3205,7 +3307,10 @@ impl<'a> Emitter<'a> {
                         AssignmentOp::ShiftRight => BinaryOp::ShiftRight,
                         AssignmentOp::Assign => unreachable!(),
                     };
-                    (binary_value(op, expr.ty, &old, &value, op_span.start), true)
+                    (
+                        binary_value(op, expr.ty, &old, &value, self.at(op_span.start)),
+                        true,
+                    )
                 } else {
                     (value, false)
                 };
@@ -3244,7 +3349,7 @@ impl<'a> Emitter<'a> {
                     }
                     CallTarget::Print if arguments.is_empty() => format!(
                         "skuld_print_string((skuld_string){{(const unsigned char *)\"\", 0, NULL}}, {})",
-                        expr.span.start
+                        self.at(expr.span.start)
                     ),
                     CallTarget::Print => {
                         let suffix = match arguments[0].ty {
@@ -3256,7 +3361,11 @@ impl<'a> Emitter<'a> {
                             Type::Char => "char",
                             _ => unreachable!("internal compiler bug: non-printable HIR argument"),
                         };
-                        format!("skuld_print_{suffix}({}, {})", values[0], expr.span.start)
+                        format!(
+                            "skuld_print_{suffix}({}, {})",
+                            values[0],
+                            self.at(expr.span.start)
+                        )
                     }
                 };
                 if expr.ty == Type::Void {
@@ -3378,8 +3487,12 @@ _Static_assert(DBL_MANT_DIG == 53 && DBL_MAX_EXP == 1024, "Skuld requires binary
    here. `_Noreturn` says so to a C compiler that does not infer it from the
    `exit` below; clang already did, and measuring showed no difference, so it
    is here for the readers — human and otherwise — rather than for speed. */
-_Noreturn static inline void skuld_fail(const char *message, size_t byte) {
-    fprintf(stderr, "runtime error: %s (source byte %zu)\n", message, byte);
+/* `site` says where in the source the failure is, through a table written
+   after the program; `skuld_where` prints its file, line and column. */
+static void skuld_where(size_t site);
+_Noreturn static inline void skuld_fail(const char *message, size_t site) {
+    fprintf(stderr, "runtime error: %s\n", message);
+    skuld_where(site);
     exit(1);
 }
 "#;
@@ -3628,7 +3741,9 @@ static inline void skuld_print_uint(uint64_t value, size_t byte) {
     if (printf("%" PRIu64 "\n", value) < 0) skuld_fail("stdout write failed", byte);
 }
 static inline void skuld_print_float(double value, size_t byte) {
-    if (printf("%.17g\n", value) < 0) skuld_fail("stdout write failed", byte);
+    char digits[32];
+    skuld_format_float(value, digits);
+    if (printf("%s\n", digits) < 0) skuld_fail("stdout write failed", byte);
 }
 static inline void skuld_print_bool(bool value, size_t byte) {
     if (puts(value ? "true" : "false") == EOF) skuld_fail("stdout write failed", byte);

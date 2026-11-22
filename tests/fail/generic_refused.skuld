@@ -1,0 +1,16 @@
+// What cannot be generic, each for its own reason: where the program starts,
+// a test, a layout C decides, and an enum whose variants are integers.
+func main<T>() {
+}
+
+func test_anything<T>() {
+}
+
+extern struct Header<T> {
+    size: u32
+}
+
+enum Code<T>: u8 {
+    A,
+    B,
+}

@@ -1,0 +1,23 @@
+// A fixed array is its elements, inline: `[2]Node` inside `Node` is two whole
+// nodes, so the struct would contain itself and have no size. Each of these
+// used to pass checking and stop the compiler in the backend.
+struct Node {
+    children: [2]Node
+}
+
+enum Tree {
+    Leaf
+    Fork([2]Tree)
+}
+
+struct Outer {
+    inner: Inner
+}
+
+struct Inner {
+    maybe: Option<[3]Outer>
+}
+
+func main() {
+    print(1)
+}

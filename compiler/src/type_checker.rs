@@ -8,7 +8,7 @@ use crate::{
     types::{
         ArrayId, ArrayInfo, ConstValue, EnumId, EnumInfo, FixedArrayId, FixedArrayInfo,
         FunctionTypeId, FunctionTypeInfo, IntType, InterfaceId, InterfaceInfo, InterfaceMethod,
-        OptionId, OptionInfo, Pointee, ResultId, ResultInfo, StructId, Type, VariantInfo,
+        OptionId, OptionInfo, ParamId, Pointee, ResultId, ResultInfo, StructId, Type, VariantInfo,
         int_type_fits, int_type_min, sign_extend,
     },
 };
@@ -29,13 +29,69 @@ pub struct Signature {
     pub return_type: Type,
 }
 
+/// What checking records about the expressions of one body, by position.
+///
+/// The program as written has one set; each instance of a generic function,
+/// method or set of field defaults has its own, because the same expression
+/// has a different type in each. Lowering reads whichever set belongs to the
+/// body it is lowering.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Tables {
+    pub(crate) expressions: BTreeMap<(FileId, usize, usize), Type>,
+    pub(crate) implicit_wraps: BTreeMap<(FileId, usize, usize), Type>,
+    pub(crate) interface_wraps: BTreeMap<(FileId, usize, usize), Type>,
+    /// `value == .Variant` against a variant with no payload, by the span of
+    /// the comparison: the variant's index, and whether the variant was
+    /// written on the left. Such a comparison tests the tag and nothing else.
+    pub(crate) tag_tests: BTreeMap<(FileId, usize, usize), (usize, bool)>,
+    /// The type, and field where there is one, that a `size_of` or `offset_of`
+    /// call asked about, by call position.
+    pub(crate) layout_queries: BTreeMap<(FileId, usize, usize), (StructId, Option<usize>)>,
+    /// The instance a call to a generic function, or a generic function named
+    /// as a value, resolved to, by the position of the call or the name.
+    pub(crate) calls: BTreeMap<(FileId, usize, usize), SymbolId>,
+    /// The types bindings have in this body where they differ from the
+    /// program as written: the parameters and locals of an instance.
+    pub(crate) symbols: BTreeMap<SymbolId, Type>,
+}
+
+/// One instance of a generic body, checked with its type arguments.
+#[derive(Debug, Clone)]
+pub(crate) struct Instance {
+    /// The function the instance is, or `None` for a struct's field defaults.
+    pub(crate) id: Option<SymbolId>,
+    pub(crate) kind: InstanceKind,
+    pub(crate) tables: Tables,
+}
+
+/// Where an instance's body is written.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum InstanceKind {
+    /// `functions[position]` of `file`.
+    Function { file: FileId, position: usize },
+    /// `structs[declaration].methods[method]` of `file`, with the instance
+    /// struct that receives it.
+    Method {
+        file: FileId,
+        declaration: usize,
+        method: usize,
+        receiver: StructId,
+    },
+    /// The field defaults of `structs[declaration]` of `file`, for the
+    /// instance struct `receiver`.
+    Defaults {
+        file: FileId,
+        declaration: usize,
+        receiver: StructId,
+    },
+}
+
 /// Only successful checking can construct this object. Tables and syntax must
 /// stay together; HIR lowering consumes them without repeating name lookup.
 #[derive(Debug)]
 pub struct TypedProgram {
     pub(crate) program: LoadedProgram,
     pub(crate) resolution: Resolution,
-    pub(crate) expressions: BTreeMap<(FileId, usize, usize), Type>,
     pub(crate) symbol_types: Vec<Type>,
     pub(crate) signatures: BTreeMap<SymbolId, Signature>,
     /// Foreign functions, which have a signature but no body. The C name is the
@@ -47,25 +103,27 @@ pub struct TypedProgram {
     pub(crate) structs: Vec<StructInfo>,
     pub(crate) enums: Vec<EnumInfo>,
     pub(crate) interfaces: Vec<InterfaceInfo>,
-    pub(crate) interface_wraps: BTreeMap<(FileId, usize, usize), Type>,
+    /// What the checker recorded about each expression of the program as
+    /// written. A generic body is recorded here once, in terms of its type
+    /// parameters; each instance's own records are in `instances`.
+    pub(crate) tables: Tables,
+    /// Every generic function, method and set of field defaults the program
+    /// instantiates with concrete types, with what checking it recorded.
+    pub(crate) instances: Vec<Instance>,
+    /// The instance whose tables hold a generic struct instance's field
+    /// defaults, by the instance's struct.
+    pub(crate) default_instances: BTreeMap<StructId, usize>,
+    /// Type parameters by `ParamId`: the name each was declared with.
+    pub(crate) params: Vec<String>,
     /// Enum names by module, since two modules may each declare a `Tag`.
     pub(crate) enum_names: Vec<BTreeMap<String, EnumId>>,
     pub(crate) arrays: Vec<ArrayInfo>,
     pub(crate) fixed_arrays: Vec<FixedArrayInfo>,
     pub(crate) options: Vec<OptionInfo>,
     pub(crate) results: Vec<ResultInfo>,
-    pub(crate) implicit_wraps: BTreeMap<(FileId, usize, usize), Type>,
-    pub(crate) slice_coercions: BTreeMap<(FileId, usize, usize), Type>,
-    /// `value == .Variant` against a variant with no payload, by the span of
-    /// the comparison: the variant's index, and whether the variant was
-    /// written on the left. Such a comparison tests the tag and nothing else.
-    pub(crate) tag_tests: BTreeMap<(FileId, usize, usize), (usize, bool)>,
     /// Every aggregate type some `==` compares structurally, with the
     /// aggregates inside it, so the backend writes one comparison for each.
     pub(crate) equalities: BTreeSet<Type>,
-    /// The type, and field where there is one, that a `size_of` or `offset_of`
-    /// call asked about, by call position.
-    pub(crate) layout_queries: BTreeMap<(FileId, usize, usize), (StructId, Option<usize>)>,
     pub(crate) function_signatures: Vec<FunctionTypeInfo>,
     pub(crate) constants: BTreeMap<SymbolId, ConstValue>,
     /// Module-level storage: its type, and the value it starts at. A static is
@@ -104,6 +162,25 @@ impl TypedProgram {
     pub fn structs(&self) -> &[StructInfo] {
         &self.structs
     }
+    /// Whether a struct is one the program declares, rather than an instance
+    /// of a generic one the checker made: a tool listing types lists these.
+    pub fn is_declared_struct(&self, id: StructId) -> bool {
+        self.structs[id.0]
+            .instance
+            .as_ref()
+            .is_none_or(|(template, _)| *template == id)
+    }
+    /// The same question for an enum.
+    pub fn is_declared_enum(&self, id: EnumId) -> bool {
+        self.enums[id.0]
+            .instance
+            .as_ref()
+            .is_none_or(|(template, _)| *template == id)
+    }
+    /// The name a type parameter was declared with.
+    pub fn type_param_name(&self, id: crate::types::ParamId) -> &str {
+        &self.params[id.0]
+    }
     /// Declared interfaces, in declaration order, which is what
     /// `Type::Interface` indexes. Exposed for the same reason `structs` is: a
     /// tool that names a type needs the table, and nothing inside the compiler
@@ -133,7 +210,10 @@ impl TypedProgram {
         self.signatures.get(&id)
     }
     pub fn expression_type_in(&self, file: FileId, span: Span) -> Option<Type> {
-        self.expressions.get(&(file, span.start, span.end)).copied()
+        self.tables
+            .expressions
+            .get(&(file, span.start, span.end))
+            .copied()
     }
     /// The entry file's expression types. Every caller that walks a whole
     /// program uses `expression_type_in`; this is for single-file callers.
@@ -188,7 +268,7 @@ pub(crate) fn type_check(
         files: &program.files,
         file: ROOT_FILE,
         module: ROOT,
-        expressions: BTreeMap::new(),
+        tables: Tables::default(),
         signatures: BTreeMap::new(),
         externs: BTreeMap::new(),
         diagnostics: Vec::new(),
@@ -200,12 +280,9 @@ pub(crate) fn type_check(
         interfaces: Vec::new(),
         module_types: vec![ModuleTypes::default(); program.modules.len()],
         conformances: BTreeMap::new(),
-        interface_wraps: BTreeMap::new(),
         arrays: Vec::new(),
         fixed_arrays: Vec::new(),
         fixed_array_types: BTreeMap::new(),
-        slice_coercions: BTreeMap::new(),
-        tag_tests: BTreeMap::new(),
         equalities: BTreeSet::new(),
         options: Vec::new(),
         option_types: BTreeMap::new(),
@@ -215,7 +292,6 @@ pub(crate) fn type_check(
         function_signatures: Vec::new(),
         function_types: BTreeMap::new(),
         expected_context: None,
-        implicit_wraps: BTreeMap::new(),
         constants: BTreeMap::new(),
         statics: BTreeMap::new(),
         evaluating_constants: Vec::new(),
@@ -224,11 +300,39 @@ pub(crate) fn type_check(
         reported_hosted: std::collections::BTreeSet::new(),
         defer_depth: 0,
         place_writes: 0,
-        layout_queries: BTreeMap::new(),
         unsafe_depth: 0,
         ordering: EnumId(0),
         lambda_parameters: None,
+        params: Vec::new(),
+        type_scope: Vec::new(),
+        generic_functions: BTreeMap::new(),
+        function_instances: BTreeMap::new(),
+        struct_instances: BTreeMap::new(),
+        enum_instances: BTreeMap::new(),
+        enum_decls: BTreeMap::new(),
+        pending_structs: Vec::new(),
+        methods_ready: false,
+        pending: Vec::new(),
+        instances: Vec::new(),
+        default_instances: BTreeMap::new(),
+        next_symbol: resolution.symbols.len(),
+        instantiation_depth: 0,
+        instance_depth: 0,
     };
+    // Constants are collected before any type is read, because a type may be
+    // sized by one: `[N]u8` in a field asks for `N` long before the pass that
+    // evaluates the constants in order, and a constant nobody had collected
+    // yet read as no constant at all — an error type with no diagnostic,
+    // which then reached the backend.
+    for (file_idx, file) in program.files.iter().enumerate() {
+        let file_id = FileId(file_idx);
+        for constant in &file.program.constants {
+            let sym_id = checker.resolution.declarations[&(file_id, constant.name.span.start)];
+            checker
+                .constant_decls
+                .insert(sym_id, (file_id, constant.clone()));
+        }
+    }
     // Where each type was declared, aligned with the ids handed out below, so
     // that a later pass finds its syntax without searching for it.
     let mut enum_sites: Vec<(FileId, usize)> = Vec::new();
@@ -239,13 +343,26 @@ pub(crate) fn type_check(
         for (position, declaration) in file.program.enums.iter().enumerate() {
             let id = EnumId(checker.enums.len());
             checker.declare_type(&declaration.name, TypeEntry::Enum(id));
+            let params = checker.declare_params(&declaration.type_params);
+            if !params.is_empty() && declaration.underlying.is_some() {
+                checker.error(
+                    DiagnosticCode::UnsupportedFeature,
+                    declaration.type_params[0].name.span,
+                    "a numbered enum cannot be generic: its variants are worth integers, not values of a type",
+                );
+            }
+            let instance = (!params.is_empty())
+                .then(|| (id, params.iter().map(|param| Type::Param(*param)).collect()));
             checker.enums.push(EnumInfo {
                 name: declaration.name.text.clone(),
                 module: file.module,
                 visibility: declaration.visibility,
                 underlying: None,
                 variants: Vec::new(),
+                params,
+                instance,
             });
+            checker.enum_decls.insert(id, (FileId(index), position));
             enum_sites.push((FileId(index), position));
         }
     }
@@ -283,7 +400,20 @@ pub(crate) fn type_check(
         for (position, declaration) in file.program.structs.iter().enumerate() {
             let id = StructId(checker.structs.len());
             checker.declare_type(&declaration.name, TypeEntry::Struct(id));
+            let params = checker.declare_params(&declaration.type_params);
+            if !params.is_empty() && declaration.layout.is_foreign() {
+                checker.error(
+                    DiagnosticCode::UnsupportedFeature,
+                    declaration.type_params[0].name.span,
+                    "a layout C decides cannot be generic: C has one definition of each type",
+                );
+            }
+            let instance = (!params.is_empty())
+                .then(|| (id, params.iter().map(|param| Type::Param(*param)).collect()));
             checker.structs.push(StructInfo {
+                params,
+                instance,
+                position,
                 name: declaration.name.text.clone(),
                 module: file.module,
                 visibility: declaration.visibility,
@@ -340,6 +470,7 @@ pub(crate) fn type_check(
         checker.file = file;
         checker.module = program.files[file.0].module;
         let declaration = &program.files[file.0].program.structs[position];
+        checker.type_scope = checker.struct_scope(StructId(index));
         let mut fields: Vec<FieldInfo> = Vec::new();
         for field in &declaration.fields {
             let ty = checker.type_ref(&field.type_ref, false);
@@ -367,6 +498,7 @@ pub(crate) fn type_check(
         }
         checker.structs[index].fields = fields;
         checker.structs[index].file = file;
+        checker.type_scope.clear();
         // A type that describes memory somebody else defined may hold only
         // what that other language can see. A managed field would put a
         // reference count inside a layout C decides, where nothing would
@@ -435,6 +567,7 @@ pub(crate) fn type_check(
         checker.file = file;
         checker.module = program.files[file.0].module;
         let declaration = &program.files[file.0].program.enums[position];
+        checker.type_scope = checker.enum_scope(EnumId(index));
         // `enum Protocol: u8`. The values below are then worth something
         // outside the program, which is the whole reason to write one.
         let underlying = declaration.underlying.as_ref().and_then(|reference| {
@@ -549,6 +682,7 @@ pub(crate) fn type_check(
             });
         }
         checker.enums[index].variants = variants;
+        checker.type_scope.clear();
     }
     // `indirect` is written, never inferred, so a marker nothing needs is an
     // error rather than a silent allocation per value.
@@ -620,6 +754,7 @@ pub(crate) fn type_check(
         checker.module = program.files[file.0].module;
         let declaration = &program.files[file.0].program.structs[position];
         let receiver = Type::Struct(StructId(index));
+        checker.type_scope = checker.struct_scope(StructId(index));
         let mut methods: Vec<MethodInfo> = Vec::new();
         for method in &declaration.methods {
             let id = checker.declaration(&method.name);
@@ -700,6 +835,7 @@ pub(crate) fn type_check(
             });
         }
         checker.structs[index].methods = methods;
+        checker.type_scope.clear();
     }
     // Conformance, now that every method signature exists. It is checked
     // against the interface rather than inferred from what happens to match.
@@ -751,6 +887,12 @@ pub(crate) fn type_check(
             implemented.push(interface);
         }
         checker.conformances.insert(id, implemented);
+    }
+    // Every declaration's methods and conformances exist now, so an instance
+    // made while reading a field or a signature can be given its own.
+    checker.methods_ready = true;
+    while let Some(id) = checker.pending_structs.pop() {
+        checker.complete_struct(id);
     }
     // Foreign signatures come first: an ordinary function may call one, and
     // nothing about them depends on the rest of the program.
@@ -806,8 +948,25 @@ pub(crate) fn type_check(
     for (index, file) in program.files.iter().enumerate() {
         checker.file = FileId(index);
         checker.module = file.module;
-        for function in &file.program.functions {
+        for (position, function) in file.program.functions.iter().enumerate() {
             let id = checker.declaration(&function.name);
+            if !function.type_params.is_empty() {
+                let params = checker.declare_params(&function.type_params);
+                checker.refuse_generic_function(function);
+                checker.function_instances.insert(
+                    (id, params.iter().map(|param| Type::Param(*param)).collect()),
+                    id,
+                );
+                checker.generic_functions.insert(
+                    id,
+                    GenericFunction {
+                        params,
+                        file: FileId(index),
+                        position,
+                    },
+                );
+            }
+            checker.type_scope = checker.function_scope(id);
             let mut parameters = Vec::new();
             for parameter in &function.parameters {
                 let ty = checker.type_ref(&parameter.type_ref, false);
@@ -831,6 +990,7 @@ pub(crate) fn type_check(
                     return_type,
                 },
             );
+            checker.type_scope.clear();
         }
     }
     // The entrypoint belongs to the entry file. A module is a library, so a
@@ -868,16 +1028,8 @@ pub(crate) fn type_check(
         ),
         None => {}
     }
-    // Constants, collected across all files and evaluated.
-    for (file_idx, file) in program.files.iter().enumerate() {
-        let file_id = FileId(file_idx);
-        for constant in &file.program.constants {
-            let sym_id = checker.resolution.declarations[&(file_id, constant.name.span.start)];
-            checker
-                .constant_decls
-                .insert(sym_id, (file_id, constant.clone()));
-        }
-    }
+    // Every constant is evaluated by now or evaluated here; one a type
+    // mentioned was already evaluated where it was needed.
     for (file_idx, file) in program.files.iter().enumerate() {
         let file_id = FileId(file_idx);
         for constant in &file.program.constants {
@@ -900,6 +1052,7 @@ pub(crate) fn type_check(
         checker.file = file;
         checker.module = program.files[file.0].module;
         let declaration = &program.files[file.0].program.structs[position];
+        checker.type_scope = checker.struct_scope(StructId(index));
         for field in &declaration.fields {
             let Some(default) = &field.default else {
                 continue;
@@ -914,19 +1067,35 @@ pub(crate) fn type_check(
             checker.expected_context = previous;
             checker.expect_type(expected, found, default.span);
         }
+        checker.type_scope.clear();
     }
     for (index, file) in program.files.iter().enumerate() {
         checker.file = FileId(index);
         checker.module = file.module;
-        for function in file
+        let owners = file
             .program
             .structs
             .iter()
-            .flat_map(|declaration| declaration.methods.iter())
-            .chain(file.program.functions.iter())
-        {
-            checker.return_type =
-                checker.signatures[&checker.declaration(&function.name)].return_type;
+            .enumerate()
+            .flat_map(|(position, declaration)| {
+                declaration
+                    .methods
+                    .iter()
+                    .map(move |method| (Some(position), method))
+            })
+            .chain(
+                file.program
+                    .functions
+                    .iter()
+                    .map(|function| (None, function)),
+            );
+        for (owner, function) in owners {
+            let id = checker.declaration(&function.name);
+            checker.type_scope = match owner {
+                Some(position) => checker.struct_scope(checker.struct_at(FileId(index), position)),
+                None => checker.function_scope(id),
+            };
+            checker.return_type = checker.signatures[&id].return_type;
             let returns = checker.block(&function.body);
             if checker.return_type != Type::Void && checker.return_type != Type::Error && !returns {
                 checker.error(
@@ -940,6 +1109,13 @@ pub(crate) fn type_check(
             }
         }
     }
+    checker.type_scope.clear();
+    // Instances are checked once the program as written is known to be right:
+    // a mistake in a generic body is reported there, once, rather than again
+    // in every instance of it.
+    if checker.diagnostics.is_empty() {
+        checker.check_instances();
+    }
     if !checker.diagnostics.is_empty() {
         return Err(Errors {
             sources: program.sources(),
@@ -950,24 +1126,22 @@ pub(crate) fn type_check(
         structs,
         enums,
         interfaces,
-        interface_wraps,
         function_signatures,
         module_types,
         arrays,
         fixed_arrays,
         options,
         results,
-        expressions,
+        tables,
         symbol_types,
         signatures,
         externs,
-        implicit_wraps,
-        slice_coercions,
-        tag_tests,
         equalities,
-        layout_queries,
         constants,
         statics,
+        instances,
+        default_instances,
+        params,
         ..
     } = checker;
     // A missing entry is a diagnostic above unless the caller allowed one, and
@@ -979,18 +1153,16 @@ pub(crate) fn type_check(
         structs,
         enums,
         interfaces,
-        interface_wraps,
+        tables,
+        instances,
+        default_instances,
+        params: params.into_iter().map(|param| param.name).collect(),
         enum_names,
         arrays,
         fixed_arrays,
         options,
         results,
-        implicit_wraps,
-        slice_coercions,
-        tag_tests,
         equalities,
-        layout_queries,
-        expressions,
         symbol_types,
         signatures,
         externs,
@@ -1013,7 +1185,9 @@ struct Checker<'a> {
     file: FileId,
     module: ModuleId,
     symbol_types: Vec<Type>,
-    expressions: BTreeMap<(FileId, usize, usize), Type>,
+    /// The per-position records of the body being checked: the program's own,
+    /// or an instance's while one is being checked.
+    tables: Tables,
     signatures: BTreeMap<SymbolId, Signature>,
     externs: BTreeMap<SymbolId, ExternInfo>,
     diagnostics: Vec<FileDiagnostic>,
@@ -1036,14 +1210,10 @@ struct Checker<'a> {
     /// Which classes implement which interfaces, and in what order, so the
     /// backend can emit one table per pair that is actually used.
     conformances: BTreeMap<StructId, Vec<InterfaceId>>,
-    /// The interface a class value was used as, by position, so lowering can
-    /// build the pair without re-deriving the context.
-    interface_wraps: BTreeMap<(FileId, usize, usize), Type>,
     /// Interned array types; `Type::Array` indexes this.
     arrays: Vec<ArrayInfo>,
     fixed_arrays: Vec<FixedArrayInfo>,
     fixed_array_types: BTreeMap<(Type, usize), FixedArrayId>,
-    slice_coercions: BTreeMap<(FileId, usize, usize), Type>,
     options: Vec<OptionInfo>,
     option_types: BTreeMap<Type, OptionId>,
     /// Interned `Result` types; `Type::Result` indexes this.
@@ -1054,8 +1224,6 @@ struct Checker<'a> {
     function_signatures: Vec<FunctionTypeInfo>,
     function_types: BTreeMap<FunctionTypeInfo, FunctionTypeId>,
     expected_context: Option<Type>,
-    implicit_wraps: BTreeMap<(FileId, usize, usize), Type>,
-    tag_tests: BTreeMap<(FileId, usize, usize), (usize, bool)>,
     equalities: BTreeSet<Type>,
     constants: BTreeMap<SymbolId, ConstValue>,
     statics: BTreeMap<SymbolId, StaticInfo>,
@@ -1074,9 +1242,6 @@ struct Checker<'a> {
     /// Whether the expression being checked is the target of a plain
     /// assignment, where a union member is being written rather than read.
     place_writes: usize,
-    /// What `size_of` and `offset_of` were asked about, by call position, so
-    /// lowering finds the type and field without re-reading the syntax.
-    layout_queries: BTreeMap<(FileId, usize, usize), (StructId, Option<usize>)>,
     /// How many `unsafe` blocks enclose what is being checked. The pointer
     /// builtins read and write memory the compiler cannot vouch for, so they
     /// are refused wherever this is zero.
@@ -1090,7 +1255,82 @@ struct Checker<'a> {
     /// type it maps to is whatever the lambda answers. Taken by that lambda
     /// alone, so a lambda nested inside it does not see it.
     lambda_parameters: Option<Vec<Type>>,
+    /// Type parameters by `ParamId`.
+    params: Vec<ParamInfo>,
+    /// The type parameters a type written here may name, and what each stands
+    /// for: itself while a generic declaration is checked, a concrete type
+    /// while an instance of it is.
+    type_scope: Vec<(String, Type)>,
+    generic_functions: BTreeMap<SymbolId, GenericFunction>,
+    /// Instances made so far, so each tuple of arguments is made once. A
+    /// declaration is entered under its own parameters, as itself.
+    function_instances: BTreeMap<(SymbolId, Vec<Type>), SymbolId>,
+    struct_instances: BTreeMap<(StructId, Vec<Type>), StructId>,
+    enum_instances: BTreeMap<(EnumId, Vec<Type>), EnumId>,
+    enum_decls: BTreeMap<EnumId, (FileId, usize)>,
+    /// Struct instances made before every method signature existed, which
+    /// are given their methods once they do.
+    pending_structs: Vec<StructId>,
+    methods_ready: bool,
+    /// Instance bodies still to check, in the order they were asked for.
+    pending: Vec<Pending>,
+    instances: Vec<Instance>,
+    default_instances: BTreeMap<StructId, usize>,
+    /// The next id handed to an instance function, past every symbol the
+    /// resolver made.
+    next_symbol: usize,
+    /// How deeply type instances are being made inside one another, and how
+    /// many instance bodies led to the one being checked: both bound a
+    /// program that asks for ever larger instances.
+    instantiation_depth: usize,
+    instance_depth: usize,
 }
+
+#[derive(Debug, Clone)]
+struct ParamInfo {
+    name: String,
+    /// The capability every argument for it must have.
+    bound: Option<Capability>,
+}
+
+/// What a type parameter may require of its arguments (M37).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Capability {
+    /// `==` and `!=`, as an equivalence.
+    Equatable,
+    /// `compare`, answering `Ordering`; implies `Equatable`.
+    Comparable,
+}
+
+impl Capability {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Equatable => "Equatable",
+            Self::Comparable => "Comparable",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GenericFunction {
+    params: Vec<ParamId>,
+    file: FileId,
+    position: usize,
+}
+
+/// An instance body waiting to be checked, with what its type parameters
+/// stand for.
+#[derive(Debug, Clone)]
+struct Pending {
+    id: Option<SymbolId>,
+    kind: InstanceKind,
+    scope: Vec<(String, Type)>,
+    depth: usize,
+}
+
+/// How far instances may lead to one another before the program is taken to
+/// be asking for infinitely many.
+const INSTANCE_LIMIT: usize = 32;
 
 /// One module's type namespace, which is separate from its value scope: a
 /// struct and a function may share a name, as they already could.
@@ -1129,6 +1369,16 @@ pub struct StructInfo {
     /// that file, and its recorded types are keyed by it.
     pub file: FileId,
     pub span: Span,
+    /// The type parameters of a generic declaration; empty otherwise, and
+    /// empty on every instance.
+    pub params: Vec<ParamId>,
+    /// For a generic type, the declaration this is an instance of and its
+    /// type arguments. The declaration is its own instance, over its own
+    /// parameters.
+    pub instance: Option<(StructId, Vec<Type>)>,
+    /// The declaration's position among its file's structs, shared by every
+    /// instance of it.
+    pub position: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -1209,6 +1459,27 @@ impl Checker<'_> {
             file: self.file,
             diagnostic,
         });
+    }
+    /// The `var` in front of a declared name, turned into a `let`: the
+    /// reverse of [`Self::let_into_var`], read back out of the source the same
+    /// way.
+    fn var_into_let(&self, declared: Span) -> Option<Fix> {
+        let text = &self.files[self.file.0].source;
+        let before = text.get(..declared.start)?.trim_end();
+        let keyword = before.strip_suffix("var")?;
+        if keyword
+            .chars()
+            .next_back()
+            .is_some_and(|last| last.is_alphanumeric() || last == '_')
+        {
+            return None;
+        }
+        let start = keyword.len();
+        Some(Fix::new(
+            "declare it with `let`",
+            Span::new(start, start + 3),
+            "let",
+        ))
     }
     /// The `let` in front of a declared name, turned into a `var`.
     ///
@@ -1465,6 +1736,7 @@ impl Checker<'_> {
             ),
             Type::Weak(id) => format!("weak {}", self.structs[id.0].name),
             Type::Interface(id) => self.interfaces[id.0].name.clone(),
+            Type::Param(id) => self.params[id.0].name.clone(),
             Type::Function(id) => {
                 let info = &self.function_signatures[id.0];
                 let parameters: Vec<_> = info
@@ -1556,6 +1828,25 @@ impl Checker<'_> {
     /// A function value may be a parameter or a local and nothing else. If a
     /// managed value could hold one, a closure that captured that value would
     /// close a cycle the reference counter has no way to collect.
+    /// A type argument is stored wherever its parameter is, so it must be a
+    /// type a value can be stored as. Checked where every instance is made —
+    /// a call, a construction, a variant and a written type alike — since a
+    /// function value inside a `Box<T>` field is exactly the escape M8's rule
+    /// forbids.
+    fn storable_arguments(&mut self, arguments: &[Type], span: Span) -> bool {
+        if arguments
+            .iter()
+            .any(|ty| matches!(ty, Type::Void | Type::Function(_)))
+        {
+            self.error(
+                DiagnosticCode::InvalidValueType,
+                span,
+                "a type argument is a type a value can be stored as: not `void`, and not a function",
+            );
+            return false;
+        }
+        true
+    }
     fn reject_stored_function(&mut self, ty: Type, span: Span, position: &str) {
         if matches!(ty, Type::Function(_)) {
             self.error(
@@ -1616,8 +1907,21 @@ impl Checker<'_> {
                     self.result_type(ok_type, err_type)
                 }
             }
-            TypeRef::Weak { class, span } => {
-                let ty = self.type_ref(&TypeRef::Named(class.clone()), false);
+            TypeRef::Weak {
+                class,
+                arguments,
+                span,
+            } => {
+                let named = if arguments.is_empty() {
+                    TypeRef::Named(class.clone())
+                } else {
+                    TypeRef::Applied {
+                        path: class.clone(),
+                        arguments: arguments.clone(),
+                        span: *span,
+                    }
+                };
+                let ty = self.type_ref(&named, false);
                 match ty {
                     Type::Struct(id) if self.structs[id.0].reference => Type::Weak(id),
                     Type::Error => Type::Error,
@@ -1685,7 +1989,23 @@ impl Checker<'_> {
                     "char" if builtin => Type::Char,
                     "string" if builtin => Type::String,
                     "void" if builtin => Type::Void,
+                    other if builtin && self.type_param(other).is_some() => {
+                        self.type_param(other).unwrap_or(Type::Error)
+                    }
                     _ => match self.lookup_type(path, "type") {
+                        Some(TypeEntry::Struct(id)) if !self.structs[id.0].params.is_empty() => {
+                            self.generic_needs_arguments(
+                                &self.structs[id.0].name.clone(),
+                                self.structs[id.0].params.len(),
+                                name.span,
+                            )
+                        }
+                        Some(TypeEntry::Enum(id)) if !self.enums[id.0].params.is_empty() => self
+                            .generic_needs_arguments(
+                                &self.enums[id.0].name.clone(),
+                                self.enums[id.0].params.len(),
+                                name.span,
+                            ),
                         Some(TypeEntry::Struct(id)) => Type::Struct(id),
                         Some(TypeEntry::Enum(id)) => Type::Enum(id),
                         Some(TypeEntry::Interface(id)) => Type::Interface(id),
@@ -1703,6 +2023,48 @@ impl Checker<'_> {
                     Type::Error
                 } else {
                     ty
+                }
+            }
+            TypeRef::Applied {
+                path,
+                arguments,
+                span,
+            } => {
+                let types: Vec<Type> = arguments
+                    .iter()
+                    .map(|argument| self.type_ref(argument, false))
+                    .collect();
+                let entry = self.lookup_type(path, "type");
+                if types.contains(&Type::Error) {
+                    return Type::Error;
+                }
+                let (name, params) = match entry {
+                    Some(TypeEntry::Struct(id)) => (
+                        self.structs[id.0].name.clone(),
+                        self.structs[id.0].params.len(),
+                    ),
+                    Some(TypeEntry::Enum(id)) => {
+                        (self.enums[id.0].name.clone(), self.enums[id.0].params.len())
+                    }
+                    Some(TypeEntry::Interface(id)) => (self.interfaces[id.0].name.clone(), 0),
+                    None => return Type::Error,
+                };
+                if params != types.len() {
+                    let message = if params == 0 {
+                        format!("`{name}` is not generic, so it takes no type arguments")
+                    } else {
+                        format!(
+                            "`{name}` takes {params} type argument(s), found {}",
+                            types.len()
+                        )
+                    };
+                    self.error(DiagnosticCode::ArgumentCount, *span, message);
+                    return Type::Error;
+                }
+                match entry {
+                    Some(TypeEntry::Struct(id)) => self.instantiate_struct(id, types, *span),
+                    Some(TypeEntry::Enum(id)) => self.instantiate_enum(id, types, *span),
+                    _ => Type::Error,
                 }
             }
             TypeRef::Pointer { pointee, span } => {
@@ -1808,21 +2170,46 @@ impl Checker<'_> {
         if expected == found {
             return true;
         }
-        if let Type::Array(expected_array) = expected {
-            let expected_elem = self.arrays[expected_array.0].element;
-            if let Type::FixedArray(found_fixed) = found {
-                let fixed_info = self.fixed_arrays[found_fixed.0];
-                if fixed_info.element == expected_elem {
-                    self.slice_coercions
-                        .insert((self.file, span.start, span.end), expected);
-                    return true;
-                }
+        // A fixed array never becomes a `[]T` by itself. Until this was
+        // decided it widened into one silently, as a view of its storage that
+        // looked like any other array and could be returned, pushed or stored
+        // by a callee long after that storage was gone. The slice that copies
+        // is written instead, and it is one edit away.
+        if let (Type::Array(expected_array), Type::FixedArray(found_fixed)) = (expected, found)
+            && self.arrays[expected_array.0].element == self.fixed_arrays[found_fixed.0].element
+        {
+            let size = self.fixed_arrays[found_fixed.0].size;
+            let diagnostic = Diagnostic {
+                code: DiagnosticCode::TypeMismatch,
+                span,
+                message: format!(
+                    "expected `{}`, found `{}`; a fixed array does not become a dynamic array by itself",
+                    self.type_name(expected),
+                    self.type_name(found)
+                ),
+                help: Some(format!(
+                    "`[0..{size}]` copies the elements into a new `{}`; a function that only reads a fixed array can take `{}` itself",
+                    self.type_name(expected),
+                    self.type_name(found)
+                )),
+                fix: None,
             }
+            .with_fix(Fix::new(
+                format!("copy it with `[0..{size}]`"),
+                Span::new(span.end, span.end),
+                format!("[0..{size}]"),
+            ));
+            self.diagnostics.push(FileDiagnostic {
+                file: self.file,
+                diagnostic,
+            });
+            return false;
         }
         if let Type::Option(id) = expected {
             let element = self.options[id.0].element;
             if element == found {
-                self.implicit_wraps
+                self.tables
+                    .implicit_wraps
                     .insert((self.file, span.start, span.end), expected);
                 return true;
             }
@@ -1831,9 +2218,11 @@ impl Checker<'_> {
             if let Type::Interface(interface) = element
                 && self.conforms(found, interface)
             {
-                self.interface_wraps
+                self.tables
+                    .interface_wraps
                     .insert((self.file, span.start, span.end), element);
-                self.implicit_wraps
+                self.tables
+                    .implicit_wraps
                     .insert((self.file, span.start, span.end), expected);
                 return true;
             }
@@ -1854,7 +2243,8 @@ impl Checker<'_> {
         if let Type::Interface(interface) = expected
             && self.conforms(found, interface)
         {
-            self.interface_wraps
+            self.tables
+                .interface_wraps
                 .insert((self.file, span.start, span.end), expected);
             return true;
         }
@@ -1932,6 +2322,34 @@ impl Checker<'_> {
                         }
                     }
                 };
+                // A function value's environment is a local of the block that
+                // made it. A `let` cannot be given another value, so whatever
+                // it names was made where the `let` is or further out, and
+                // outlives it. A `var` declared outside a block could be given
+                // a lambda made inside it and be called after that block has
+                // ended, reading captures that were gone. So the binding that
+                // names a function value is always a `let`.
+                if variable.mutability == Mutability::Mutable && matches!(ty, Type::Function(_)) {
+                    let mut diagnostic = Diagnostic {
+                        code: DiagnosticCode::InvalidValueType,
+                        span: variable.name.span,
+                        message: format!(
+                            "`{}` holds a function value, which cannot be declared `var`",
+                            variable.name.text
+                        ),
+                        help: Some(
+                            "a function value lives only as long as the block that made it, so a variable that could be given one from an inner block could outlive it; declare it with `let`, or call the function you mean in each branch".into(),
+                        ),
+                        fix: None,
+                    };
+                    if let Some(fix) = self.var_into_let(variable.name.span) {
+                        diagnostic = diagnostic.with_fix(fix);
+                    }
+                    self.diagnostics.push(FileDiagnostic {
+                        file: self.file,
+                        diagnostic,
+                    });
+                }
                 let id = self.declaration(&variable.name);
                 self.symbol_types[id.0] = ty;
                 false
@@ -1955,14 +2373,6 @@ impl Checker<'_> {
                     .unwrap_or(Type::Void);
                 self.expected_context = previous_expected;
                 let span = value.as_ref().map(|e| e.span).unwrap_or(statement.span);
-                if let (Type::Array(_), Type::FixedArray(_)) = (self.return_type, found) {
-                    self.error(
-                        DiagnosticCode::InvalidValueType,
-                        span,
-                        "cannot return a fixed-size array as a dynamic array slice; slice explicitly",
-                    );
-                    return true;
-                }
                 self.expect_type(self.return_type, found, span);
                 true
             }
@@ -1976,6 +2386,17 @@ impl Checker<'_> {
                 self.defer_depth += 1;
                 let returns = self.statement(deferred);
                 self.defer_depth -= 1;
+                // `defer defer x` registers `x` while the block is already
+                // being left, after the moment it would have run, so it
+                // never ran at all. A deferred block may defer inside itself,
+                // since that block has an end of its own.
+                if matches!(deferred.kind, StatementKind::Defer(_)) {
+                    self.error(
+                        DiagnosticCode::UnsupportedSyntax,
+                        deferred.span,
+                        "a `defer` inside a `defer` would be registered after its block had ended, so it would never run",
+                    );
+                }
                 if matches!(
                     deferred.kind,
                     StatementKind::Variable(_) | StatementKind::Constant(_)
@@ -2129,6 +2550,9 @@ impl Checker<'_> {
                         return false;
                     }
                     let mut has_wildcard = false;
+                    // A `bool` has two values, so naming both is as complete
+                    // as a wildcard, the way naming every variant is.
+                    let mut booleans = [false, false];
                     let mut all_arms_return = !arms.is_empty();
                     for arm in arms {
                         match &arm.pattern {
@@ -2140,13 +2564,44 @@ impl Checker<'_> {
                                 let const_ty = self.expression(c_expr);
                                 self.expected_context = None;
                                 self.expect_type(target_ty, const_ty, c_expr.span);
+                                if let ExprKind::Literal(Literal::Boolean(value)) =
+                                    &strip_groups_ref(c_expr).kind
+                                {
+                                    booleans[usize::from(*value)] = true;
+                                }
                             }
                             MatchPattern::Range {
                                 start,
                                 end,
-                                inclusive: _,
+                                inclusive,
                                 span,
                             } => {
+                                // A range that holds nothing is a mistake in
+                                // the pattern, most often its ends swapped,
+                                // and an arm that can never match says so.
+                                let bound = |expr: &Expr| match &strip_groups_ref(expr).kind {
+                                    ExprKind::Literal(Literal::Char(c)) => Some(*c as i128),
+                                    _ => self.const_int_value(expr),
+                                };
+                                if let (Some(low), Some(high)) = (bound(start), bound(end))
+                                    && (high < low || (high == low && !*inclusive))
+                                {
+                                    let written = self.span_text(*span);
+                                    self.error(
+                                        DiagnosticCode::IntegerRange,
+                                        *span,
+                                        format!(
+                                            "the range `{written}` holds no value, so this arm can never match"
+                                        ),
+                                    );
+                                    if let Some(last) = self.diagnostics.last_mut() {
+                                        last.diagnostic.help = Some(if high < low {
+                                            "a range runs from its lower end to its upper end; write the smaller value first".into()
+                                        } else {
+                                            "`a..a` is empty because the end is excluded; write the value itself, or `a..=a`".into()
+                                        });
+                                    }
+                                }
                                 if target_ty.int_type().is_none() && target_ty != Type::Char {
                                     self.error(
                                         DiagnosticCode::InvalidOperator,
@@ -2216,14 +2671,20 @@ impl Checker<'_> {
                         let returns = self.block(&arm.body);
                         all_arms_return &= returns;
                     }
-                    if !has_wildcard {
+                    let exhaustive =
+                        has_wildcard || (target_ty == Type::Bool && booleans == [true, true]);
+                    if !exhaustive {
                         self.error(
                             DiagnosticCode::NonExhaustiveMatch,
                             statement.span,
-                            "non-exhaustive match: value matches require a wildcard `_` arm",
+                            if target_ty == Type::Bool {
+                                "non-exhaustive match: cover both `true` and `false`, or add a wildcard `_` arm"
+                            } else {
+                                "non-exhaustive match: value matches require a wildcard `_` arm"
+                            },
                         );
                     }
-                    return all_arms_return && has_wildcard;
+                    return all_arms_return && exhaustive;
                 }
                 // A `Result` matches like a two-variant enum, so the arm and
                 // exhaustiveness checking below is shared rather than repeated.
@@ -2657,11 +3118,19 @@ impl Checker<'_> {
             _ => false,
         }
     }
-    fn construction(&mut self, path: &Path, fields: &[FieldInit], new: bool) -> Type {
+    fn construction(
+        &mut self,
+        path: &Path,
+        type_arguments: &[TypeRef],
+        fields: &[FieldInit],
+        new: bool,
+        expected: Option<Type>,
+        span: Span,
+    ) -> Type {
         let name = &path.name;
         let noun = if new { "class" } else { "struct" };
         let entry = self.lookup_type(path, noun);
-        let Some(TypeEntry::Struct(id)) = entry else {
+        let Some(TypeEntry::Struct(template)) = entry else {
             if let Some(TypeEntry::Enum(_)) = entry {
                 self.error(
                     DiagnosticCode::UnknownType,
@@ -2672,6 +3141,19 @@ impl Checker<'_> {
             // Still check the values so their own errors are reported.
             for field in fields {
                 self.expression(&field.value);
+            }
+            return Type::Error;
+        };
+        // A generic type's instance comes from its arguments, its context or
+        // its fields; inferring it from the fields checks their values, which
+        // are then not checked again.
+        let (id, checked) =
+            self.construction_instance(template, type_arguments, fields, expected, span);
+        let Some(id) = id else {
+            if checked.is_none() {
+                for field in fields {
+                    self.expression(&field.value);
+                }
             }
             return Type::Error;
         };
@@ -2688,14 +3170,20 @@ impl Checker<'_> {
             );
         }
         let mut initialized = vec![false; self.structs[id.0].fields.len()];
-        for field in fields {
+        for (position, field) in fields.iter().enumerate() {
             let declared_field = self.structs[id.0]
                 .field(&field.name.text)
                 .map(|(index, declared)| (index, declared.clone()));
-            let previous = self.expected_context;
-            self.expected_context = declared_field.as_ref().map(|(_, d)| d.ty);
-            let found = self.expression(&field.value);
-            self.expected_context = previous;
+            let found = match &checked {
+                Some(found) => found[position],
+                None => {
+                    let previous = self.expected_context;
+                    self.expected_context = declared_field.as_ref().map(|(_, d)| d.ty);
+                    let found = self.expression(&field.value);
+                    self.expected_context = previous;
+                    found
+                }
+            };
             let Some((index, declared)) = declared_field else {
                 let message = format!(
                     "`{}` has no field `{}`",
@@ -2717,14 +3205,6 @@ impl Checker<'_> {
                 );
             }
             initialized[index] = true;
-            if let (Type::Array(_), Type::FixedArray(_)) = (declared.ty, found) {
-                self.error(
-                    DiagnosticCode::InvalidValueType,
-                    field.value.span,
-                    "cannot initialize a field expecting a dynamic array with a fixed-size array; slice explicitly",
-                );
-                continue;
-            }
             self.expect_type(declared.ty, found, field.value.span);
         }
         // A union is one piece of memory, so exactly one member is written and
@@ -2787,13 +3267,15 @@ impl Checker<'_> {
     }
     /// The type already recorded for an expression this pass has walked.
     fn expression_type_of(&self, expr: &Expr) -> Option<Type> {
-        self.expressions
+        self.tables
+            .expressions
             .get(&(self.file, expr.span.start, expr.span.end))
             .copied()
     }
     fn record(&mut self, expr: &Expr, ty: Type) -> Type {
         self.reject_hosted_type(ty, expr.span);
-        self.expressions
+        self.tables
+            .expressions
             .insert((self.file, expr.span.start, expr.span.end), ty);
         ty
     }
@@ -2886,7 +3368,7 @@ impl Checker<'_> {
         let expected = self.expected_context.take();
         let ty = match &expr.kind {
             ExprKind::ImplicitVariant(name) => match self.implicit_enum(name, expected) {
-                Some(enum_id) => self.variant_value(enum_id, name),
+                Some(enum_id) => self.variant_value(enum_id, name, expected),
                 None => Type::Error,
             },
             ExprKind::Literal(literal) => match literal {
@@ -2984,6 +3466,9 @@ impl Checker<'_> {
                             ),
                         );
                         Type::Error
+                    }
+                    SymbolKind::Function if self.generic_functions.contains_key(&id) => {
+                        self.generic_value(id, expr.span, expected)
                     }
                     SymbolKind::Function => match self.signatures.get(&id) {
                         // A declared function is a function value like any
@@ -3199,16 +3684,6 @@ impl Checker<'_> {
                 self.expected_context = Some(target_type);
                 let value_type = self.expression(value);
                 self.expected_context = previous_expected;
-                if let (Type::Array(_), Type::FixedArray(_)) = (target_type, value_type)
-                    && self.through_reference(target)
-                {
-                    self.error(
-                        DiagnosticCode::InvalidValueType,
-                        value.span,
-                        "cannot assign a fixed-size array to a class field expecting a dynamic array; slice explicitly",
-                    );
-                    return target_type;
-                }
                 self.expect_type(target_type, value_type, value.span);
                 if *op != AssignmentOp::Assign {
                     let binary = match op {
@@ -3250,7 +3725,7 @@ impl Checker<'_> {
                     };
                 }
                 if let Some(enum_id) = self.enum_prefix(object) {
-                    self.variant_value(enum_id, member)
+                    self.variant_value(enum_id, member, expected)
                 } else {
                     let object_type = self.expression(object);
                     match object_type {
@@ -3614,8 +4089,14 @@ impl Checker<'_> {
                 }
             }
             ExprKind::Lambda(lambda) => self.lambda(lambda, expected),
-            ExprKind::StructLiteral { name, fields } => self.construction(name, fields, false),
-            ExprKind::New { name, fields } => self.construction(name, fields, true),
+            ExprKind::StructLiteral { name, fields } => {
+                self.construction(name, &[], fields, false, expected, expr.span)
+            }
+            ExprKind::New {
+                name,
+                type_arguments,
+                fields,
+            } => self.construction(name, type_arguments, fields, true, expected, expr.span),
             ExprKind::Interpolation(parts) => {
                 for part in parts {
                     let InterpolationPart::Value(value) = part else {
@@ -3811,7 +4292,7 @@ impl Checker<'_> {
         // comparison needs nothing else to be comparable.
         for (side, on_left) in [(right, false), (left, true)] {
             if let Some(index) = self.unit_variant(side, left_type) {
-                self.tag_tests.insert(
+                self.tables.tag_tests.insert(
                     (self.file, expr.span.start, expr.span.end),
                     (index, on_left),
                 );
@@ -3899,6 +4380,13 @@ impl Checker<'_> {
         };
         match ty {
             Type::Int(_) | Type::Float | Type::Bool | Type::Char | Type::String => None,
+            // Inside a generic body nothing is known about a parameter, so
+            // nothing is known about comparing one.
+            Type::Param(id) if self.params[id.0].bound.is_some() => None,
+            Type::Param(_) => Some((
+                String::new(),
+                "it is a type parameter that does not require `Equatable`, so nothing is known about comparing its values".into(),
+            )),
             Type::Struct(id) => {
                 let info = &self.structs[id.0];
                 if info.reference {
@@ -4142,6 +4630,11 @@ impl Checker<'_> {
         let ordering = Type::Enum(self.ordering);
         let comparison = match (receiver, member.text.as_str()) {
             (Type::Int(_) | Type::Char | Type::Bool | Type::String, "compare") => Some(receiver),
+            (Type::Param(id), "compare")
+                if self.params[id.0].bound == Some(Capability::Comparable) =>
+            {
+                Some(receiver)
+            }
             (Type::Float, "total_compare") => Some(Type::Float),
             (Type::Enum(id), "then") if id == self.ordering => Some(ordering),
             _ => None,
@@ -4166,6 +4659,25 @@ impl Checker<'_> {
             }
             self.expected_context = previous;
             return ordering;
+        }
+        if let Type::Param(id) = receiver
+            && member.text == "compare"
+        {
+            let param = self.params[id.0].name.clone();
+            self.error(
+                DiagnosticCode::UnknownName,
+                member.span,
+                format!("`{param}` has no `compare`: it is a type parameter that does not require `Comparable`"),
+            );
+            if let Some(last) = self.diagnostics.last_mut() {
+                last.diagnostic.help = Some(format!(
+                    "declare it `{param}: Comparable` to compare its values, which every integer, `char`, `bool` and `string` can be"
+                ));
+            }
+            for argument in arguments {
+                self.expression(argument);
+            }
+            return Type::Error;
         }
         if receiver == Type::Float && member.text == "compare" {
             self.error(
@@ -4444,7 +4956,24 @@ impl Checker<'_> {
     }
     /// `Enum.Variant` or `.Variant` written as a value: a unit variant, since
     /// one with a payload has to be called.
-    fn variant_value(&mut self, enum_id: EnumId, member: &Name) -> Type {
+    fn variant_value(&mut self, enum_id: EnumId, member: &Name, expected: Option<Type>) -> Type {
+        // A variant of a generic enum is a value of the instance its context
+        // expects; with no payload there is nothing else to say which.
+        let enum_id = match self.expected_instance_enum(enum_id, expected) {
+            Some(id) => id,
+            None => {
+                let name = self.enums[enum_id.0].name.clone();
+                self.error(
+                    DiagnosticCode::UnknownType,
+                    member.span,
+                    format!(
+                        "nothing here says which `{name}` `{}` is; give it a type, as in `let value: {name}<...> = ...`",
+                        member.text
+                    ),
+                );
+                return Type::Error;
+            }
+        };
         let enum_info = &self.enums[enum_id.0];
         if let Some(variant_index) = enum_info.find_variant(&member.text) {
             let variant = &enum_info.variants[variant_index];
@@ -4482,7 +5011,14 @@ impl Checker<'_> {
         member: &Name,
         arguments: &[Expr],
         span: Span,
+        expected: Option<Type>,
     ) -> Type {
+        // A generic enum's instance is the one the context expects, or the one
+        // the payload's own type fixes.
+        let enum_id = match self.expected_instance_enum(enum_id, expected) {
+            Some(id) => id,
+            None => return self.generic_variant_call(enum_id, member, arguments, span),
+        };
         let enum_info = &self.enums[enum_id.0];
         if let Some(variant_index) = enum_info.find_variant(&member.text) {
             let variant = &enum_info.variants[variant_index];
@@ -4556,11 +5092,11 @@ impl Checker<'_> {
                 }
                 return Type::Error;
             };
-            return self.variant_call(enum_id, name, arguments, span);
+            return self.variant_call(enum_id, name, arguments, span, expected);
         }
         if let ExprKind::Member { object, member } = &direct.kind {
             if let Some(enum_id) = self.enum_prefix(object) {
-                return self.variant_call(enum_id, member, arguments, span);
+                return self.variant_call(enum_id, member, arguments, span, expected);
             }
             // `geometry.area(p)` is one name in two halves: a direct call to
             // an exported function, not a method on a value called `geometry`.
@@ -5007,6 +5543,9 @@ impl Checker<'_> {
                 }
                 Type::Void
             }
+            Some((id, SymbolKind::Function)) if self.generic_functions.contains_key(&id) => {
+                self.generic_call(id, arguments, span, expected)
+            }
             Some((id, SymbolKind::Function)) => {
                 let signature = self.signatures[&id].clone();
                 if arguments.len() != signature.parameters.len() {
@@ -5078,12 +5617,14 @@ impl Checker<'_> {
 }
 
 impl Checker<'_> {
-    /// Every value stored inline in `ty`: the type itself, or what an `Option`
-    /// or `Result` keeps inside it. Sizing and cycle detection have to see
-    /// through both, because neither adds indirection.
+    /// Every value stored inline in `ty`: the type itself, or what an
+    /// `Option`, a `Result` or a fixed array keeps inside it. Sizing and cycle
+    /// detection have to see through all three, because none adds
+    /// indirection: `[2]Node` inside `Node` is two whole nodes.
     fn inline_payloads(&self, ty: Type) -> Vec<Type> {
         match ty {
             Type::Option(id) => self.inline_payloads(self.options[id.0].element),
+            Type::FixedArray(id) => self.inline_payloads(self.fixed_arrays[id.0].element),
             Type::Result(id) => {
                 let info = self.results[id.0];
                 let mut payloads = self.inline_payloads(info.ok);
@@ -5421,7 +5962,8 @@ impl Checker<'_> {
                 Some(index)
             }
         };
-        self.layout_queries
+        self.tables
+            .layout_queries
             .insert((self.file, span.start, span.end), (id, field));
         Type::Int(IntType::USize)
     }
@@ -5513,6 +6055,7 @@ impl Checker<'_> {
         match &target.kind {
             ExprKind::Member { object, .. } => {
                 let ty = self
+                    .tables
                     .expressions
                     .get(&(self.file, object.span.start, object.span.end))
                     .copied();
@@ -5521,6 +6064,7 @@ impl Checker<'_> {
             }
             ExprKind::Index { object, .. } => {
                 let ty = self
+                    .tables
                     .expressions
                     .get(&(self.file, object.span.start, object.span.end))
                     .copied();
@@ -6641,6 +7185,8 @@ fn ordering_enum() -> EnumInfo {
         module: ROOT,
         visibility: Visibility::Public,
         underlying: Some(IntType::I8),
+        params: Vec::new(),
+        instance: None,
         variants: vec![
             variant("Less", -1),
             variant("Equal", 0),
@@ -6658,6 +7204,8 @@ fn result_as_enum(info: ResultInfo) -> EnumInfo {
         module: ROOT,
         visibility: Visibility::Public,
         underlying: None,
+        params: Vec::new(),
+        instance: None,
         variants: vec![
             VariantInfo {
                 name: "Ok".into(),
@@ -6711,3 +7259,1380 @@ fn assignment_root(target: &Expr) -> Option<&Name> {
 
 #[cfg(test)]
 mod tests;
+
+/// Type parameters: declaring them, naming them, and making instances.
+impl Checker<'_> {
+    /// `<T, U>` on a declaration, as fresh parameters. Two with one name in a
+    /// list is a mistake; each declaration's parameters are its own.
+    fn declare_params(&mut self, written: &[crate::ast::TypeParam]) -> Vec<ParamId> {
+        let mut declared: Vec<ParamId> = Vec::new();
+        for param in written {
+            let name = &param.name;
+            let bound = param
+                .bound
+                .as_ref()
+                .and_then(|bound| self.capability(bound));
+            if declared
+                .iter()
+                .any(|param| self.params[param.0].name == name.text)
+            {
+                self.error(
+                    DiagnosticCode::DuplicateDeclaration,
+                    name.span,
+                    format!("type parameter `{}` is already declared", name.text),
+                );
+                continue;
+            }
+            let id = ParamId(self.params.len());
+            self.params.push(ParamInfo {
+                name: name.text.clone(),
+                bound,
+            });
+            declared.push(id);
+        }
+        declared
+    }
+    /// `Equatable` or `Comparable` after a type parameter's name. The words
+    /// are capabilities in this position only, so a program may still declare
+    /// a type with either name.
+    fn capability(&mut self, bound: &Name) -> Option<Capability> {
+        match bound.text.as_str() {
+            "Equatable" => Some(Capability::Equatable),
+            "Comparable" => Some(Capability::Comparable),
+            other => {
+                let message = if other == "Ordering" {
+                    "`Ordering` is the enum `compare` answers, not a capability; a parameter whose values can be compared is `T: Comparable`".to_owned()
+                } else {
+                    format!(
+                        "`{other}` is not a capability; a type parameter may require `Equatable` or `Comparable`"
+                    )
+                };
+                self.error(DiagnosticCode::UnknownType, bound.span, message);
+                None
+            }
+        }
+    }
+    /// Whether a type holds a `float` anywhere a structural `==` would reach.
+    fn holds_float(&self, ty: Type) -> bool {
+        match ty {
+            Type::Float => true,
+            Type::Struct(id) if !self.structs[id.0].reference => self.structs[id.0]
+                .fields
+                .iter()
+                .any(|field| self.holds_float(field.ty)),
+            Type::Enum(id) => self.enums[id.0]
+                .variants
+                .iter()
+                .filter_map(|variant| variant.payload)
+                .any(|payload| self.holds_float(payload)),
+            Type::FixedArray(id) => self.holds_float(self.fixed_arrays[id.0].element),
+            Type::Option(id) => self.holds_float(self.options[id.0].element),
+            Type::Result(id) => {
+                self.holds_float(self.results[id.0].ok) || self.holds_float(self.results[id.0].err)
+            }
+            _ => false,
+        }
+    }
+    /// Whether a type has a capability, and why not when it does not. This is
+    /// the one answer to the question, for a type argument and for what a
+    /// body may do alike: a body that passes for its parameters then cannot
+    /// fail for an instance.
+    fn satisfies(&self, ty: Type, capability: Capability) -> Result<(), String> {
+        if let Type::Param(id) = ty {
+            return match (self.params[id.0].bound, capability) {
+                (Some(Capability::Comparable), _)
+                | (Some(Capability::Equatable), Capability::Equatable) => Ok(()),
+                _ => Err(format!(
+                    "the type parameter `{}` does not require `{}`",
+                    self.params[id.0].name,
+                    capability.name()
+                )),
+            };
+        }
+        match capability {
+            Capability::Comparable => match ty {
+                Type::Int(_) | Type::Char | Type::Bool | Type::String | Type::Error => Ok(()),
+                Type::Float => Err(
+                    "`float` has `total_compare`, not `compare`: `<` leaves NaN unordered"
+                        .to_owned(),
+                ),
+                _ => {
+                    Err("only the integers, `char`, `bool` and `string` have `compare`".to_owned())
+                }
+            },
+            Capability::Equatable => {
+                if let Some((path, reason)) = self.not_comparable(ty) {
+                    return Err(if path.is_empty() {
+                        reason
+                    } else {
+                        format!("`{path}` cannot be compared: {reason}")
+                    });
+                }
+                if self.holds_float(ty) {
+                    return Err(
+                        "it holds a `float`, and NaN is unequal to itself, so `==` on it is not an equivalence".to_owned(),
+                    );
+                }
+                Ok(())
+            }
+        }
+    }
+    /// Check each argument of an instance against its parameter's capability,
+    /// reporting at `spans[i]` (or the last span given) where one falls short.
+    fn check_bounds(
+        &mut self,
+        owner: &str,
+        params: &[ParamId],
+        arguments: &[Type],
+        spans: &[Span],
+    ) -> bool {
+        let mut ok = true;
+        for (index, (param, argument)) in params.iter().zip(arguments).enumerate() {
+            let Some(capability) = self.params[param.0].bound else {
+                continue;
+            };
+            if let Err(reason) = self.satisfies(*argument, capability) {
+                let span = spans
+                    .get(index)
+                    .or(spans.last())
+                    .copied()
+                    .unwrap_or_default();
+                let rendered = self.type_name(*argument);
+                let param_name = self.params[param.0].name.clone();
+                self.error(
+                    DiagnosticCode::TypeMismatch,
+                    span,
+                    format!(
+                        "`{owner}` requires `{param_name}` to be `{}`, and `{rendered}` is not: {reason}",
+                        capability.name()
+                    ),
+                );
+                ok = false;
+            }
+        }
+        ok
+    }
+    /// What each of a declaration's parameter names stands for: the
+    /// arguments of an instance, or the parameters themselves.
+    fn bind(&self, params: &[ParamId], arguments: &[Type]) -> Vec<(String, Type)> {
+        params
+            .iter()
+            .zip(arguments)
+            .map(|(param, ty)| (self.params[param.0].name.clone(), *ty))
+            .collect()
+    }
+    fn own_scope(&self, params: &[ParamId]) -> Vec<(String, Type)> {
+        let own: Vec<Type> = params.iter().map(|param| Type::Param(*param)).collect();
+        self.bind(params, &own)
+    }
+    fn struct_scope(&self, id: StructId) -> Vec<(String, Type)> {
+        match &self.structs[id.0].instance {
+            Some((template, arguments)) => self.bind(&self.structs[template.0].params, arguments),
+            None => Vec::new(),
+        }
+    }
+    fn enum_scope(&self, id: EnumId) -> Vec<(String, Type)> {
+        match &self.enums[id.0].instance {
+            Some((template, arguments)) => self.bind(&self.enums[template.0].params, arguments),
+            None => Vec::new(),
+        }
+    }
+    fn function_scope(&self, id: SymbolId) -> Vec<(String, Type)> {
+        match self.generic_functions.get(&id) {
+            Some(generic) => self.own_scope(&generic.params),
+            None => Vec::new(),
+        }
+    }
+    /// The struct declared at `position` among a file's structs.
+    fn struct_at(&self, file: FileId, position: usize) -> StructId {
+        let index = self
+            .structs
+            .iter()
+            .enumerate()
+            .position(|(index, info)| {
+                info.file == file
+                    && info.position == position
+                    && info
+                        .instance
+                        .as_ref()
+                        .is_none_or(|(template, _)| template.0 == index)
+            })
+            .expect("every declared struct has an entry");
+        StructId(index)
+    }
+    /// The type a parameter name stands for here, if it is one.
+    fn type_param(&self, name: &str) -> Option<Type> {
+        self.type_scope
+            .iter()
+            .rev()
+            .find(|(param, _)| param == name)
+            .map(|(_, ty)| *ty)
+    }
+    /// The declarations that cannot be generic, each for its own reason.
+    fn refuse_generic_function(&mut self, function: &crate::ast::FunctionDecl) {
+        let span = function.type_params[0].name.span;
+        let reason = if function.name.text == "main" && self.file == ROOT_FILE {
+            Some("`main` is where the program starts, and it takes no type parameters")
+        } else if function.name.text.starts_with("test_") {
+            Some("a test is called with nothing, so it takes no type parameters")
+        } else if self.mode.is_freestanding() && function.visibility == Visibility::Public {
+            Some(
+                "a freestanding program exports a `pub func` under the name it was written with, and a generic one has a name per instance",
+            )
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            self.error(DiagnosticCode::UnsupportedFeature, span, reason);
+        }
+    }
+    /// A fresh id for a function that only exists as an instance.
+    fn synthetic_symbol(&mut self) -> SymbolId {
+        let id = SymbolId(self.next_symbol);
+        self.next_symbol += 1;
+        if self.symbol_types.len() <= id.0 {
+            self.symbol_types.resize(id.0 + 1, Type::Error);
+        }
+        id
+    }
+    /// Whether a type mentions a type parameter anywhere, and so is not one
+    /// the backend can be given.
+    fn mentions_param(&self, ty: Type) -> bool {
+        match ty {
+            Type::Param(_) => true,
+            Type::Array(id) => self.mentions_param(self.arrays[id.0].element),
+            Type::FixedArray(id) => self.mentions_param(self.fixed_arrays[id.0].element),
+            Type::Option(id) => self.mentions_param(self.options[id.0].element),
+            Type::Result(id) => {
+                self.mentions_param(self.results[id.0].ok)
+                    || self.mentions_param(self.results[id.0].err)
+            }
+            Type::Function(id) => {
+                let info = &self.function_signatures[id.0];
+                info.parameters.iter().any(|ty| self.mentions_param(*ty))
+                    || self.mentions_param(info.return_type)
+            }
+            Type::Struct(id) | Type::Weak(id) => self.structs[id.0]
+                .instance
+                .as_ref()
+                .is_some_and(|(_, arguments)| arguments.iter().any(|ty| self.mentions_param(*ty))),
+            Type::Enum(id) => self.enums[id.0]
+                .instance
+                .as_ref()
+                .is_some_and(|(_, arguments)| arguments.iter().any(|ty| self.mentions_param(*ty))),
+            _ => false,
+        }
+    }
+    /// `Pair<int, string>`, for a message.
+    fn instance_name(&self, base: &str, arguments: &[Type]) -> String {
+        let rendered: Vec<String> = arguments.iter().map(|ty| self.type_name(*ty)).collect();
+        format!("{base}<{}>", rendered.join(", "))
+    }
+    /// Enter a declaration's file and module with its parameters bound,
+    /// answering what to restore.
+    fn enter_declaration(
+        &mut self,
+        file: FileId,
+        scope: Vec<(String, Type)>,
+    ) -> (FileId, ModuleId, Vec<(String, Type)>) {
+        let saved = (
+            self.file,
+            self.module,
+            std::mem::replace(&mut self.type_scope, scope),
+        );
+        self.file = file;
+        self.module = self.files[file.0].module;
+        saved
+    }
+    fn leave_declaration(&mut self, saved: (FileId, ModuleId, Vec<(String, Type)>)) {
+        self.file = saved.0;
+        self.module = saved.1;
+        self.type_scope = saved.2;
+    }
+    /// The instance of a generic struct or class for these arguments, made
+    /// the first time it is asked for. Its fields are read again from the
+    /// declaration with the parameters bound, so an instance's field types are
+    /// exactly what the declaration says they are for those arguments.
+    fn instantiate_struct(&mut self, template: StructId, arguments: Vec<Type>, span: Span) -> Type {
+        if let Some((own, own_arguments)) = &self.structs[template.0].instance
+            && *own == template
+            && *own_arguments == arguments
+        {
+            return Type::Struct(template);
+        }
+        if let Some(&id) = self.struct_instances.get(&(template, arguments.clone())) {
+            return Type::Struct(id);
+        }
+        if !self.storable_arguments(&arguments, span) {
+            return Type::Error;
+        }
+        let owner = self.structs[template.0].name.clone();
+        let params = self.structs[template.0].params.clone();
+        if !self.check_bounds(&owner, &params, &arguments, &[span]) {
+            return Type::Error;
+        }
+        if self.instantiation_depth >= INSTANCE_LIMIT {
+            let name = self.structs[template.0].name.clone();
+            self.error(
+                DiagnosticCode::UnsupportedFeature,
+                span,
+                format!(
+                    "making an instance of `{name}` asks for a larger one, without end: a type cannot contain itself at an ever larger type"
+                ),
+            );
+            return Type::Error;
+        }
+        let id = StructId(self.structs.len());
+        let mut info = self.structs[template.0].clone();
+        info.name = self.instance_name(&self.structs[template.0].name, &arguments);
+        info.params = Vec::new();
+        info.instance = Some((template, arguments.clone()));
+        info.fields = Vec::new();
+        info.methods = Vec::new();
+        self.structs.push(info);
+        self.struct_instances
+            .insert((template, arguments.clone()), id);
+        let file = self.structs[template.0].file;
+        let position = self.structs[template.0].position;
+        let files = self.files;
+        let declaration = &files[file.0].program.structs[position];
+        let scope = self.bind(&self.structs[template.0].params.clone(), &arguments);
+        let saved = self.enter_declaration(file, scope);
+        self.instantiation_depth += 1;
+        // Read from the declaration rather than from the declaration's own
+        // field list, which may not exist yet: `struct B { a: A<B> }` makes
+        // `A<B>` while `A`'s fields are still to be read. A name declared
+        // twice is reported there, and its first field is the one kept.
+        let mut fields: Vec<FieldInfo> = Vec::new();
+        for written in &declaration.fields {
+            if fields.iter().any(|field| field.name == written.name.text) {
+                continue;
+            }
+            let ty = self.type_ref(&written.type_ref, false);
+            fields.push(FieldInfo {
+                name: written.name.text.clone(),
+                ty,
+                default: written.default.clone(),
+                span: written.span,
+            });
+        }
+        self.instantiation_depth -= 1;
+        self.leave_declaration(saved);
+        self.structs[id.0].fields = fields;
+        if self.methods_ready {
+            self.complete_struct(id);
+        } else {
+            self.pending_structs.push(id);
+        }
+        Type::Struct(id)
+    }
+    /// An instance's methods, conformances and bodies, once its declaration's
+    /// own exist.
+    fn complete_struct(&mut self, id: StructId) {
+        let Some((template, arguments)) = self.structs[id.0].instance.clone() else {
+            return;
+        };
+        let file = self.structs[template.0].file;
+        let position = self.structs[template.0].position;
+        let files = self.files;
+        let declaration = &files[file.0].program.structs[position];
+        let scope = self.bind(&self.structs[template.0].params.clone(), &arguments);
+        let saved = self.enter_declaration(file, scope.clone());
+        let template_methods = self.structs[template.0].methods.clone();
+        let mut methods = Vec::new();
+        let mut bodies = Vec::new();
+        for method in template_methods {
+            let Some((index, written)) = declaration
+                .methods
+                .iter()
+                .enumerate()
+                .find(|(_, written)| written.name.text == method.name)
+            else {
+                continue;
+            };
+            let instance = self.synthetic_symbol();
+            let parameters = written
+                .parameters
+                .iter()
+                .map(|parameter| self.type_ref(&parameter.type_ref, false))
+                .collect();
+            let return_type = written
+                .return_type
+                .as_ref()
+                .map(|reference| self.type_ref(reference, true))
+                .unwrap_or(Type::Void);
+            self.signatures.insert(
+                instance,
+                Signature {
+                    parameters,
+                    return_type,
+                },
+            );
+            methods.push(MethodInfo {
+                id: instance,
+                ..method
+            });
+            bodies.push((instance, index));
+        }
+        self.leave_declaration(saved);
+        self.structs[id.0].methods = methods;
+        // Conformance was checked on the declaration, against signatures in
+        // terms of its parameters; an interface mentions none, so every
+        // instance conforms the same way.
+        if let Some(implemented) = self.conformances.get(&template).cloned() {
+            self.conformances.insert(id, implemented);
+        }
+        if arguments.iter().any(|ty| self.mentions_param(*ty)) {
+            return;
+        }
+        let depth = self.instance_depth + 1;
+        for (instance, method) in bodies {
+            self.pending.push(Pending {
+                id: Some(instance),
+                kind: InstanceKind::Method {
+                    file,
+                    declaration: position,
+                    method,
+                    receiver: id,
+                },
+                scope: scope.clone(),
+                depth,
+            });
+        }
+        if declaration
+            .fields
+            .iter()
+            .any(|field| field.default.is_some())
+        {
+            self.pending.push(Pending {
+                id: None,
+                kind: InstanceKind::Defaults {
+                    file,
+                    declaration: position,
+                    receiver: id,
+                },
+                scope,
+                depth,
+            });
+        }
+    }
+    /// The instance of a generic enum for these arguments.
+    fn instantiate_enum(&mut self, template: EnumId, arguments: Vec<Type>, span: Span) -> Type {
+        if let Some((own, own_arguments)) = &self.enums[template.0].instance
+            && *own == template
+            && *own_arguments == arguments
+        {
+            return Type::Enum(template);
+        }
+        if let Some(&id) = self.enum_instances.get(&(template, arguments.clone())) {
+            return Type::Enum(id);
+        }
+        if !self.storable_arguments(&arguments, span) {
+            return Type::Error;
+        }
+        let owner = self.enums[template.0].name.clone();
+        let params = self.enums[template.0].params.clone();
+        if !self.check_bounds(&owner, &params, &arguments, &[span]) {
+            return Type::Error;
+        }
+        if self.instantiation_depth >= INSTANCE_LIMIT {
+            let name = self.enums[template.0].name.clone();
+            self.error(
+                DiagnosticCode::UnsupportedFeature,
+                span,
+                format!(
+                    "making an instance of `{name}` asks for a larger one, without end: a type cannot contain itself at an ever larger type"
+                ),
+            );
+            return Type::Error;
+        }
+        let id = EnumId(self.enums.len());
+        let mut info = self.enums[template.0].clone();
+        info.name = self.instance_name(&self.enums[template.0].name, &arguments);
+        info.params = Vec::new();
+        info.instance = Some((template, arguments.clone()));
+        self.enums.push(info);
+        self.enum_instances
+            .insert((template, arguments.clone()), id);
+        let Some(&(file, position)) = self.enum_decls.get(&template) else {
+            return Type::Enum(id);
+        };
+        let files = self.files;
+        let declaration = &files[file.0].program.enums[position];
+        let scope = self.bind(&self.enums[template.0].params.clone(), &arguments);
+        let saved = self.enter_declaration(file, scope);
+        self.instantiation_depth += 1;
+        let mut variants = self.enums[template.0].variants.clone();
+        for variant in &mut variants {
+            if let Some(written) = declaration
+                .variants
+                .iter()
+                .find(|written| written.name.text == variant.name)
+                && let Some(payload) = &written.payload
+            {
+                variant.payload = Some(self.type_ref(payload, false));
+            }
+        }
+        self.instantiation_depth -= 1;
+        self.leave_declaration(saved);
+        self.enums[id.0].variants = variants;
+        Type::Enum(id)
+    }
+    /// The instance of a generic function for these arguments: its own
+    /// signature, read from the declaration with the parameters bound, and its
+    /// body queued to be checked the same way.
+    fn instantiate_function(
+        &mut self,
+        template: SymbolId,
+        arguments: Vec<Type>,
+        span: Span,
+    ) -> Option<SymbolId> {
+        if let Some(&id) = self.function_instances.get(&(template, arguments.clone())) {
+            return Some(id);
+        }
+        if !self.storable_arguments(&arguments, span) {
+            return None;
+        }
+        let generic = self.generic_functions[&template].clone();
+        let concrete = !arguments.iter().any(|ty| self.mentions_param(*ty));
+        if concrete && self.instance_depth >= INSTANCE_LIMIT {
+            let name = self.resolution.symbols[template.0].name.clone();
+            self.error(
+                DiagnosticCode::UnsupportedFeature,
+                span,
+                format!(
+                    "`{name}` calls itself at an ever larger type, so it would need infinitely many instances"
+                ),
+            );
+            return None;
+        }
+        let id = self.synthetic_symbol();
+        self.function_instances
+            .insert((template, arguments.clone()), id);
+        let files = self.files;
+        let declaration = &files[generic.file.0].program.functions[generic.position];
+        let scope = self.bind(&generic.params, &arguments);
+        let saved = self.enter_declaration(generic.file, scope.clone());
+        let parameters = declaration
+            .parameters
+            .iter()
+            .map(|parameter| self.type_ref(&parameter.type_ref, false))
+            .collect();
+        let return_type = declaration
+            .return_type
+            .as_ref()
+            .map(|reference| self.type_ref(reference, true))
+            .unwrap_or(Type::Void);
+        self.leave_declaration(saved);
+        self.signatures.insert(
+            id,
+            Signature {
+                parameters,
+                return_type,
+            },
+        );
+        if concrete {
+            self.pending.push(Pending {
+                id: Some(id),
+                kind: InstanceKind::Function {
+                    file: generic.file,
+                    position: generic.position,
+                },
+                scope,
+                depth: self.instance_depth + 1,
+            });
+        }
+        Some(id)
+    }
+    /// Check every instance body asked for, including those the checking of
+    /// one asks for in turn.
+    fn check_instances(&mut self) {
+        let mut next = 0;
+        while next < self.pending.len() {
+            let pending = self.pending[next].clone();
+            next += 1;
+            let snapshot = self.symbol_types.clone();
+            let outer_tables = std::mem::take(&mut self.tables);
+            let outer_depth = std::mem::replace(&mut self.instance_depth, pending.depth);
+            let file = match pending.kind {
+                InstanceKind::Function { file, .. }
+                | InstanceKind::Method { file, .. }
+                | InstanceKind::Defaults { file, .. } => file,
+            };
+            let saved = self.enter_declaration(file, pending.scope.clone());
+            let files = self.files;
+            match pending.kind {
+                InstanceKind::Function { position, .. } => {
+                    let declaration = &files[file.0].program.functions[position];
+                    let id = pending.id.expect("a function instance has an id");
+                    let signature = self.signatures[&id].clone();
+                    for (parameter, ty) in declaration.parameters.iter().zip(&signature.parameters)
+                    {
+                        let param = self.declaration(&parameter.name);
+                        self.symbol_types[param.0] = *ty;
+                    }
+                    self.return_type = signature.return_type;
+                    self.block(&declaration.body);
+                }
+                InstanceKind::Method {
+                    declaration,
+                    method,
+                    receiver,
+                    ..
+                } => {
+                    let written = &files[file.0].program.structs[declaration].methods[method];
+                    let id = pending.id.expect("a method instance has an id");
+                    let signature = self.signatures[&id].clone();
+                    for (parameter, ty) in written.parameters.iter().zip(&signature.parameters) {
+                        let param = self.declaration(&parameter.name);
+                        self.symbol_types[param.0] = *ty;
+                    }
+                    if let Some(&this) = self
+                        .resolution
+                        .declarations
+                        .get(&(file, written.body.span.start))
+                    {
+                        self.symbol_types[this.0] = Type::Struct(receiver);
+                    }
+                    self.return_type = signature.return_type;
+                    self.block(&written.body);
+                }
+                InstanceKind::Defaults {
+                    declaration,
+                    receiver,
+                    ..
+                } => {
+                    let written = &files[file.0].program.structs[declaration];
+                    for field in &written.fields {
+                        let Some(default) = &field.default else {
+                            continue;
+                        };
+                        let Some((_, declared)) = self.structs[receiver.0].field(&field.name.text)
+                        else {
+                            continue;
+                        };
+                        let expected = declared.ty;
+                        self.expected_context = Some(expected);
+                        let found = self.expression(default);
+                        self.expected_context = None;
+                        self.expect_type(expected, found, default.span);
+                    }
+                }
+            }
+            self.leave_declaration(saved);
+            self.instance_depth = outer_depth;
+            let mut tables = std::mem::replace(&mut self.tables, outer_tables);
+            // What this body gave its bindings, where that differs from the
+            // program as written; the program's own types are put back.
+            for (index, before) in snapshot.iter().enumerate() {
+                if self.symbol_types[index] != *before {
+                    tables
+                        .symbols
+                        .insert(SymbolId(index), self.symbol_types[index]);
+                    self.symbol_types[index] = *before;
+                }
+            }
+            if let InstanceKind::Defaults { receiver, .. } = pending.kind {
+                self.default_instances
+                    .insert(receiver, self.instances.len());
+            }
+            self.instances.push(Instance {
+                id: pending.id,
+                kind: pending.kind,
+                tables,
+            });
+        }
+    }
+    /// A type with what is known of its parameters put in. A parameter not
+    /// yet known stays itself.
+    fn substitute(&mut self, ty: Type, bindings: &BTreeMap<ParamId, Type>) -> Type {
+        if !self.mentions_param(ty) {
+            return ty;
+        }
+        match ty {
+            Type::Param(param) => bindings.get(&param).copied().unwrap_or(ty),
+            Type::Array(id) => {
+                let element = self.arrays[id.0].element;
+                let element = self.substitute(element, bindings);
+                self.array_type(element)
+            }
+            Type::FixedArray(id) => {
+                let FixedArrayInfo { element, size } = self.fixed_arrays[id.0];
+                let element = self.substitute(element, bindings);
+                self.fixed_array_type(element, size)
+            }
+            Type::Option(id) => {
+                let element = self.options[id.0].element;
+                let element = self.substitute(element, bindings);
+                self.option_type(element)
+            }
+            Type::Result(id) => {
+                let info = self.results[id.0];
+                let ok = self.substitute(info.ok, bindings);
+                let err = self.substitute(info.err, bindings);
+                self.result_type(ok, err)
+            }
+            Type::Function(id) => {
+                let info = self.function_signatures[id.0].clone();
+                let parameters = info
+                    .parameters
+                    .iter()
+                    .map(|ty| self.substitute(*ty, bindings))
+                    .collect();
+                let result = self.substitute(info.return_type, bindings);
+                self.function_type(parameters, result)
+            }
+            Type::Struct(id) | Type::Weak(id) => {
+                let Some((template, arguments)) = self.structs[id.0].instance.clone() else {
+                    return ty;
+                };
+                let arguments = arguments
+                    .iter()
+                    .map(|ty| self.substitute(*ty, bindings))
+                    .collect();
+                let span = self.structs[template.0].span;
+                match (ty, self.instantiate_struct(template, arguments, span)) {
+                    (Type::Weak(_), Type::Struct(instance)) => Type::Weak(instance),
+                    (_, made) => made,
+                }
+            }
+            Type::Enum(id) => {
+                let Some((template, arguments)) = self.enums[id.0].instance.clone() else {
+                    return ty;
+                };
+                let arguments = arguments
+                    .iter()
+                    .map(|ty| self.substitute(*ty, bindings))
+                    .collect();
+                self.instantiate_enum(template, arguments, Span::new(0, 0))
+            }
+            other => other,
+        }
+    }
+    /// Match a type written in terms of `params` against a type a value has,
+    /// fixing the parameters it reaches. Only an exact structural match fixes
+    /// anything: nothing looks through an implicit wrap or an interface, which
+    /// apply after every parameter is known. A parameter fixed twice to two
+    /// types is the one failure, and answers both.
+    fn unify(
+        &self,
+        pattern: Type,
+        found: Type,
+        params: &[ParamId],
+        bindings: &mut BTreeMap<ParamId, Type>,
+    ) -> Result<(), (ParamId, Type, Type)> {
+        match (pattern, found) {
+            (_, Type::Error) => Ok(()),
+            (Type::Param(param), _) if params.contains(&param) => match bindings.get(&param) {
+                Some(&known) if known != found => Err((param, known, found)),
+                Some(_) => Ok(()),
+                None => {
+                    bindings.insert(param, found);
+                    Ok(())
+                }
+            },
+            (Type::Array(a), Type::Array(b)) => self.unify(
+                self.arrays[a.0].element,
+                self.arrays[b.0].element,
+                params,
+                bindings,
+            ),
+            (Type::FixedArray(a), Type::FixedArray(b))
+                if self.fixed_arrays[a.0].size == self.fixed_arrays[b.0].size =>
+            {
+                self.unify(
+                    self.fixed_arrays[a.0].element,
+                    self.fixed_arrays[b.0].element,
+                    params,
+                    bindings,
+                )
+            }
+            (Type::Option(a), Type::Option(b)) => self.unify(
+                self.options[a.0].element,
+                self.options[b.0].element,
+                params,
+                bindings,
+            ),
+            (Type::Result(a), Type::Result(b)) => {
+                let (a, b) = (self.results[a.0], self.results[b.0]);
+                self.unify(a.ok, b.ok, params, bindings)?;
+                self.unify(a.err, b.err, params, bindings)
+            }
+            (Type::Function(a), Type::Function(b)) => {
+                let (a, b) = (
+                    &self.function_signatures[a.0],
+                    &self.function_signatures[b.0],
+                );
+                if a.parameters.len() != b.parameters.len() {
+                    return Ok(());
+                }
+                for (x, y) in a.parameters.iter().zip(&b.parameters) {
+                    self.unify(*x, *y, params, bindings)?;
+                }
+                self.unify(a.return_type, b.return_type, params, bindings)
+            }
+            (Type::Struct(a), Type::Struct(b)) | (Type::Weak(a), Type::Weak(b)) => {
+                match (&self.structs[a.0].instance, &self.structs[b.0].instance) {
+                    (Some((x, xs)), Some((y, ys))) if x == y => {
+                        for (x, y) in xs.iter().zip(ys) {
+                            self.unify(*x, *y, params, bindings)?;
+                        }
+                        Ok(())
+                    }
+                    _ => Ok(()),
+                }
+            }
+            (Type::Enum(a), Type::Enum(b)) => {
+                match (&self.enums[a.0].instance, &self.enums[b.0].instance) {
+                    (Some((x, xs)), Some((y, ys))) if x == y => {
+                        for (x, y) in xs.iter().zip(ys) {
+                            self.unify(*x, *y, params, bindings)?;
+                        }
+                        Ok(())
+                    }
+                    _ => Ok(()),
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+    /// Report two different types fixed for one parameter.
+    fn report_disagreement(
+        &mut self,
+        span: Span,
+        what: &str,
+        (param, first, second): (ParamId, Type, Type),
+    ) {
+        let name = self.params[param.0].name.clone();
+        let first = self.type_name(first);
+        let second = self.type_name(second);
+        self.error(
+            DiagnosticCode::TypeMismatch,
+            span,
+            format!(
+                "`{name}` would be both `{first}` and `{second}` in this {what}; one type parameter is one type"
+            ),
+        );
+    }
+    /// Whether an argument has no type until its context gives it one: a
+    /// literal integer, an array literal, `None`, a `.Variant`, `Ok`, `Err`,
+    /// an empty `weak()`, `ptr_from`, a lambda. Those are checked after every
+    /// parameter the other arguments fix is known.
+    fn takes_context(&self, expr: &Expr) -> bool {
+        match &strip_groups_ref(expr).kind {
+            ExprKind::Literal(Literal::Integer(_))
+            | ExprKind::Array(_)
+            | ExprKind::ArrayRepeat { .. }
+            | ExprKind::ImplicitVariant(_)
+            | ExprKind::Lambda(_)
+            | ExprKind::Weak(None) => true,
+            ExprKind::Unary {
+                op: UnaryOp::Negative,
+                operand,
+                ..
+            } => matches!(
+                &strip_groups_ref(operand).kind,
+                ExprKind::Literal(Literal::Integer(_))
+            ),
+            ExprKind::Identifier(name) => self
+                .resolution
+                .references
+                .get(&(self.file, name.span.start))
+                .is_some_and(|id| {
+                    matches!(
+                        self.resolution.symbols[id.0].kind,
+                        SymbolKind::Builtin(Builtin::None)
+                    )
+                }),
+            ExprKind::Call { callee, .. } => {
+                let callee = strip_groups_ref(callee);
+                if matches!(callee.kind, ExprKind::ImplicitVariant(_)) {
+                    return true;
+                }
+                let ExprKind::Identifier(name) = &callee.kind else {
+                    return false;
+                };
+                self.resolution
+                    .references
+                    .get(&(self.file, name.span.start))
+                    .is_some_and(|id| {
+                        matches!(
+                            self.resolution.symbols[id.0].kind,
+                            SymbolKind::Builtin(Builtin::Ok | Builtin::Err | Builtin::PtrFrom)
+                        )
+                    })
+            }
+            _ => false,
+        }
+    }
+    /// A call to a generic function: its type arguments inferred, its
+    /// instance made, and its arguments checked against that instance.
+    ///
+    /// 1. Every argument with a type of its own fixes what it matches exactly.
+    /// 2. The type the call is expected to have fixes what is left, against
+    ///    the declared result.
+    /// 3. The arguments that take their type from context are checked last,
+    ///    against parameter types with everything known put in.
+    fn generic_call(
+        &mut self,
+        template: SymbolId,
+        arguments: &[Expr],
+        span: Span,
+        expected: Option<Type>,
+    ) -> Type {
+        let generic = self.generic_functions[&template].clone();
+        let signature = self.signatures[&template].clone();
+        let name = self.resolution.symbols[template.0].name.clone();
+        if arguments.len() != signature.parameters.len() {
+            self.error(
+                DiagnosticCode::ArgumentCount,
+                span,
+                format!(
+                    "function expects {} arguments, found {}",
+                    signature.parameters.len(),
+                    arguments.len()
+                ),
+            );
+            for argument in arguments {
+                self.expression(argument);
+            }
+            return Type::Error;
+        }
+        let mut bindings = BTreeMap::new();
+        // Where each parameter was fixed, so a type argument that lacks a
+        // capability is reported at the argument that chose it.
+        let mut fixed_at: BTreeMap<ParamId, Span> = BTreeMap::new();
+        let mut found = vec![Type::Error; arguments.len()];
+        let mut failed = false;
+        let previous = self.expected_context;
+        for (index, argument) in arguments.iter().enumerate() {
+            if self.takes_context(argument) {
+                continue;
+            }
+            let declared = signature.parameters[index];
+            self.expected_context = (!self.mentions_param(declared)).then_some(declared);
+            found[index] = self.expression(argument);
+            if let Err(disagreement) =
+                self.unify(declared, found[index], &generic.params, &mut bindings)
+            {
+                self.report_disagreement(argument.span, "call", disagreement);
+                failed = true;
+            }
+            for param in bindings.keys() {
+                fixed_at.entry(*param).or_insert(argument.span);
+            }
+        }
+        if let Some(expected) = expected
+            && generic
+                .params
+                .iter()
+                .any(|param| !bindings.contains_key(param))
+        {
+            // The context only fills in; it never disagrees, since what the
+            // call answers may still be wrapped into what is expected.
+            let mut from_context = bindings.clone();
+            if self
+                .unify(
+                    signature.return_type,
+                    expected,
+                    &generic.params,
+                    &mut from_context,
+                )
+                .is_ok()
+            {
+                bindings = from_context;
+                for param in bindings.keys() {
+                    fixed_at.entry(*param).or_insert(span);
+                }
+            }
+        }
+        for (index, argument) in arguments.iter().enumerate() {
+            if !self.takes_context(argument) {
+                continue;
+            }
+            let declared = self.substitute(signature.parameters[index], &bindings);
+            if !self.mentions_param(declared) {
+                self.expected_context = Some(declared);
+                found[index] = self.expression(argument);
+                continue;
+            }
+            // A lambda whose parameters are known answers the rest, as the
+            // function `map_err` is given answers its new error type.
+            if let ExprKind::Lambda(_) = &strip_groups_ref(argument).kind
+                && let Type::Function(function) = declared
+            {
+                let wanted = self.function_signatures[function.0].parameters.clone();
+                if !wanted.iter().any(|ty| self.mentions_param(*ty)) {
+                    self.expected_context = None;
+                    self.lambda_parameters = Some(wanted);
+                    found[index] = self.expression(argument);
+                    self.lambda_parameters = None;
+                    if let Err(disagreement) =
+                        self.unify(declared, found[index], &generic.params, &mut bindings)
+                    {
+                        self.report_disagreement(argument.span, "call", disagreement);
+                        failed = true;
+                    }
+                    for param in bindings.keys() {
+                        fixed_at.entry(*param).or_insert(argument.span);
+                    }
+                    continue;
+                }
+            }
+            self.expected_context = None;
+            found[index] = self.expression(argument);
+            if let Err(disagreement) =
+                self.unify(declared, found[index], &generic.params, &mut bindings)
+            {
+                self.report_disagreement(argument.span, "call", disagreement);
+                failed = true;
+            }
+            for param in bindings.keys() {
+                fixed_at.entry(*param).or_insert(argument.span);
+            }
+        }
+        self.expected_context = previous;
+        if failed {
+            return Type::Error;
+        }
+        let mut type_arguments = Vec::new();
+        for param in &generic.params {
+            match bindings.get(param) {
+                Some(ty) => type_arguments.push(*ty),
+                None => {
+                    // An argument already wrong says why nothing was fixed.
+                    if found.contains(&Type::Error) {
+                        return Type::Error;
+                    }
+                    let param_name = self.params[param.0].name.clone();
+                    self.diagnostics.push(FileDiagnostic {
+                        file: self.file,
+                        diagnostic: Diagnostic {
+                            code: DiagnosticCode::UnknownType,
+                            span,
+                            message: format!(
+                                "nothing in this call to `{name}` says what `{param_name}` is"
+                            ),
+                            help: Some(
+                                "give the result a type, as in `let value: Type = ...`, or pass an argument whose type fixes it".into(),
+                            ),
+                            fix: None,
+                        },
+                    });
+                    return Type::Error;
+                }
+            }
+        }
+        if !self.storable_arguments(&type_arguments, span) {
+            return Type::Error;
+        }
+        let spans: Vec<Span> = generic
+            .params
+            .iter()
+            .map(|param| fixed_at.get(param).copied().unwrap_or(span))
+            .collect();
+        if !self.check_bounds(&name, &generic.params, &type_arguments, &spans) {
+            return Type::Error;
+        }
+        let Some(instance) = self.instantiate_function(template, type_arguments, span) else {
+            return Type::Error;
+        };
+        let signature = self.signatures[&instance].clone();
+        for ((argument, declared), found) in arguments.iter().zip(&signature.parameters).zip(&found)
+        {
+            if *found != Type::Error {
+                self.expect_type(*declared, *found, argument.span);
+            }
+        }
+        self.tables
+            .calls
+            .insert((self.file, span.start, span.end), instance);
+        signature.return_type
+    }
+    /// A generic function named where a function value is expected: the
+    /// expected function type has to fix every parameter.
+    fn generic_value(&mut self, template: SymbolId, span: Span, expected: Option<Type>) -> Type {
+        let generic = self.generic_functions[&template].clone();
+        let signature = self.signatures[&template].clone();
+        let name = self.resolution.symbols[template.0].name.clone();
+        let pattern = self.function_type(signature.parameters.clone(), signature.return_type);
+        let mut bindings = BTreeMap::new();
+        if let Some(expected @ Type::Function(_)) = expected {
+            let _ = self.unify(pattern, expected, &generic.params, &mut bindings);
+        }
+        let Some(type_arguments) = generic
+            .params
+            .iter()
+            .map(|param| bindings.get(param).copied())
+            .collect::<Option<Vec<Type>>>()
+        else {
+            self.error(
+                DiagnosticCode::UnknownType,
+                span,
+                format!(
+                    "`{name}` is generic, and nothing here says which instance of it is meant; name it where a function type is expected"
+                ),
+            );
+            return Type::Error;
+        };
+        if !self.check_bounds(&name, &generic.params, &type_arguments, &[span]) {
+            return Type::Error;
+        }
+        let Some(instance) = self.instantiate_function(template, type_arguments, span) else {
+            return Type::Error;
+        };
+        self.tables
+            .calls
+            .insert((self.file, span.start, span.end), instance);
+        let signature = self.signatures[&instance].clone();
+        self.function_type(signature.parameters, signature.return_type)
+    }
+    /// A generic type named with no arguments, where a type is written.
+    fn generic_needs_arguments(&mut self, name: &str, count: usize, span: Span) -> Type {
+        let placeholders = vec!["..."; count].join(", ");
+        self.error(
+            DiagnosticCode::ArgumentCount,
+            span,
+            format!("`{name}` is generic, so a type names its arguments: `{name}<{placeholders}>`"),
+        );
+        Type::Error
+    }
+    /// `Tree.Node(value)` with nothing around it saying which `Tree`: the
+    /// payload's own type fixes the arguments.
+    fn generic_variant_call(
+        &mut self,
+        template: EnumId,
+        member: &Name,
+        arguments: &[Expr],
+        span: Span,
+    ) -> Type {
+        let name = self.enums[template.0].name.clone();
+        let params = self.enums[template.0].params.clone();
+        let Some(index) = self.enums[template.0].find_variant(&member.text) else {
+            return self.variant_call_unknown(template, member, arguments);
+        };
+        let Some(payload) = self.enums[template.0].variants[index].payload else {
+            for argument in arguments {
+                self.expression(argument);
+            }
+            self.error(
+                DiagnosticCode::ArgumentCount,
+                span,
+                format!("variant `{}` does not take arguments", member.text),
+            );
+            return Type::Error;
+        };
+        if arguments.len() != 1 {
+            for argument in arguments {
+                self.expression(argument);
+            }
+            self.error(
+                DiagnosticCode::ArgumentCount,
+                span,
+                format!(
+                    "variant `{}` expects 1 argument, found {}",
+                    member.text,
+                    arguments.len()
+                ),
+            );
+            return Type::Error;
+        }
+        self.expected_context = (!self.mentions_param(payload)).then_some(payload);
+        let found = self.expression(&arguments[0]);
+        self.expected_context = None;
+        let mut bindings = BTreeMap::new();
+        if let Err(disagreement) = self.unify(payload, found, &params, &mut bindings) {
+            self.report_disagreement(arguments[0].span, "variant", disagreement);
+            return Type::Error;
+        }
+        let Some(type_arguments) = params
+            .iter()
+            .map(|param| bindings.get(param).copied())
+            .collect::<Option<Vec<Type>>>()
+        else {
+            if found != Type::Error {
+                self.error(
+                    DiagnosticCode::UnknownType,
+                    span,
+                    format!(
+                        "nothing here says which `{name}` `{}` is; give it a type, as in `let value: {name}<...> = ...`",
+                        member.text
+                    ),
+                );
+            }
+            return Type::Error;
+        };
+        let Type::Enum(instance) = self.instantiate_enum(template, type_arguments, span) else {
+            return Type::Error;
+        };
+        if let Some(declared) = self.enums[instance.0].variants[index].payload {
+            self.expect_type(declared, found, arguments[0].span);
+        }
+        Type::Enum(instance)
+    }
+    fn variant_call_unknown(&mut self, enum_id: EnumId, member: &Name, arguments: &[Expr]) -> Type {
+        self.error(
+            DiagnosticCode::UnknownName,
+            member.span,
+            format!(
+                "enum `{}` has no variant `{}`",
+                self.enums[enum_id.0].name, member.text
+            ),
+        );
+        for arg in arguments {
+            self.expression(arg);
+        }
+        Type::Error
+    }
+    /// The instance of a generic enum a variant written as `Tree.Leaf` means:
+    /// the one the context expects. An ordinary enum is itself.
+    fn expected_instance_enum(&self, template: EnumId, expected: Option<Type>) -> Option<EnumId> {
+        if self.enums[template.0].params.is_empty() {
+            return Some(template);
+        }
+        let candidate = match expected {
+            Some(Type::Enum(id)) => Some(id),
+            Some(Type::Option(id)) => match self.options[id.0].element {
+                Type::Enum(id) => Some(id),
+                _ => None,
+            },
+            _ => None,
+        }?;
+        match &self.enums[candidate.0].instance {
+            Some((of, _)) if *of == template => Some(candidate),
+            _ => None,
+        }
+    }
+    /// The instance of a generic struct or class a construction builds,
+    /// inferred from the type its context expects or from its field values,
+    /// whose types it answers so they are checked once. An ordinary struct is
+    /// itself, with nothing checked yet.
+    fn construction_instance(
+        &mut self,
+        template: StructId,
+        type_arguments: &[TypeRef],
+        fields: &[FieldInit],
+        expected: Option<Type>,
+        span: Span,
+    ) -> (Option<StructId>, Option<Vec<Type>>) {
+        let params = self.structs[template.0].params.clone();
+        let name = self.structs[template.0].name.clone();
+        if params.is_empty() {
+            if let Some(first) = type_arguments.first() {
+                self.error(
+                    DiagnosticCode::UnsupportedFeature,
+                    first.span(),
+                    format!("`{name}` is not generic, so it takes no type arguments"),
+                );
+            }
+            return (Some(template), None);
+        }
+        if !type_arguments.is_empty() {
+            let arguments: Vec<Type> = type_arguments
+                .iter()
+                .map(|argument| self.type_ref(argument, false))
+                .collect();
+            if arguments.contains(&Type::Error) {
+                return (None, None);
+            }
+            if arguments.len() != params.len() {
+                self.error(
+                    DiagnosticCode::ArgumentCount,
+                    span,
+                    format!(
+                        "`{name}` takes {} type argument(s), found {}",
+                        params.len(),
+                        arguments.len()
+                    ),
+                );
+                return (None, None);
+            }
+            return match self.instantiate_struct(template, arguments, span) {
+                Type::Struct(id) => (Some(id), None),
+                _ => (None, None),
+            };
+        }
+        let from_context = match expected {
+            Some(Type::Struct(id)) => Some(id),
+            Some(Type::Option(id)) => match self.options[id.0].element {
+                Type::Struct(id) => Some(id),
+                _ => None,
+            },
+            _ => None,
+        }
+        .filter(|id| {
+            self.structs[id.0]
+                .instance
+                .as_ref()
+                .is_some_and(|(of, _)| *of == template)
+        });
+        if let Some(id) = from_context {
+            return (Some(id), None);
+        }
+        // From the values written: each one with a type of its own fixes what
+        // its field's type matches, and the rest are checked against what that
+        // makes known.
+        let declared: Vec<Option<Type>> = fields
+            .iter()
+            .map(|field| {
+                self.structs[template.0]
+                    .field(&field.name.text)
+                    .map(|(_, d)| d.ty)
+            })
+            .collect();
+        let mut bindings = BTreeMap::new();
+        let mut found = vec![Type::Error; fields.len()];
+        let mut failed = false;
+        for pass in [false, true] {
+            for (index, field) in fields.iter().enumerate() {
+                if self.takes_context(&field.value) != pass {
+                    continue;
+                }
+                let context = match declared[index] {
+                    Some(ty) => {
+                        let ty = self.substitute(ty, &bindings);
+                        (!self.mentions_param(ty)).then_some(ty)
+                    }
+                    None => None,
+                };
+                self.expected_context = context;
+                found[index] = self.expression(&field.value);
+                self.expected_context = None;
+                if let Some(ty) = declared[index]
+                    && let Err(disagreement) = self.unify(ty, found[index], &params, &mut bindings)
+                {
+                    self.report_disagreement(field.value.span, "construction", disagreement);
+                    failed = true;
+                }
+            }
+        }
+        if failed {
+            return (None, Some(found));
+        }
+        let arguments: Option<Vec<Type>> = params
+            .iter()
+            .map(|param| bindings.get(param).copied())
+            .collect();
+        let Some(arguments) = arguments else {
+            if !found.contains(&Type::Error) {
+                self.diagnostics.push(FileDiagnostic {
+                    file: self.file,
+                    diagnostic: Diagnostic {
+                        code: DiagnosticCode::UnknownType,
+                        span,
+                        message: format!("nothing in this construction says what `{name}`'s type arguments are"),
+                        help: Some(format!(
+                            "give it a type, as in `let value: {name}<...> = ...`, or write them after `new`"
+                        )),
+                        fix: None,
+                    },
+                });
+            }
+            return (None, Some(found));
+        };
+        match self.instantiate_struct(template, arguments, span) {
+            Type::Struct(id) => (Some(id), Some(found)),
+            _ => (None, Some(found)),
+        }
+    }
+}

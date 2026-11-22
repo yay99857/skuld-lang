@@ -1,0 +1,62 @@
+// A capability carries through the types built over a parameter: an
+// `Option<T>`, a `Result<T, E>`, a generic struct and a generic enum are
+// `Equatable` inside a body exactly when their parts are, so `==` on them
+// compiles once and holds in every instance. A comparator over `T: Comparable`
+// sorts in place, and a body that needs no capability takes a `float`.
+
+struct Pair<A, B> {
+    first: A
+    second: B
+}
+
+enum Slot<T> {
+    Empty,
+    Full(T),
+}
+
+func same_option<T: Equatable>(a: Option<T>, b: Option<T>) -> bool {
+    return a == b
+}
+
+func same_pair<T: Equatable>(a: Pair<T, int>, b: Pair<T, int>) -> bool {
+    return a == b
+}
+
+func same_slot<T: Comparable>(a: Slot<T>, b: Slot<T>) -> bool {
+    return a == b
+}
+
+func same_result<T: Equatable, E: Equatable>(a: Result<T, E>, b: Result<T, E>) -> bool {
+    return a == b
+}
+
+func sort_all<T: Comparable>(items: []T) {
+    items.sort((a, b) => a.compare(b))
+}
+
+func describe<T>(slot: Slot<T>) -> string {
+    match slot {
+        Empty: return "empty"
+        Full(value): return "full"
+    }
+}
+
+func main() {
+    print(same_option(Some(3), Some(3)))
+    let nothing: Option<string> = None
+    print(same_option(Some("a" + ""), nothing))
+    print(same_pair(Pair { first: "x" + "", second: 1 }, Pair { first: "x", second: 1 }))
+    print(same_slot(Slot.Full(2), .Full(2)))
+    let empty: Slot<int> = .Empty
+    print(same_slot(empty, .Full(2)))
+    let ok: Result<int, string> = Ok(1)
+    let err: Result<int, string> = Err("e" + "")
+    print(same_result(ok, err))
+    let xs = [3, 1, 2]
+    sort_all(xs)
+    print(xs[0])
+    let ws = ["b" + "", "a"]
+    sort_all(ws)
+    print(ws[0])
+    print(describe(Slot.Full(1.5)))
+}

@@ -333,7 +333,7 @@ behind it. The obligations above are checkable, and a persona is not.
   literals, comparisons, string interpolation `${c}`, `print(c)`, explicit conversions to/from
   `u8`/`u32`/integers trapping on invalid Unicode code points, and pattern matching on char literals
   and ranges. `extern "C"` declarations use `usize`/`isize` for `size_t`/`ssize_t`, and
-  `portability.rs` runs 100% of pass fixtures on i686 with no exceptions left (`TARGET_SPECIFIC = &[]`).
+  `portability.rs` runs every pass fixture on i686 with no exceptions left (`TARGET_SPECIFIC = &[]`).
   M22 (fixed-size arrays and stack buffers) is complete: the type `[N]T` with
   value semantics, `N` a constant expression greater than zero, the repeated
   literal `[element; count]` and list literals inferred against an expected
@@ -343,13 +343,32 @@ behind it. The obligations above are checkable, and a persona is not.
   A fixed array lives inline: on the stack, inside a struct, and — the
   milestone's open question, decided yes — inline in a class allocation, with
   the same rules the object's other fields have, which is sound because a fixed
-  array is not itself reference counted. `[N]T` widens into `[]T` without
-  allocating, as an immortal stack view; a view is read-only, and a mutating
-  call on one traps through `*capacity == 0` in `skuld_array_reserve`, so a
-  stack buffer is never reallocated onto the heap behind a reference. Escape is
-  a diagnostic rather than a trap wherever the compiler can see it: returning a
-  local fixed array as a `[]T`, or storing one into a heap array field, is
-  rejected. The closing marker is met — `std/fs`'s `read_file` and `std/net`'s
+  array is not itself reference counted. `[N]T` does **not** become a `[]T` by
+  itself; `arr[0..N]` copies one out, and the mismatch carries that edit as a
+  fix. M22 had shipped an implicit widening into an "immortal stack view" — a
+  `[]T` header on the stack pointing at the fixed array — with three escape
+  routes refused by name. It was reversed after an audit ran it under
+  AddressSanitizer: a view returned through a `let`, through `identity(xs)`,
+  pushed into an array, stored by a callee, taken from a class that then died
+  or made from a temporary all read a dead frame, and `view[0] = 99` wrote
+  through a `let`, because the "read-only" trap fired only on growth. No call
+  site can see that a callee stores its parameter, so per-site checks could
+  not be completed. What was weighed: a view that copies (an allocation behind
+  no syntax, against "no implicit coercions"); a distinct non-escaping slice
+  type, which is C#'s `ref struct`/`Span<T>` and Swift's `~Escapable` `Span`
+  (SE-0446, SE-0447) — sound, but it splits every `[]T` API and is a milestone
+  of its own, which this decision does not foreclose; Go's escape analysis
+  (`cmd/compile/internal/escape`), which moves an escaping array to a GC heap
+  Skuld does not have. The cost, named by the review that tried to break it: a
+  fixed array has no length-generic borrow left — a function takes `[N]T` by
+  value for one `N`, or a copied `[]T` — and no in-place `sort`. Nothing in the
+  repository used the view outside the two fixtures written to show it, and
+  `std/` read its stack buffers through `ptr()` and `buffer[0..n]`, since a
+  view always spans all of `N` and so never described a partly filled buffer.
+  Not closed by this: `ptr(arr)` on a fixed local is legal outside `unsafe`
+  and a function may return it, which is the foreign boundary's documented
+  contract for every `ptr()` — valid only while its operand is alive — and not
+  a fixed-array rule. The closing marker is met — `std/fs`'s `read_file` and `std/net`'s
   `receive_all` and `open` read into stack buffers instead of pushing byte by
   byte, and `tests/bench/strings.skuld` formats integers through one.
   M23 (pointers that can be read) is complete. `unsafe { ... }` is a statement
@@ -533,6 +552,35 @@ behind it. The obligations above are checkable, and a persona is not.
   replace `let`, since an immutable binding is what the backend reads to borrow
   a managed local instead of counting it.
   Do not infer authorization for further features without explicit decision.
+  One has been given since: **M36, type parameters**, authorized by the
+  owner's delegation, designed in `ROADMAP.md` and now implemented. Its shape
+  is settled there and should not be redrawn by accident:
+  unconstrained, opaque type parameters on functions, structs, classes and
+  enums; checked once at the declaration; monomorphized; type arguments
+  written only where a type is written and inferred everywhere else, by a rule
+  that never unifies through an implicit wrap; `Option` and `Result` still
+  builtin. It adds no constraints, no `Map<K, V>` and nothing to `std/`, and
+  the record says plainly that the demand for it is the owner's direction
+  rather than anything found in the repository. How it is built matters as
+  much as what it is: the checker makes every instance from a worklist and
+  keeps each one's per-position records (`Tables`) apart, a generic body is
+  recorded once in terms of its parameters, and lowering lowers instances
+  only. Anything that reads the checker's tables — lowering, the language
+  server — reads the set that belongs to the body it is looking at.
+  A type argument is never `void` or a function type, and that is checked
+  where an instance is made rather than at each kind of use: inferring
+  `Box { value: lambda }` once produced a struct with a function field, which
+  is the escape M8's rule forbids, because only the call path checked it.
+  **M37** followed, by the same delegation: `T: Equatable` gives a generic
+  body `==` and `T: Comparable` gives it `compare` and implies `Equatable`.
+  `float` is not `Equatable`, because IEEE `==` is not an equivalence — the
+  reason M32 gave it no `compare` — and so neither is anything that holds one.
+  The names are capabilities only after a type parameter's name and are not
+  reserved. What satisfies a capability is one predicate (`satisfies`), used
+  both for type arguments and for what a body may do, which is what keeps a
+  body checked once from failing in an instance; keep it one. Hashing, and so
+  `Map<K, V>` and `Set<T>`, is still out, and combining capabilities with `+`
+  waits for it.
 - M27's shape should not be reopened by accident. The bar is the
   one Rust states for a Tier 1 target: **CI builds Windows and every test passes
   there**, which is a measurement rather than a claim. Platform differences live
@@ -621,7 +669,22 @@ behind it. The obligations above are checkable, and a persona is not.
   reintroduces cycles the reference counter cannot collect — and it is what
   makes a function value free: no allocation, no retain, no release, with
   captures copied into an environment in the enclosing block. Only immutable
-  bindings may be captured, since a copy of a `var` could go stale. A
+  bindings may be captured, since a copy of a `var` could go stale. The binding
+  that names a function value is a `let` too, judged on its checked type: a
+  `var` declared outside a loop could be given a lambda made inside it and be
+  called after the loop, on an environment that was gone — an audit found that
+  program printing -1 where 21 was right. With every function value in a `let`
+  or a parameter, each lives in a scope nested inside the one that made its
+  environment, by construction. Rejected: allowing assignment only from the
+  `var`'s own block or an enclosing one (sound, but a rule about scope depth no
+  reader holds in their head); hoisting environments to function scope
+  (unsound — two values from one lambda in different iterations would share
+  one); and, for now, a `var` that may only be assigned a declared function,
+  which captures nothing. That last one is sound and would keep choosing a
+  comparator at run time, which today needs the call written in both branches
+  or a dispatching lambda; it was set aside because refusing now and relaxing
+  later is compatible and the reverse is not, and nothing used it. Reopen it
+  with a program that measures the cost. A
   consequence to keep written down: a callback cannot be stored, so handler
   tables and registries wait for interfaces. A lambda body must open on the
   same line its parentheses close, or `var x = (None)` followed by a block would
@@ -758,9 +821,8 @@ behind it. The obligations above are checkable, and a persona is not.
   the whole document each time: a delta would mean keeping the previous stream
   per document to diff against, which is state to go stale.
 - Files, the process and tests arrived with M13. `std/fs` reads and writes a
-  whole file **by path**: a handle would need a lifetime rule and Skuld has no
-  destructor a user can write, so there is no `open`, no close and no streaming
-  yet. `std/os` reaches the process through the runtime, not through libc
+  whole file **by path**; a handle, `open`/`create` and a `File` with `close`,
+  arrived with M30 under the `defer` rule recorded there. `std/os` reaches the process through the runtime, not through libc
   directly: following `argv` is a pointer-to-pointer read the foreign boundary
   refuses, so `sk_arg_count`, `sk_arg_len`, `sk_arg_copy`, `sk_flush` and
   `sk_exit` are the whole bridge — scalars and a pointer to bytes the caller
@@ -801,13 +863,14 @@ behind it. The obligations above are checkable, and a persona is not.
   the numbers in `BENCHMARKS.md` are updated with it; no speed ratio is
   promised anywhere.
 - The second native target is i686-linux-gnu, and `cli/tests/portability.rs`
-  runs every `tests/pass` fixture on it: 58 of 59 produce identical output with
-  no change to the runtime. The exception is the foreign boundary, which is the
-  only place a target leaks into the language — an `extern "C"` declaration
-  names a concrete width and `size_t` is not one. Skuld has no `usize`; adding
-  one is a language decision, not a portability fix. `std/net` and `std/dns`
-  also assume a little-endian Linux and its numeric constants, and `std/dns`
-  builds a `struct timeval` of two 64-bit fields, which is LP64-specific.
+  runs every `tests/pass` fixture on it with no change to the runtime. When
+  M18 measured it, the one exception was the foreign boundary, where an
+  `extern "C"` declaration named a concrete width and `size_t` is not one; M21
+  added `usize` and `isize` for exactly that, and M24 replaced `std/dns`'s
+  hand-packed `struct timeval` and the little-endian arithmetic in `std/net`
+  with declared layouts and `htons`/`htonl`, so the exception list is empty.
+  The suite returns early where clang cannot build a 32-bit program, so it
+  checks something only where the 32-bit libc is installed, as it is in CI.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built

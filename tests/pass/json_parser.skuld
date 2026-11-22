@@ -5,8 +5,8 @@
 // enums, `match`, `Option`, `Result` and `?`. The compiler knows nothing
 // about JSON; everything below is ordinary user code.
 //
-// `print` renders a float with `%.17g`, so a number whose decimal form has
-// no exact binary equivalent shows the digits the double actually holds.
+// `print` renders a float as the shortest decimal that reads back as the
+// same double, so `3.14` in the document prints as `3.14`.
 //
 // An object keeps its members as a list of key/value pairs in source order.
 // Skuld has no map type, and a hash map is a milestone of its own, so lookup

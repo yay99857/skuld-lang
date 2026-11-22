@@ -44,6 +44,15 @@ pub enum Visibility {
 /// A name that may be qualified by an imported module: `parse` or
 /// `json.parse`. An unqualified path names something in the current module or
 /// the prelude; there is no unqualified access to another module.
+/// `T` or `T: Equatable` in a generic declaration's parameter list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParam {
+    pub name: Name,
+    /// The capability a type argument must have, as written: `Equatable` or
+    /// `Comparable`. The word is read as one in this position only.
+    pub bound: Option<Name>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Path {
     pub module: Option<Name>,
@@ -106,6 +115,9 @@ pub struct MethodSignature {
 pub struct EnumDecl {
     pub visibility: Visibility,
     pub name: Name,
+    /// `enum Tree<T>`: the type parameters, in order. Empty for an ordinary
+    /// enum.
+    pub type_params: Vec<TypeParam>,
     /// `enum Protocol: u8`. An enum that names an integer type has a value per
     /// variant that a program may depend on, and converts to and from it.
     pub underlying: Option<TypeRef>,
@@ -168,6 +180,9 @@ pub struct StructDecl {
     pub kind: TypeDeclKind,
     pub layout: Layout,
     pub name: Name,
+    /// `struct Pair<A, B>`: the type parameters, in order. Empty for an
+    /// ordinary struct or class.
+    pub type_params: Vec<TypeParam>,
     /// `class User: Printable, Comparable`. Conformance is declared here
     /// rather than inferred from the methods that happen to be present.
     pub conforms: Vec<Path>,
@@ -215,6 +230,15 @@ pub enum TypeRef {
     },
     Weak {
         class: Path,
+        /// `weak Stack<int>`: the arguments of a generic class, if any.
+        arguments: Vec<TypeRef>,
+        span: Span,
+    },
+    /// `Pair<int, string>`: a generic type with its arguments. `Option` and
+    /// `Result` keep variants of their own, since they are builtin.
+    Applied {
+        path: Path,
+        arguments: Vec<TypeRef>,
         span: Span,
     },
     Array {
@@ -251,6 +275,7 @@ impl TypeRef {
             | Self::Function { span, .. }
             | Self::Pointer { span, .. }
             | Self::Weak { span, .. }
+            | Self::Applied { span, .. }
             | Self::Option { span, .. }
             | Self::Result { span, .. } => *span,
         }
@@ -285,6 +310,9 @@ pub struct StaticDecl {
 pub struct FunctionDecl {
     pub visibility: Visibility,
     pub name: Name,
+    /// `func first<T>(...)`: the type parameters, in order. Always empty on a
+    /// method, which uses the parameters of the type that owns it.
+    pub type_params: Vec<TypeParam>,
     pub parameters: Vec<Parameter>,
     /// None means an implicit void return type.
     pub return_type: Option<TypeRef>,
@@ -501,6 +529,10 @@ pub enum ExprKind {
     /// `new User(name: "Ada")`. Allocates a reference-counted object.
     New {
         name: Path,
+        /// `new Stack<int>()`. The only place an expression writes type
+        /// arguments: after `new` a type follows, so `<` cannot be a
+        /// comparison.
+        type_arguments: Vec<TypeRef>,
         fields: Vec<FieldInit>,
     },
     /// `[1, 2, 3]`. Allocates a reference-counted array.

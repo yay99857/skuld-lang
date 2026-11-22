@@ -73,9 +73,9 @@ Skuld over `[]u8`, with no help from the compiler. It exercises the whole
 milestone at once — byte indexing, slicing, sized integers, `bytes_to_string`,
 arrays, enums, `match`, `Option`, `Result` and `?` — and it carries its own
 failure cases, so both the accepted and the rejected documents are pinned by
-the same `.out`. Its numbers are printed through `%.17g`, so a value with no
-exact binary form shows the digits the double actually holds; that is the
-language's float rendering, not the parser's. Being a `pass/` fixture, it also
+the same `.out`. Its numbers are printed as the shortest decimal that reads
+back as the same double; that is the language's float rendering, not the
+parser's. Being a `pass/` fixture, it also
 runs under the address, leak and UB sanitizers, which is what makes it a
 memory-management test of recursive managed values rather than only a parsing
 test.

@@ -1,0 +1,63 @@
+// A fixed array never becomes a `[]T` by itself. It used to, as a view of its
+// own storage that looked like any other array, and every route below handed
+// that view to something that outlived the storage: the caller, an array that
+// lived on, a class field set by a callee, a view of an object that died. Each
+// is now a type mismatch whose fix copies with `[0..N]`.
+class Holder {
+    items: []int
+}
+
+class Buffer {
+    data: [4]int
+}
+
+func identity(xs: []int) -> []int {
+    return xs
+}
+
+func keep(holder: Holder, xs: []int) {
+    holder.items = xs
+}
+
+func through_a_binding() -> []int {
+    let local: [4]int = [1, 2, 3, 4]
+    let view: []int = local
+    return view
+}
+
+func through_a_call() -> []int {
+    let local: [4]int = [1, 2, 3, 4]
+    return identity(local)
+}
+
+func into_an_array(out: [][]int) {
+    let local: [2]int = [5, 6]
+    out.push(local)
+}
+
+func through_a_callee() -> Holder {
+    let holder = new Holder(items: [])
+    let local: [3]int = [1, 2, 3]
+    keep(holder, local)
+    return holder
+}
+
+func of_a_dying_object() -> []int {
+    let buffer = new Buffer(data: [9; 4])
+    let view: []int = buffer.data
+    return view
+}
+
+func of_a_temporary() -> []int {
+    return identity([0; 4])
+}
+
+func writing_through_a_let() {
+    let frozen: [3]int = [3, 1, 2]
+    let view: []int = frozen
+    view[0] = 99
+}
+
+func main() {
+    print(1)
+}

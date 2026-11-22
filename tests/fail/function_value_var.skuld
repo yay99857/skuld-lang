@@ -1,0 +1,21 @@
+// A function value's environment lives in the block that made it, so the
+// binding naming one is a `let`. A `var` declared outside a loop and given a
+// lambda inside it would be called after the loop, reading a capture that had
+// gone: this program printed -1 instead of 21. The rule reads the checked
+// type, so an inferred `var` and a declared function are refused alike.
+func increment(x: int) -> int {
+    return x + 1
+}
+
+func main() {
+    let base = 100
+    var f = (x: int) -> int { return x + base }
+    for i in 0..3 {
+        let step = i * 10
+        f = (x: int) -> int { return x + step }
+    }
+    print(f(1))
+    var named = increment
+    var annotated: (int) -> int = increment
+    print(named(1) + annotated(1))
+}

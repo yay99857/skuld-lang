@@ -2,11 +2,9 @@
 
 Status labels: **Implemented** means available now; **Planned** describes future
 intent, not accepted/executable programs; **Experimental** denotes provisional
-choices. The complete single-file native pipeline, Demos 0–2, loops, structs,
-reference-counted strings, interpolation, classes, weak references, arrays,
-builtin Option values, builtin `Result<T, E>` with `?` propagation, the sized
-integer types and byte-level string access are implemented. Self-hosting
-remains planned.
+choices. Each section below carries its own label, and that label is the claim
+to check; the overview in `README.md` lists what is implemented as a whole.
+Self-hosting remains planned.
 
 ## Philosophy — Planned
 
@@ -58,10 +56,11 @@ Function declarations use `func`, replacing the earlier `fn` and `function` spel
 The builtin is `print`, replacing `println`; neither old spelling is an alias.
 The old words are ordinary identifiers and can be explicitly declared by users.
 
-Keywords: `func let var return if else while loop for in break continue new weak class struct
-impl enum match import pub extern unsafe interface`. A lambda needs none of them: it is
-written `(a: int) -> int { ... }`, the shape a method already uses.
-Reserved future keywords: `static`.
+Keywords: `func let var const static return if else while loop for in break continue defer new
+weak class struct impl interface enum match import pub extern unsafe`. A lambda needs none of
+them: it is written `(a: int) -> int { ... }`, the shape a method already uses. `packed`,
+`align` and `indirect` are read as markers only in the one position each has, and are ordinary
+identifiers everywhere else.
 `true` and `false` produce boolean literal tokens. Type names, `print`, `Some`,
 `None`, `Ok` and `Err` are identifiers. `Option<T>` and `Result<T, E>` are
 builtin type syntax, not user-defined generics. In a type annotation,
@@ -216,15 +215,15 @@ field writes require a mutable place; writes through class or array references
 can use an immutable binding. Assignments preserve the target type and yield the assigned value.
 Comparison chains are parsed left-associatively and then type-checked normally.
 Direct function/builtin calls, optionally grouped, and type-checked method calls
-are supported. Callable values and indirect calls are rejected by the checker. Trailing commas are accepted in parameter and
+are supported, and so are calls through a function value (see "Function values"). Trailing commas are accepted in parameter and
 argument lists. Local declarations require an initializer; annotations are
 optional, but function parameters require types. AST type references preserve
 source names, including unknown names; these are not semantic type values.
 
 Blocks, return, expression statements, variables, `if`/`else` (including
-`else if` and `if let Some(name) = value`), `while`, `loop`, `break` and `continue` are parsed. Later:
-`for item in items`, `0..10` and `0..=10`. Arrays `[1, 2, 3]` with type
-syntax `[]int` are implemented below.
+`else if` and `if let Some(name) = value`), `while`, `loop`, `for`, `break` and `continue` are parsed.
+A `for` range is half-open, `0..10`; the inclusive `0..=10` exists only as a `match` pattern.
+Arrays `[1, 2, 3]` with type syntax `[]int` are implemented below.
 
 ### Loops — Implemented
 
@@ -241,6 +240,12 @@ the innermost enclosing loop; outside any loop they are `E0111`.
 `for variable in array { }` iterates over each element of an array by value. If the array holds managed
 values (strings, arrays, classes), each element is safely retained on entry to the iteration and
 released on iteration exit (including upon `break`, `continue` or `return`).
+
+The elements visited are the ones the array held when the loop began: the count is read once, so a
+`push` in the body adds elements the loop does not reach, rather than a loop that never ends. A body
+that shortens the array — `pop`, `remove` — traps with "the array was shortened while it was being
+iterated", the way a comparator that changes the array traps during `sort`, rather than stopping
+early or reading an element already released.
 
 The loop variable is an immutable binding scoped strictly to the loop body. Like `while`, `for` loops
 may execute 0 times, so they do not satisfy a non-void return type. `break` and `continue` inside `for`
@@ -285,10 +290,16 @@ entrypoints, return completeness and mutability are checked by the type checker.
 `skuld parse file.skuld` prints the debug AST, not a stable serialization format.
 It is a temporary inspection command, not semantic `check`. Codes E1001–E1005
 represent expected syntax, expected top-level declaration, unsupported syntax,
-invalid assignment target and syntax resource limits. Parser nesting is bounded
-at 64 recursive levels and expressions at fewer than 256 consumed tokens to
-report pathological input instead of overflowing the compiler's stack. These
-are implementation limits, not permanent language limits.
+invalid assignment target and syntax resource limits. Two limits report
+pathological input instead of overflowing the compiler's stack: syntax the
+parser enters recursively — a block, a parenthesis, a unary operator — nests
+at most 64 levels, and the tree it builds is at most 1024 levels deep, where
+each operator in a chain, each call or member in `a.b().c()` and each
+`else if` is a level. Width is not limited: a literal of thousands of
+elements, a call with thousands of arguments and a chain of hundreds of
+`else if` arms all parse. The compiler runs on a stack sized for that depth
+rather than the one the system gives a program's first thread. These are
+implementation limits, not permanent language limits.
 
 ## Lexical name resolution — Implemented
 
@@ -351,7 +362,7 @@ operand first, or annotate, when both sides could be literals. Numeric ordering
 returns bool. Strings compare byte content, not pointer identity. Equality is
 described under "Equality" below. `&&`, `||` and `!` require bool;
 there is no truthiness or implicit int/float conversion. Unary `+` and `-`
-require numbers; unary `~` requires integers. Function values, chars, invalid member accesses and unknown types produce
+require numbers; unary `~` requires integers. Invalid member accesses and unknown types produce
 explicit diagnostics rather than reaching code generation.
 
 Evaluation is left to right, including call arguments. `&&` and `||`
@@ -368,15 +379,32 @@ and argument evaluation order.
 magnitude under unary minus in `-9223372036854775808` (grouping is allowed).
 Integer addition, subtraction, multiplication and negation trap on overflow.
 Division truncates toward zero; remainder has the dividend's sign. Division
-and remainder by zero trap. MIN / -1 traps; MIN % -1 is zero. Runtime failures
-print a message with a source byte offset to stderr and exit 1. Static checking
-does not attempt constant arithmetic evaluation, so `1 / 0` passes checking
-and fails only when evaluated. Runtime source-line rendering is future work.
+and remainder by zero trap. MIN / -1 traps; MIN % -1 is zero. A run-time
+failure prints its message and where it happened, the way a diagnostic does,
+to stderr and exits 1:
+
+```text
+runtime error: array index out of bounds
+  --> main.skuld:4:17
+```
+
+The file is the one the failing operation was written in, which for a field
+default is the file declaring the type rather than the one constructing it.
+The program carries a table of only the places it can fail at, with the line
+and column worked out when it is compiled. Static checking does not attempt
+constant arithmetic evaluation, so `1 / 0` passes checking and fails only when
+evaluated.
 
 Floats use binary64 operations without fast-math, with normal IEEE infinities
 and NaNs possible during arithmetic; literal parsing still rejects non-finite
-literals. Float printing uses 17 significant digits. Bool prints `true` or
-`false`; int prints decimal. Every print appends a newline.
+literals. A float prints as the shortest decimal that reads back as the same
+double, which is what Go, Rust and Python print: `0.1` is `0.1`, `0.1 + 0.2` is
+`0.30000000000000004`, and a whole number has no point, so `1.0` prints `1`.
+Exponents from -5 to 20 are written out positionally (`0.00001`,
+`100000000000000000000`) and others in scientific form (`1e-6`, `1e+21`).
+Infinities and NaN print `inf`, `-inf` and `nan`, and negative zero `-0`.
+Interpolation uses the same rendering. Bool prints `true` or `false`; int
+prints decimal. Every print appends a newline.
 
 A string is a pointer, a length and an owner. Literals keep the owner null and
 point at static bytes that live for the program duration; concatenation
@@ -549,7 +577,8 @@ receiver, matching the class syntax. `this` is the current value.
 assign to `this.field`, and since structs copy, the receiver is a copy and a
 method never modifies its caller's value fields. Reference-valued fields retain
 their sharing rules: a method can mutate an object or array referenced by a
-struct field. Mutating value receivers remain future work.
+struct field. A method declared `var` may change its receiver; see "Methods that
+change the struct" above.
 
 A method name is not in ordinary scope. A sibling method is reached through
 `this`, and a plain function cannot see methods at all. A method is not a
@@ -646,8 +675,9 @@ Fields keep explicit type annotations, and method parameters and non-void
 returns retain explicit types.
 
 Class construction uses `new ClassName(field: value, ...)`. Every field must be
-initialized in construction; there are no uninitialized reads, field defaults
-or JavaScript-style `undefined` values. Constructing a class with `User { ... }`
+initialized in construction, by an argument or by its default (see "Field
+defaults"); there are no uninitialized reads and no JavaScript-style `undefined`
+values. Constructing a class with `User { ... }`
 or a struct with `new Struct(...)` is rejected.
 
 Reference semantics and memory rules:
@@ -704,8 +734,8 @@ Use a weak parent link with a strong child link to avoid ownership cycles; see
 
 `Option<T>` is a builtin value type representing a present value or `None`.
 `T` can be any non-void implemented value type, including another Option,
-a struct, a class, an array or a weak reference. This milestone introduces
-neither general generics nor user-defined enums.
+a struct, a class, an array or a weak reference. It is builtin type syntax, not
+a general generic, and general generics remain planned.
 
 ```skuld
 func answer(found: bool) -> Option<int> {
@@ -744,7 +774,7 @@ once. The successful branch receives an immutable copy of the payload, retaining
 any owned references. That name exists only in that branch. The `else` branch
 is optional and can contain another `if`/`if let`; both branches must guarantee
 a return for the statement to satisfy a non-void function's return requirement.
-General patterns and `match` remain planned. There is no direct payload field or unchecked Option extraction API.
+`match` over an Option is not supported; use `if let`, `let ... else` or `is_some()`. There is no direct payload field or unchecked Option extraction API.
 
 `is_some(): bool` and `is_none(): bool` query the tag and take no arguments.
 Use `if let` to obtain the payload. Two Options compare with `==` when their
@@ -765,8 +795,8 @@ weak promotion together.
 
 ## Bytes and slices — Implemented
 
-A Skuld string is a sequence of bytes, and this milestone makes that reachable
-without adding a character or code point type.
+A Skuld string is a sequence of bytes, and these operations reach those bytes.
+A `char` is a separate scalar type, described under "Types".
 
 ```skuld
 let text = "olá"
@@ -814,7 +844,7 @@ belongs in the language before a standard library exists to own one.
 
 Building a string is building a `[]u8` and validating it once at the end;
 `push` and the other array operations are the string builder. Encodings other
-than UTF-8, a `char` or code point type, normalization and regular expressions
+than UTF-8, iterating a string by `char`, normalization and regular expressions
 remain out of scope.
 
 ## Error handling — Implemented
@@ -966,8 +996,8 @@ func main() {
 }
 ```
 
-Arrays are homogeneous, heap allocated and reference counted. Their length is
-fixed at construction. Assignment, arguments and returns share the array;
+Arrays are homogeneous, heap allocated and reference counted, and they grow and
+shrink through the operations below. Assignment, arguments and returns share the array;
 `let` prevents rebinding but permits writing an element, like class fields.
 Reading a struct element copies its value; reading a class or array element
 shares that reference. Elements can have any implemented non-void value type,
@@ -992,9 +1022,11 @@ Dynamic array mutation and growth:
 - `values.pop(): Option<T>` removes and returns the last element, or `None` if empty.
 - `values.remove(index: int): Option<T>` removes and returns element at index, shifting elements left, or `None` if out of bounds.
 
-Slicing, array equality, sorting, callbacks and `for` iteration remain
-planned. Strong cycles through classes and arrays still require explicit
-breaking or weak class links; arrays themselves cannot be weakened yet.
+Slicing is under "Bytes and slices", `for` under "Loops", and `sort` with its
+comparator under "Function values". Two arrays do not compare with `==`, since
+an array is a shared reference. Strong cycles through classes and arrays still
+require explicit breaking or weak class links; arrays themselves cannot be
+weakened yet.
 
 ## Fixed-size arrays — Implemented
 
@@ -1014,8 +1046,8 @@ let header: [4]u8 = [0x7F, 'E', 'L', 'F']
   - Indexing: `arr[i]` checks bounds both at compile time (for constant indices) and at runtime, trapping with `array index out of bounds`.
   - Length: `arr.len()` is a compile-time constant int.
   - Slicing: `arr[a..b]` creates an owned dynamic array `[]T` copying the sliced elements.
-  - Slice coercion: `[N]T` coerces implicitly to `[]T` slice views for functions expecting dynamic slices (e.g. `bytes_to_string(arr)`), with immortal stack lifetime and zero heap allocations. Mutating a coerced slice view (e.g. `push`) traps at runtime with `"cannot mutate a fixed array view"`.
-  - Escape prevention: returning a local fixed array as a dynamic slice `[]T` or assigning a fixed array to a class dynamic array field is rejected at compile time (`E0103`).
+  - No conversion to `[]T`: `[N]T` and `[]T` are different types, and a fixed array is never widened into a dynamic one by itself. Where a `[]T` is wanted, `arr[0..N]` copies into one, and the type mismatch (`E0102`) carries that edit as a fix. A function that only reads a fixed array can take `[N]T` itself.
+  - Why there is no view: until the change was reversed, `[N]T` widened implicitly into a `[]T` pointing at its own storage. Nothing about the type said so, so the view could be returned, pushed into an array or stored by a callee, and read the storage after it was gone; it could also write through a `let`. A view is sound only as a type of its own that cannot escape, which is how C#'s `Span<T>` and Swift's `Span` work, and that is not part of the language.
   - Fields: struct and class types can embed fixed arrays inline (`field: [N]T`).
   - Iteration: `for item in arr { ... }` loops over elements by value copy.
   - FFI: `ptr(arr)` borrows `*T` for scalar fixed arrays directly without copying.
@@ -1080,7 +1112,7 @@ match status {
 ```
 
 - Target expression can be an enum, a `Result` (which matches as a two-variant enum with `Ok` and `Err`), or any scalar or string type (integers, float, bool, string). Non-matchable types like structs or classes are rejected (`E0102`).
-- Arm patterns support variant patterns (`Status.Pending`, `Status.Active(code)`), literal and constant value patterns, half-open ranges `a..b`, inclusive ranges `a..=b`, and the wildcard pattern (`_`).
+- Arm patterns support variant patterns (`Status.Pending`, `Status.Active(code)`), literal and constant value patterns, half-open ranges `a..b`, inclusive ranges `a..=b`, and the wildcard pattern (`_`). A range whose ends are known and that holds no value — `10..=1`, `3..3` — is an error (`E0105`): the arm could never match, and the ends are almost always swapped.
 - A variant pattern may leave the enum out — `Pending:` and `Active(code):` —
   since the target already says which enum it is. A pattern never takes the
   dotted `.Pending` an expression does: the arm grammar would then depend on
@@ -1090,7 +1122,7 @@ match status {
   until M32.
 - Arms can have a single statement or a block `{ ... }`.
 - Variant payload bindings introduce an immutable local variable scoped to that arm's body.
-- Exhaustiveness is strictly checked: every enum variant must be covered or a wildcard `_` provided; for scalar and string matches, a wildcard `_` arm is mandatory (`E0113`).
+- Exhaustiveness is strictly checked: every enum variant must be covered or a wildcard `_` provided; for scalar and string matches, a wildcard `_` arm is mandatory (`E0113`), except that a `bool` match naming both `true` and `false` is complete without one.
 - If every arm returns (or diverges), the `match` statement satisfies the function's return contract.
 - Inside loops, `break` and `continue` inside match arms naturally bind to the enclosing loop.
 
@@ -1274,7 +1306,9 @@ defer close(handle)
   statement: it runs while the block is already being left, so leaving again
   would have to decide what happens to the exit already under way. A deferred
   declaration is refused too — it would bind a name at the moment the block
-  ends, where nothing can read it.
+  ends, where nothing can read it — and so is `defer defer x`, which would
+  register `x` after the block had ended and never run it. A deferred block
+  may defer inside itself, since that block has an end of its own.
 - There is no `errdefer`. `Result` already makes the failure path visible at
   the call site, and where a resource is released on failure but handed over on
   success, a flag says which happened:
@@ -1457,6 +1491,126 @@ Out of scope: references with lifetimes, aliasing rules, a borrow checker, and
 unchecked indexing — `load` and `store` are the only unchecked accesses in the
 language, and each one is written where a reader can see it.
 
+## Generics — Implemented (M36)
+
+Functions, structs, classes and enums take type parameters:
+
+```skuld
+func first<T>(items: []T) -> Option<T> {
+    if items.len() == 0 {
+        return None
+    }
+    return items[0]
+}
+
+class Stack<T> {
+    items: []T = []
+
+    push(item: T) {
+        this.items.push(item)
+    }
+}
+
+func main() {
+    let numbers: []int = [3, 1, 2]
+    let stack = new Stack<int>()
+    if let n = first(numbers) {
+        stack.push(n)
+    }
+}
+```
+
+- **Checked once.** A generic body is checked where it is written, with each
+  parameter an opaque type, so a mistake in it is reported once and a generic
+  nobody calls is still checked. A value of a parameter may be bound,
+  assigned, passed, returned, stored in a field, an array, an `Option` or a
+  `Result`, and captured by a lambda — nothing else: no `==`, no `print` or
+  interpolation, no method, no conversion, no `ptr`, no `weak`. An operation
+  that needs one is passed in as a function value, the way `sort` takes its
+  comparator. There is no constraint syntax.
+- **Monomorphized.** Every combination of type arguments the program uses is
+  its own function, struct or C type. Whether an instance is reference
+  counted, how it is laid out and whether it compares with `==` are decided
+  per instance, exactly as for a type written by hand.
+- **Type arguments are written only where a type is written** — annotations,
+  signatures, fields, `weak Stack<int>`, and after `new`. A generic type
+  written bare, `Stack`, is an error (`E0106`). In an expression they are
+  inferred and cannot be written, so `a < b > (c)` never needs a second
+  reading; a struct literal `Pair { first: 1, second: "x" }` and a variant
+  `Tree.Leaf` take theirs from their fields, payload or context.
+- **Inference never looks through a conversion.** An argument with a type of
+  its own fixes the parameters it matches exactly; then the type the call is
+  expected to have fills in what is left, against the declared result; then
+  the arguments that take their type from context — an integer literal, an
+  array literal, `None`, `.Variant`, `Ok`, `Err`, `weak()`, `ptr_from`, a
+  lambda — are checked against what is known. A lambda's result may fix a
+  parameter nothing else does, as `map_err` takes its new error type. The
+  implicit wrap into an `Option` and the widening into an interface apply only
+  after every parameter is fixed. Two disagreeing matches are `E0102`, and a
+  parameter nothing fixes is `E0101`.
+- **What may be an argument** is what may be an array element: not `void` and
+  not a function value. A fixed array's size is not a parameter.
+- **Not generic:** a method (it uses its type's parameters), an interface,
+  `main`, a `test_` function, an `extern struct`, a numbered enum, and a `pub
+  func` under `--freestanding`, which is exported under one name.
+- **Finite.** A function that calls itself at an ever larger type and a type
+  that contains itself at one would need infinitely many instances, and are
+  refused (`E0110`); so is a value type that contains itself only once
+  instantiated (`E0103`).
+- `Option<T>` and `Result<T, E>` stay builtin: they are spelled, instantiated
+  and laid out by the same rules, and keep the sugar only they have — the
+  implicit wrap, contextual `None`, `?`, `if let` and `let ... else`.
+  `Result.map_err` is the one method with a type parameter of its own.
+
+### Capabilities — Implemented (M37)
+
+A type parameter may require one capability of its arguments, written after
+its name:
+
+```skuld
+func contains<T: Equatable>(items: []T, wanted: T) -> bool {
+    for item in items {
+        if item == wanted {
+            return true
+        }
+    }
+    return false
+}
+
+func max<T: Comparable>(a: T, b: T) -> T {
+    if a.compare(b) == .Less {
+        return b
+    }
+    return a
+}
+
+func main() {
+    print(contains([1, 2, 3], 2))
+    print(max("pear", "apple"))
+}
+```
+
+- `Equatable` allows `==` and `!=` on the parameter. It is satisfied by every
+  type `==` accepts (see "Equality") that holds no `float` anywhere, and by a
+  parameter that requires either capability. `float` is left out because a
+  generic algorithm relies on `==` being an equivalence and NaN is unequal to
+  itself.
+- `Comparable` allows `a.compare(b)`, answering `Ordering`, and implies
+  `Equatable`. It is satisfied by every integer width, `char`, `bool` and
+  `string` — exactly the types with `compare` — and by a parameter that
+  requires it. There is no `<` on a parameter.
+- A type argument without the capability is `E0102`, reported at the argument
+  that fixed it, at the type written with it, or in a generic signature that
+  names a constrained type over a parameter that lacks the capability.
+- The two names are capabilities only in that position. A program may declare
+  a type called `Comparable`; any other word after `T:` is `E0101`.
+- One capability per parameter. Hashing, and with it `Map<K, V>` and `Set<T>`,
+  is not part of the language yet, and combining capabilities waits for it.
+
+Out, each its own decision: hashing, `Map<K, V>` and `Set<T>`, methods with
+their own parameters, generic interfaces, default type arguments, const
+generics, specialization and explicit type arguments at a call.
+
 ## Function values — Implemented
 
 A lambda is a function declaration without a name, which is why it needs no
@@ -1509,6 +1663,21 @@ weak captures, which is the ownership burden the language sets out to avoid.
 What it buys is that a function value costs nothing. It never allocates, never
 retains and never releases: its captures are copied into an environment that
 lives in the enclosing block, which the value cannot outlive.
+
+**A function value is named by a `let`.** `var f = (x: int) -> int { ... }` is
+refused (`E0103`, with the edit to `let`), and so is a `var` whose checked type
+is a function for any other reason, such as `var f = increment`. A `var`
+declared outside a loop could otherwise be given a lambda made inside it and be
+called after the loop, when the environment that lambda captured into is gone.
+Where the function depends on a condition, call the one meant in each branch:
+
+```skuld
+if descending {
+    names.sort((a, b) => b.compare(a))
+} else {
+    names.sort((a, b) => a.compare(b))
+}
+```
 
 **A lambda captures values, not variables.** Only immutable bindings — `let`,
 parameters, `this`, and the bindings introduced by `if let`, `match` and `for`

@@ -1,0 +1,5 @@
+// `defer defer x` registered `x` after its block had already ended, so it
+// never ran and nothing said so.
+func main() {
+    defer defer print("never")
+}

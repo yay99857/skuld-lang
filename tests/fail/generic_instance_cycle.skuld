@@ -1,0 +1,14 @@
+// `A<T>` holds a `T` by value, which is fine until `T` is the struct holding
+// the `A`: only the instance contains itself, and it is refused as any
+// struct that contains itself is.
+struct A<T> {
+    value: T
+}
+
+struct B {
+    a: A<B>
+}
+
+func main() {
+    print(1)
+}
