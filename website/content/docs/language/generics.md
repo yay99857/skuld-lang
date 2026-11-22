@@ -101,6 +101,35 @@ func main() {
 
 Outside generic code an instance is an ordinary concrete type, so two `Pair<int, int>` values compare with `==` as any struct does.
 
+## Capabilities
+
+A type parameter can require a capability of its arguments. `T: Equatable` allows `==` and `!=` on `T`; `T: Comparable` allows `a.compare(b)` and implies `Equatable`:
+
+```skuld
+func contains<T: Equatable>(items: []T, wanted: T) -> bool {
+    for item in items {
+        if item == wanted {
+            return true
+        }
+    }
+    return false
+}
+
+func max<T: Comparable>(a: T, b: T) -> T {
+    if a.compare(b) == .Less {
+        return b
+    }
+    return a
+}
+
+func main() {
+    print(contains(["alpha", "beta"], "beta"))
+    print(max(3, 9))
+}
+```
+
+`Comparable` is satisfied by the integers, `char`, `bool` and `string` — the types with `compare`. `Equatable` is satisfied by everything `==` accepts except values that hold a `float`, whose `==` is not an equivalence because NaN is unequal to itself. Passing a type without the capability is an error at the argument that chose it.
+
 ## Not generic
 
-`main`, test functions, `extern struct`, numbered enums and interfaces cannot be generic, and neither can a `pub func` under `--freestanding`. Constraints such as "comparable", and with them a `Map<K, V>` with keys other than strings, are a later decision. `Option<T>` and `Result<T, E>` stay builtin: they are spelled and instantiated like any generic type, and keep their own sugar — the implicit wrap, `None`, `?` and `if let`.
+`main`, test functions, `extern struct`, numbered enums and interfaces cannot be generic, and neither can a `pub func` under `--freestanding`. Hashing, and with it a `Map<K, V>` with keys other than strings, is a later decision. `Option<T>` and `Result<T, E>` stay builtin: they are spelled and instantiated like any generic type, and keep their own sugar — the implicit wrap, `None`, `?` and `if let`.

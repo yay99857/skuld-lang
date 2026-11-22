@@ -1562,8 +1562,53 @@ func main() {
   implicit wrap, contextual `None`, `?`, `if let` and `let ... else`.
   `Result.map_err` is the one method with a type parameter of its own.
 
-Out, each its own decision: constraints, `Map<K, V>` and `Set<T>`, methods
-with their own parameters, generic interfaces, default type arguments, const
+### Capabilities — Implemented (M37)
+
+A type parameter may require one capability of its arguments, written after
+its name:
+
+```skuld
+func contains<T: Equatable>(items: []T, wanted: T) -> bool {
+    for item in items {
+        if item == wanted {
+            return true
+        }
+    }
+    return false
+}
+
+func max<T: Comparable>(a: T, b: T) -> T {
+    if a.compare(b) == .Less {
+        return b
+    }
+    return a
+}
+
+func main() {
+    print(contains([1, 2, 3], 2))
+    print(max("pear", "apple"))
+}
+```
+
+- `Equatable` allows `==` and `!=` on the parameter. It is satisfied by every
+  type `==` accepts (see "Equality") that holds no `float` anywhere, and by a
+  parameter that requires either capability. `float` is left out because a
+  generic algorithm relies on `==` being an equivalence and NaN is unequal to
+  itself.
+- `Comparable` allows `a.compare(b)`, answering `Ordering`, and implies
+  `Equatable`. It is satisfied by every integer width, `char`, `bool` and
+  `string` — exactly the types with `compare` — and by a parameter that
+  requires it. There is no `<` on a parameter.
+- A type argument without the capability is `E0102`, reported at the argument
+  that fixed it, at the type written with it, or in a generic signature that
+  names a constrained type over a parameter that lacks the capability.
+- The two names are capabilities only in that position. A program may declare
+  a type called `Comparable`; any other word after `T:` is `E0101`.
+- One capability per parameter. Hashing, and with it `Map<K, V>` and `Set<T>`,
+  is not part of the language yet, and combining capabilities waits for it.
+
+Out, each its own decision: hashing, `Map<K, V>` and `Set<T>`, methods with
+their own parameters, generic interfaces, default type arguments, const
 generics, specialization and explicit type arguments at a call.
 
 ## Function values — Implemented

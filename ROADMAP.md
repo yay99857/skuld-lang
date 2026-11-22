@@ -2250,13 +2250,15 @@ a parameter nothing fixes); an instantiation that does not end, for a function
 and for a type; a value cycle that exists only once instantiated; and each
 declaration that may not be generic. No change to `std/`.
 
-## M37 — Capabilities a type parameter can require — Designed, not implemented
+## M37 — Capabilities a type parameter can require — Implemented
 
 **Authorized, by the same delegation as M36.** M36 named this as the decision
 that makes generics pay for themselves: an unconstrained `T` has no equality
 and no order, so no searching container and no ordered one can be written.
 The demand objection M36 conceded is conceded again. No existing example or
-module gets shorter for this; the case is the owner's direction.
+module gets shorter for this; the case is the owner's direction. Implemented
+as designed; `tests/pass/capabilities.skuld` meets the closing marker below,
+with `tests/fail/capability_*` beside it.
 
 M36 set aside "a compiler-known equality capability now" because deciding one
 capability without the others would fix a constraint syntax on a third of its

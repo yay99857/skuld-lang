@@ -567,6 +567,16 @@ behind it. The obligations above are checkable, and a persona is not.
   recorded once in terms of its parameters, and lowering lowers instances
   only. Anything that reads the checker's tables — lowering, the language
   server — reads the set that belongs to the body it is looking at.
+  **M37** followed, by the same delegation: `T: Equatable` gives a generic
+  body `==` and `T: Comparable` gives it `compare` and implies `Equatable`.
+  `float` is not `Equatable`, because IEEE `==` is not an equivalence — the
+  reason M32 gave it no `compare` — and so neither is anything that holds one.
+  The names are capabilities only after a type parameter's name and are not
+  reserved. What satisfies a capability is one predicate (`satisfies`), used
+  both for type arguments and for what a body may do, which is what keeps a
+  body checked once from failing in an instance; keep it one. Hashing, and so
+  `Map<K, V>` and `Set<T>`, is still out, and combining capabilities with `+`
+  waits for it.
 - M27's shape should not be reopened by accident. The bar is the
   one Rust states for a Tier 1 target: **CI builds Windows and every test passes
   there**, which is a measurement rather than a claim. Platform differences live
