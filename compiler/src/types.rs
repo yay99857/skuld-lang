@@ -46,6 +46,12 @@ pub struct InterfaceMethod {
     pub return_type: Type,
 }
 
+/// A type parameter of a generic declaration: `T` in `func first<T>`. Each
+/// declaration's parameters are distinct, so `T` in two functions is two
+/// parameters. The name lives in the checker's table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ParamId(pub usize);
+
 /// Index into the checked program's function-type table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FunctionTypeId(pub usize);
@@ -105,6 +111,12 @@ pub struct EnumInfo {
     /// outside the program.
     pub underlying: Option<IntType>,
     pub variants: Vec<VariantInfo>,
+    /// The type parameters of a generic enum's declaration; empty otherwise.
+    pub params: Vec<ParamId>,
+    /// For a generic enum, the declaration this is an instance of and its
+    /// type arguments. The declaration itself is its own instance, over its
+    /// own parameters.
+    pub instance: Option<(EnumId, Vec<Type>)>,
 }
 
 impl EnumInfo {
@@ -318,6 +330,10 @@ pub enum Type {
     /// A class reference seen through an interface: the object and the table
     /// of methods to call on it. Counted like the class it holds.
     Interface(InterfaceId),
+    /// A type parameter inside the generic declaration that declares it.
+    /// Opaque: a value of it may be stored, passed and returned, and nothing
+    /// else. It never reaches the backend, which sees instances only.
+    Param(ParamId),
     /// Recovery only; never present in a successfully checked program.
     Error,
 }
@@ -358,6 +374,7 @@ impl fmt::Display for Type {
             Self::Option(_) => "<option>",
             Self::Result(_) => "<result>",
             Self::Weak(_) => "<weak>",
+            Self::Param(_) => "<type parameter>",
             Self::Pointer(_) => unreachable!("rendered above"),
             Self::Error => "<error>",
         })

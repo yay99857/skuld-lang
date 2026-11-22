@@ -1,0 +1,219 @@
+// M36's closing marker: type parameters on functions, structs, classes and
+// enums, each instantiated over a scalar, a string, a class and an array, and
+// run under the address, leak and undefined-behaviour sanitizers like every
+// fixture here. A generic body is checked once, in terms of its parameters;
+// every instance below is its own function or type in the generated C.
+
+interface Named {
+    name() -> string
+}
+
+class Dog: Named {
+    label: string
+
+    name() -> string {
+        return this.label
+    }
+}
+
+// A generic function, with its type argument inferred from the call.
+func first<T>(items: []T) -> Option<T> {
+    if items.len() == 0 {
+        return None
+    }
+    return items[0]
+}
+
+// Two parameters, and a result that is a generic struct.
+func pair_up<A, B>(a: A, b: B) -> Pair<A, B> {
+    return Pair { first: a, second: b }
+}
+
+// A lambda's result fixes a parameter nothing else does.
+func map<T, U>(items: []T, f: (T) -> U) -> []U {
+    let out: []U = []
+    for item in items {
+        out.push(f(item))
+    }
+    return out
+}
+
+// A capability arrives as a function value: there is no `==` on `T`.
+func index_where<T>(items: []T, matches: (T) -> bool) -> Option<int> {
+    for i in 0..items.len() {
+        if matches(items[i]) {
+            return i
+        }
+    }
+    return None
+}
+
+// One reading only: `T` is fixed by `maybe`, never by looking through the
+// wrap that turns the result into the `Option<int>` the caller asked for.
+func unwrap_or<T>(maybe: Option<T>, fallback: T) -> T {
+    if let value = maybe {
+        return value
+    }
+    return fallback
+}
+
+func identity<T>(value: T) -> T {
+    return value
+}
+
+struct Pair<A, B> {
+    first: A
+    second: B
+
+    var swap_in(a: A) {
+        this.first = a
+    }
+}
+
+// A generic class with a field default, made with `new Stack<T>()`.
+class Stack<T> {
+    items: []T = []
+
+    push(item: T) {
+        this.items.push(item)
+    }
+
+    pop() -> Option<T> {
+        return this.items.pop()
+    }
+
+    len() -> int {
+        return this.items.len()
+    }
+}
+
+// A recursive generic enum, through `indirect`.
+enum Tree<T> {
+    Leaf,
+    indirect Node(Branch<T>),
+}
+
+struct Branch<T> {
+    left: Tree<T>
+    value: T
+    right: Tree<T>
+}
+
+func insert(tree: Tree<int>, value: int) -> Tree<int> {
+    match tree {
+        Leaf: return Tree.Node(Branch { left: .Leaf, value: value, right: .Leaf })
+        Node(branch): {
+            if value < branch.value {
+                return .Node(Branch { left: insert(branch.left, value), value: branch.value, right: branch.right })
+            }
+            return .Node(Branch { left: branch.left, value: branch.value, right: insert(branch.right, value) })
+        }
+    }
+}
+
+// A generic function over a generic enum, calling itself at the same type.
+func walk<T>(tree: Tree<T>, out: []T) {
+    match tree {
+        Leaf: return
+        Node(branch): {
+            walk(branch.left, out)
+            out.push(branch.value)
+            walk(branch.right, out)
+        }
+    }
+}
+
+func size<T>(tree: Tree<T>) -> int {
+    match tree {
+        Leaf: return 0
+        Node(branch): return size(branch.left) + 1 + size(branch.right)
+    }
+}
+
+func main() {
+    // Over a scalar, a string, a class and an array.
+    let numbers: []int = [3, 1, 2]
+    let words: []string = ["alpha" + "", "beta" + ""]
+    let dogs: []Dog = [new Dog(label: "rex" + ""), new Dog(label: "fido" + "")]
+    let grids: [][]int = [[1, 2], [3]]
+    if let n = first(numbers) {
+        print(n)
+    }
+    if let w = first(words) {
+        print(w)
+    }
+    if let d = first(dogs) {
+        print(d.name())
+    }
+    if let g = first(grids) {
+        print(g.len())
+    }
+    let empty: []string = []
+    print(first(empty).is_none())
+
+    // The expected type fixes what no argument does.
+    let small: Option<u8> = first([200, 7])
+    if let byte = small {
+        print(byte)
+    }
+
+    let pair = pair_up(4, "four" + "")
+    print(pair.first)
+    print(pair.second)
+    var changing = pair_up(dogs[0], [1, 2, 3])
+    changing.swap_in(dogs[1])
+    print(changing.first.name())
+    print(changing.second.len())
+    // Equality outside generic code is M34's, on a concrete instance.
+    print(pair_up(1, 2) == pair_up(1, 2))
+    print(pair_up(1, 2) == pair_up(2, 1))
+
+    let lengths = map(words, (word) => word.len())
+    print(lengths[0])
+    let labels = map(dogs, (dog) => dog.name() + "!")
+    print(labels[1])
+    print(unwrap_or(index_where(words, (word) => word == "beta"), -1))
+    print(unwrap_or(index_where(words, (word) => word == "gamma"), -1))
+
+    let maybe: Option<int> = 5
+    let kept: Option<int> = unwrap_or(maybe, 0)
+    print(kept.is_some())
+    let nothing: Option<u8> = None
+    print(unwrap_or(nothing, 7))
+
+    // A generic function named where its type is known.
+    let same: (string) -> string = identity
+    print(same("named" + ""))
+
+    let strings = new Stack<string>()
+    strings.push("one" + "")
+    strings.push("two" + "")
+    print(strings.len())
+    if let top = strings.pop() {
+        print(top)
+    }
+    let pack = new Stack<Dog>()
+    pack.push(dogs[0])
+    let named: Named = pack.items[0]
+    print(named.name())
+    let watched: weak Stack<Dog> = weak(pack)
+    print(watched.alive())
+    let pairs = new Stack<Pair<int, string>>()
+    pairs.push(pair_up(9, "nine" + ""))
+    print(pairs.items[0].second)
+
+    var tree: Tree<int> = .Leaf
+    for value in [5, 2, 8, 1, 9] {
+        tree = insert(tree, value)
+    }
+    let sorted: []int = []
+    walk(tree, sorted)
+    for value in sorted {
+        print(value)
+    }
+    print(size(tree))
+    let words_tree: Tree<string> = Tree.Node(Branch { left: .Leaf, value: "root" + "", right: .Leaf })
+    let collected: []string = []
+    walk(words_tree, collected)
+    print(collected[0])
+}

@@ -1,0 +1,13 @@
+// A method uses the type parameters of the type that declares it; one of its
+// own would be a method that is generic by itself, which is a decision not
+// taken.
+struct Holder {
+    value: int
+
+    convert<T>(value: T) -> T {
+        return value
+    }
+}
+
+func main() {
+}

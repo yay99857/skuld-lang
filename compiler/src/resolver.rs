@@ -940,7 +940,20 @@ impl Resolver {
             }
             // The type name and the field labels are not value names; only the
             // field values are resolved here.
-            ExprKind::StructLiteral { fields, .. } | ExprKind::New { fields, .. } => {
+            ExprKind::StructLiteral { fields, .. } => {
+                for field in fields {
+                    self.expression(&field.value);
+                }
+            }
+            ExprKind::New {
+                type_arguments,
+                fields,
+                ..
+            } => {
+                // A type argument may be sized by a constant: `new Grid<[N]u8>()`.
+                for argument in type_arguments {
+                    self.type_ref(argument);
+                }
                 for field in fields {
                     self.expression(&field.value);
                 }
@@ -1020,7 +1033,12 @@ impl Resolver {
                     self.type_ref(ret);
                 }
             }
-            TypeRef::Named(_) | TypeRef::Weak { .. } => {}
+            TypeRef::Applied { arguments, .. } | TypeRef::Weak { arguments, .. } => {
+                for argument in arguments {
+                    self.type_ref(argument);
+                }
+            }
+            TypeRef::Named(_) => {}
         }
     }
 }

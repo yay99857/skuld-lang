@@ -4,7 +4,7 @@ use crate::{
     module::FileId,
     resolver::{Builtin, SymbolId, SymbolKind},
     span::Span,
-    type_checker::TypedProgram,
+    type_checker::{InstanceKind, Tables, TypedProgram},
     types::{ConstValue, EnumId, Type},
 };
 use std::cell::RefCell;
@@ -27,6 +27,9 @@ struct Lowering<'a> {
     sorts: &'a RefCell<Vec<(crate::types::ArrayId, crate::types::FunctionTypeId)>>,
     /// (class, interface) pairs the program builds a value for.
     vtables: &'a RefCell<Vec<(crate::types::StructId, crate::types::InterfaceId)>>,
+    /// The instance whose body is being lowered, whose records replace the
+    /// program's own; `None` for the program as written.
+    instance: std::cell::Cell<Option<usize>>,
 }
 
 impl Lowering<'_> {
@@ -37,7 +40,44 @@ impl Lowering<'_> {
         self.typed.resolution.references[&(self.file.get(), span.start)]
     }
     fn ty(&self, span: Span) -> Option<Type> {
-        self.typed.expression_type_in(self.file.get(), span)
+        self.tables()
+            .expressions
+            .get(&(self.file.get(), span.start, span.end))
+            .copied()
+    }
+    /// The checker's records for the body being lowered.
+    fn tables(&self) -> &Tables {
+        match self.instance.get() {
+            Some(index) => &self.typed.instances[index].tables,
+            None => &self.typed.tables,
+        }
+    }
+    /// A binding's type in the body being lowered.
+    fn symbol_type(&self, id: SymbolId) -> Type {
+        self.instance
+            .get()
+            .and_then(|index| self.typed.instances[index].tables.symbols.get(&id).copied())
+            .unwrap_or(self.typed.symbol_types[id.0])
+    }
+    /// The function a call or a function value at this position names: the
+    /// instance a generic one was resolved to, or the symbol itself.
+    fn callee(&self, span: Span, id: SymbolId) -> SymbolId {
+        self.tables()
+            .calls
+            .get(&(self.file.get(), span.start, span.end))
+            .copied()
+            .unwrap_or(id)
+    }
+    /// The enum a `Tree.Leaf` builds: for a generic one, the instance the
+    /// checker gave the expression rather than the declaration it names.
+    fn variant_enum(&self, named: EnumId, span: Span) -> EnumId {
+        if self.typed.enums[named.0].params.is_empty() {
+            return named;
+        }
+        match self.ty(span) {
+            Some(Type::Enum(id)) => id,
+            _ => named,
+        }
     }
     /// The enum named by the left of `Enum.Variant` or `module.Enum.Variant`.
     /// Checking already accepted it, so this only has to find it again.
@@ -80,6 +120,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
             function_values: &function_values,
             sorts: &sorts,
             vtables: &vtables,
+            instance: std::cell::Cell::new(None),
         })
         .collect();
     for cx in &files {
@@ -97,7 +138,13 @@ pub fn lower(typed: TypedProgram) -> h::Program {
                 });
             }
         }
-        for declaration in &syntax.structs {
+        // A generic declaration is lowered once per instance, below; as
+        // written it is in terms of parameters the backend cannot lay out.
+        for declaration in syntax
+            .structs
+            .iter()
+            .filter(|declaration| declaration.type_params.is_empty())
+        {
             for method in &declaration.methods {
                 let id = cx.decl(method.name.span);
                 let this = cx.decl(method.body.span);
@@ -126,7 +173,11 @@ pub fn lower(typed: TypedProgram) -> h::Program {
                 });
             }
         }
-        for function in &syntax.functions {
+        for function in syntax
+            .functions
+            .iter()
+            .filter(|function| function.type_params.is_empty())
+        {
             {
                 let id = cx.decl(function.name.span);
                 functions.push(h::Function {
@@ -152,6 +203,78 @@ pub fn lower(typed: TypedProgram) -> h::Program {
                 });
             }
         }
+    }
+    // Every instance of a generic function or method, with its own records.
+    for (index, instance) in typed.instances.iter().enumerate() {
+        let Some(id) = instance.id else {
+            continue;
+        };
+        let file = match instance.kind {
+            InstanceKind::Function { file, .. }
+            | InstanceKind::Method { file, .. }
+            | InstanceKind::Defaults { file, .. } => file,
+        };
+        let cx = &files[file.0];
+        cx.instance.set(Some(index));
+        let syntax = &typed.program.files[file.0].program;
+        let signature = &typed.signatures[&id];
+        match instance.kind {
+            InstanceKind::Function { position, .. } => {
+                let function = &syntax.functions[position];
+                functions.push(h::Function {
+                    id,
+                    name: function.name.text.clone(),
+                    parameters: function
+                        .parameters
+                        .iter()
+                        .zip(&signature.parameters)
+                        .map(|(parameter, ty)| h::Parameter {
+                            id: cx.decl(parameter.name.span),
+                            ty: *ty,
+                            span: parameter.span,
+                        })
+                        .collect(),
+                    return_type: signature.return_type,
+                    body: block(&function.body, cx),
+                    span: function.span,
+                    file,
+                    by_reference: None,
+                });
+            }
+            InstanceKind::Method {
+                declaration,
+                method,
+                receiver,
+                ..
+            } => {
+                let method = &syntax.structs[declaration].methods[method];
+                let this = cx.decl(method.body.span);
+                let mut parameters = vec![h::Parameter {
+                    id: this,
+                    ty: Type::Struct(receiver),
+                    span: Span::new(method.body.span.start, method.body.span.start),
+                }];
+                parameters.extend(method.parameters.iter().zip(&signature.parameters).map(
+                    |(parameter, ty)| h::Parameter {
+                        id: cx.decl(parameter.name.span),
+                        ty: *ty,
+                        span: parameter.span,
+                    },
+                ));
+                functions.push(h::Function {
+                    id,
+                    name: format!("{}.{}", typed.structs[receiver.0].name, method.name.text),
+                    parameters,
+                    return_type: signature.return_type,
+                    body: block(&method.body, cx),
+                    span: method.span,
+                    file,
+                    by_reference: method.mutating.then_some(this),
+                });
+            }
+            InstanceKind::Defaults { .. } => {}
+        }
+        cx.instance.set(None);
     }
     let lambdas = lambdas.into_inner();
     let mut function_values = function_values.into_inner();
@@ -186,18 +309,81 @@ pub fn lower(typed: TypedProgram) -> h::Program {
             .collect(),
         externs,
         lambdas,
-        function_types: typed.function_signatures.clone(),
+        function_types: typed
+            .function_signatures
+            .iter()
+            .map(|info| crate::types::FunctionTypeInfo {
+                parameters: info
+                    .parameters
+                    .iter()
+                    .map(|ty| laid_out(&typed, *ty))
+                    .collect(),
+                return_type: laid_out(&typed, info.return_type),
+            })
+            .collect(),
         function_values,
         sorts,
         equalities: typed.equalities.iter().copied().collect(),
         vtables,
         interfaces: typed.interfaces.clone(),
-        structs: typed.structs.clone(),
-        enums: typed.enums.clone(),
-        arrays: typed.arrays.clone(),
-        fixed_arrays: typed.fixed_arrays.clone(),
-        options: typed.options.clone(),
-        results: typed.results.clone(),
+        structs: typed
+            .structs
+            .iter()
+            .enumerate()
+            .map(|(index, info)| {
+                let mut info = info.clone();
+                if mentions_param(&typed, Type::Struct(crate::types::StructId(index))) {
+                    info.fields.clear();
+                    info.methods.clear();
+                }
+                info
+            })
+            .collect(),
+        enums: typed
+            .enums
+            .iter()
+            .enumerate()
+            .map(|(index, info)| {
+                let mut info = info.clone();
+                if mentions_param(&typed, Type::Enum(EnumId(index))) {
+                    for variant in &mut info.variants {
+                        variant.payload = None;
+                        variant.indirect = false;
+                    }
+                }
+                info
+            })
+            .collect(),
+        arrays: typed
+            .arrays
+            .iter()
+            .map(|info| crate::types::ArrayInfo {
+                element: laid_out(&typed, info.element),
+            })
+            .collect(),
+        fixed_arrays: typed
+            .fixed_arrays
+            .iter()
+            .map(|info| crate::types::FixedArrayInfo {
+                element: laid_out(&typed, info.element),
+                size: info.size,
+            })
+            .collect(),
+        options: typed
+            .options
+            .iter()
+            .map(|info| crate::types::OptionInfo {
+                element: laid_out(&typed, info.element),
+            })
+            .collect(),
+        results: typed
+            .results
+            .iter()
+            .map(|info| crate::types::ResultInfo {
+                ok: laid_out(&typed, info.ok),
+                err: laid_out(&typed, info.err),
+            })
+            .collect(),
         functions,
         sources: typed
             .program
@@ -281,7 +467,7 @@ fn statement(source: &ast::Statement, cx: &Lowering<'_>) -> h::Statement {
                         .map(|binding| cx.decl(binding.span));
                     h::StatementKind::GuardVariable {
                         id,
-                        ty: cx.typed.symbol_types[id.0],
+                        ty: cx.symbol_type(id),
                         pattern,
                         value,
                         error,
@@ -291,7 +477,7 @@ fn statement(source: &ast::Statement, cx: &Lowering<'_>) -> h::Statement {
                 }
                 None => h::StatementKind::Variable {
                     id,
-                    ty: cx.typed.symbol_types[id.0],
+                    ty: cx.symbol_type(id),
                     initializer: expression(&variable.initializer, cx),
                 },
             }
@@ -497,7 +683,7 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     let id = cx.decl(parameter.name.span);
                     h::Parameter {
                         id,
-                        ty: cx.typed.symbol_types[id.0],
+                        ty: cx.symbol_type(id),
                         span: parameter.span,
                     }
                 })
@@ -515,7 +701,7 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                         .iter()
                         .map(|id| h::Parameter {
                             id: *id,
-                            ty: cx.typed.symbol_types[id.0],
+                            ty: cx.symbol_type(*id),
                             span: lambda.span,
                         })
                         .collect()
@@ -615,7 +801,14 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     .clone()
                     .expect("checked construction leaves no field unset");
                 let current = cx.file.replace(declaring);
+                // A generic type's defaults were checked once per instance,
+                // and that instance's records say what they are.
+                let outer = match cx.typed.default_instances.get(&id) {
+                    Some(&index) => cx.instance.replace(Some(index)),
+                    None => cx.instance.get(),
+                };
                 let lowered = expression(&default, cx);
+                cx.instance.set(outer);
                 cx.file.set(current);
                 let lowered = if declaring == current {
                     lowered
@@ -634,7 +827,10 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
             h::ExprKind::StructLiteral { id, fields: values }
         }
         ast::ExprKind::Member { object, member } => {
-            if let Some(enum_id) = cx.enum_prefix(object) {
+            if let Some(enum_id) = cx
+                .enum_prefix(object)
+                .map(|named| cx.variant_enum(named, source.span))
+            {
                 let variant_index = cx.typed.enums[enum_id.0]
                     .find_variant(&member.text)
                     .expect("checked variant");
@@ -702,6 +898,7 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     let Some(Type::Function(ty)) = cx.ty(source.span) else {
                         unreachable!("internal compiler bug: unchecked function value")
                     };
+                    let id = cx.callee(source.span, id);
                     cx.function_values.borrow_mut().push((id, ty));
                     h::ExprKind::FunctionValue { id, ty }
                 }
@@ -752,14 +949,14 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
         // the other operand, which is all the checker allowed it to need.
         ast::ExprKind::Binary {
             left, op, right, ..
-        } if cx.typed.tag_tests.contains_key(&(
+        } if cx.tables().tag_tests.contains_key(&(
             cx.file.get(),
             source.span.start,
             source.span.end,
         )) =>
         {
             let (variant_index, on_left) =
-                cx.typed.tag_tests[&(cx.file.get(), source.span.start, source.span.end)];
+                cx.tables().tag_tests[&(cx.file.get(), source.span.start, source.span.end)];
             let value = if on_left { right } else { left };
             h::ExprKind::TagIs {
                 value: Box::new(expression(value, cx)),
@@ -819,7 +1016,10 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                 );
             }
             if let ast::ExprKind::Member { object, member } = &strip_groups(callee).kind {
-                if let Some(enum_id) = cx.enum_prefix(object) {
+                if let Some(enum_id) = cx
+                    .enum_prefix(object)
+                    .map(|named| cx.variant_enum(named, source.span))
+                {
                     let variant_index = cx.typed.enums[enum_id.0]
                         .find_variant(&member.text)
                         .expect("checked enum variant");
@@ -936,7 +1136,9 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                 {
                     return h::Expr {
                         kind: h::ExprKind::Call {
-                            target: h::CallTarget::Function(cx.reference(member.span)),
+                            target: h::CallTarget::Function(
+                                cx.callee(source.span, cx.reference(member.span)),
+                            ),
                             arguments: arguments.iter().map(|e| expression(e, cx)).collect(),
                         },
                         ty: cx.ty(source.span).expect("checked expression"),
@@ -1104,7 +1306,7 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                 };
             }
             if let Some(&(id, field)) =
-                cx.typed
+                cx.tables()
                     .layout_queries
                     .get(&(cx.file.get(), source.span.start, source.span.end))
             {
@@ -1162,7 +1364,7 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                 SymbolKind::Function if cx.typed.externs.contains_key(&id) => {
                     h::CallTarget::Extern(id)
                 }
-                SymbolKind::Function => h::CallTarget::Function(id),
+                SymbolKind::Function => h::CallTarget::Function(cx.callee(source.span, id)),
                 _ => unreachable!("internal compiler bug: non-callable checked symbol"),
             };
             h::ExprKind::Call {
@@ -1183,7 +1385,7 @@ fn wrap_expression(kind: h::ExprKind, source: &ast::Expr, cx: &Lowering<'_>) -> 
     // object and that interface's table. It happens first, so that a class
     // going into an `Option<Interface>` is widened and then wrapped.
     if let Some(Type::Interface(interface)) = cx
-        .typed
+        .tables()
         .interface_wraps
         .get(&(cx.file.get(), source.span.start, source.span.end))
         .copied()
@@ -1201,7 +1403,7 @@ fn wrap_expression(kind: h::ExprKind, source: &ast::Expr, cx: &Lowering<'_>) -> 
         };
     }
     if let Some(target_type) =
-        cx.typed
+        cx.tables()
             .implicit_wraps
             .get(&(cx.file.get(), source.span.start, source.span.end))
     {
@@ -1214,6 +1416,47 @@ fn wrap_expression(kind: h::ExprKind, source: &ast::Expr, cx: &Lowering<'_>) -> 
         lowered
     }
 }
+/// Whether a type mentions a type parameter, and so belongs to a generic
+/// declaration as written rather than to any instance of it.
+fn mentions_param(typed: &TypedProgram, ty: Type) -> bool {
+    match ty {
+        Type::Param(_) => true,
+        Type::Array(id) => mentions_param(typed, typed.arrays[id.0].element),
+        Type::FixedArray(id) => mentions_param(typed, typed.fixed_arrays[id.0].element),
+        Type::Option(id) => mentions_param(typed, typed.options[id.0].element),
+        Type::Result(id) => {
+            mentions_param(typed, typed.results[id.0].ok)
+                || mentions_param(typed, typed.results[id.0].err)
+        }
+        Type::Function(id) => {
+            let info = &typed.function_signatures[id.0];
+            info.parameters.iter().any(|ty| mentions_param(typed, *ty))
+                || mentions_param(typed, info.return_type)
+        }
+        Type::Struct(id) | Type::Weak(id) => typed.structs[id.0]
+            .instance
+            .as_ref()
+            .is_some_and(|(_, arguments)| arguments.iter().any(|ty| mentions_param(typed, *ty))),
+        Type::Enum(id) => typed.enums[id.0]
+            .instance
+            .as_ref()
+            .is_some_and(|(_, arguments)| arguments.iter().any(|ty| mentions_param(typed, *ty))),
+        _ => false,
+    }
+}
+
+/// A type as the backend lays it out. A type written in terms of a
+/// parameter is never a value any lowered body holds — only instances are
+/// lowered — but the interned tables still list it, so it is given a stand-in
+/// the backend can name, and nothing ever uses it.
+fn laid_out(typed: &TypedProgram, ty: Type) -> Type {
+    if mentions_param(typed, ty) {
+        Type::INT
+    } else {
+        ty
+    }
+}
+
 fn binary(op: ast::BinaryOp) -> h::BinaryOp {
     match op {
         ast::BinaryOp::Or => h::BinaryOp::Or,

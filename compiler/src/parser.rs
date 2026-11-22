@@ -322,8 +322,20 @@ impl Parser<'_> {
         if self.at(&TokenKind::Weak) {
             let start = self.bump().span.start;
             let class = self.path("a class name after `weak`")?;
-            let span = Span::new(start, class.span.end);
-            return Ok(TypeRef::Weak { class, span });
+            let mut end = class.span.end;
+            let arguments = if self.at(&TokenKind::Less) {
+                let (arguments, close) = self.type_arguments()?;
+                end = close;
+                arguments
+            } else {
+                Vec::new()
+            };
+            let span = Span::new(start, end);
+            return Ok(TypeRef::Weak {
+                class,
+                arguments,
+                span,
+            });
         }
         if self.at(&TokenKind::Star) {
             let start = self.bump().span.start;
@@ -355,8 +367,52 @@ impl Parser<'_> {
                 })
             }
         } else {
-            Ok(TypeRef::Named(self.path("a type name")?))
+            let path = self.path("a type name")?;
+            // In a type, nothing that is not a type argument list can follow
+            // a name with `<`: a field ends at its line, a parameter at `,` or
+            // `)`, a result at `{`.
+            if self.at(&TokenKind::Less) {
+                let start = path.span.start;
+                let (arguments, end) = self.type_arguments()?;
+                return Ok(TypeRef::Applied {
+                    path,
+                    arguments,
+                    span: Span::new(start, end),
+                });
+            }
+            Ok(TypeRef::Named(path))
         }
+    }
+    /// `<int, string>` after a generic type's name, closed the way `Option`
+    /// and `Result` are, so `Stack<Pair<int, int>>` closes on one `>>`.
+    /// Answers the arguments and the end of the list.
+    fn type_arguments(&mut self) -> Parsed<(Vec<TypeRef>, usize)> {
+        self.expect(&TokenKind::Less, "`<` and the type arguments")?;
+        let mut arguments = Vec::new();
+        loop {
+            arguments.push(self.type_ref()?);
+            if self.take(&TokenKind::Comma).is_none() {
+                break;
+            }
+        }
+        let end = self.close_generic("`>` after the type arguments")?;
+        Ok((arguments, end))
+    }
+    /// `<T, U>` after the name of a generic declaration. A parameter is a
+    /// name and nothing else: there are no constraints and no defaults.
+    fn type_parameters(&mut self) -> Parsed<Vec<Name>> {
+        if self.take(&TokenKind::Less).is_none() {
+            return Ok(Vec::new());
+        }
+        let mut parameters = Vec::new();
+        loop {
+            parameters.push(self.name("a type parameter name")?);
+            if self.take(&TokenKind::Comma).is_none() {
+                break;
+            }
+        }
+        self.close_generic("`>` after the type parameters")?;
+        Ok(parameters)
     }
 
     fn program(mut self) -> ParseOutput {
@@ -698,6 +754,7 @@ impl Parser<'_> {
     fn enum_declaration(&mut self, visibility: Visibility) -> Parsed<EnumDecl> {
         let start = self.expect(&TokenKind::Enum, "`enum`")?.span.start;
         let name = self.name("an enum name")?;
+        let type_params = self.type_parameters()?;
         // `enum Protocol: u8`. The type after the colon is what the variants
         // are worth, which is a different question from what they carry.
         let underlying = match self.take(&TokenKind::Colon) {
@@ -755,6 +812,7 @@ impl Parser<'_> {
         Ok(EnumDecl {
             visibility,
             name,
+            type_params,
             underlying,
             variants,
             span: Span::new(start, end),
@@ -838,6 +896,7 @@ impl Parser<'_> {
             kind: TypeDeclKind::Union,
             layout,
             name,
+            type_params: Vec::new(),
             conforms: Vec::new(),
             fields,
             methods,
@@ -858,6 +917,7 @@ impl Parser<'_> {
         let keyword = self.bump().span.start;
         let start = foreign_start.unwrap_or(keyword);
         let name = self.name(&format!("a {noun} name"))?;
+        let type_params = self.type_parameters()?;
         // `packed` and `align N` follow the name, before the body. They are
         // read here as ordinary identifiers, so neither is a reserved word.
         let layout = self.layout_modifiers(layout)?;
@@ -878,6 +938,7 @@ impl Parser<'_> {
             kind,
             layout,
             name,
+            type_params,
             conforms,
             fields,
             methods,
@@ -907,6 +968,14 @@ impl Parser<'_> {
                 continue;
             }
             let name = self.name("a field or method name")?;
+            // A method uses its type's parameters; `name<T>(` would give it
+            // its own, which is a decision not taken.
+            if self.at(&TokenKind::Less) {
+                return Err(self.error(
+                    DiagnosticCode::UnsupportedSyntax,
+                    "a method uses the type parameters of the type that declares it and has none of its own",
+                ));
+            }
             // `name(` is a method; `name:` is a field.
             if self.at(&TokenKind::LeftParen) {
                 methods.push(self.nested(|parser| parser.method(name.clone(), field_start))?);
@@ -997,6 +1066,7 @@ impl Parser<'_> {
             // methods, so `pub` is never written on one.
             visibility: Visibility::Public,
             name,
+            type_params: Vec::new(),
             parameters,
             return_type,
             body,
@@ -1122,6 +1192,7 @@ impl Parser<'_> {
     fn function(&mut self, visibility: Visibility) -> Parsed<FunctionDecl> {
         let start = self.expect(&TokenKind::Function, "`func`")?.span.start;
         let name = self.name("a function name")?;
+        let type_params = self.type_parameters()?;
         let parameters = self.parameter_list()?;
         let return_type = self.return_type()?;
         let body = self.block()?;
@@ -1129,6 +1200,7 @@ impl Parser<'_> {
         Ok(FunctionDecl {
             visibility,
             name,
+            type_params,
             parameters,
             return_type,
             body,
@@ -1803,13 +1875,22 @@ impl Parser<'_> {
             TokenKind::New => {
                 self.bump();
                 let name = self.path("a class name after `new`")?;
+                let type_arguments = if self.at(&TokenKind::Less) {
+                    self.type_arguments()?.0
+                } else {
+                    Vec::new()
+                };
                 let fields = self.field_initializers(
                     &TokenKind::LeftParen,
                     &TokenKind::RightParen,
                     "`(` after the class name",
                     "`)` after the fields",
                 )?;
-                ExprKind::New { name, fields }
+                ExprKind::New {
+                    name,
+                    type_arguments,
+                    fields,
+                }
             }
             TokenKind::InterpolationBegin(text) => {
                 self.bump();

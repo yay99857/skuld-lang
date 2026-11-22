@@ -1,0 +1,10 @@
+// A type that contains itself at an ever larger type would need infinitely
+// many instances, and is refused where it is declared, whether or not
+// anything uses it.
+class Chain<T> {
+    next: Option<Chain<[]T>>
+}
+
+func main() {
+    print(1)
+}

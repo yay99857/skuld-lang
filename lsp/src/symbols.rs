@@ -233,6 +233,15 @@ fn signature_text(parameters: &[Parameter], return_type: Option<&TypeRef>) -> St
     text
 }
 
+/// `<int, string>`, or nothing for a type that takes no arguments.
+fn arguments_text(arguments: &[TypeRef]) -> String {
+    if arguments.is_empty() {
+        return String::new();
+    }
+    let written: Vec<String> = arguments.iter().map(type_text).collect();
+    format!("<{}>", written.join(", "))
+}
+
 /// A source type written back out. This is the syntax, not the checker's
 /// `Type`: an outline is drawn for a file that may not check at all.
 pub fn type_text(type_ref: &TypeRef) -> String {
@@ -242,7 +251,12 @@ pub fn type_text(type_ref: &TypeRef) -> String {
         TypeRef::Result { ok, err, .. } => {
             format!("Result<{}, {}>", type_text(ok), type_text(err))
         }
-        TypeRef::Weak { class, .. } => format!("weak {}", path_text(class)),
+        TypeRef::Weak {
+            class, arguments, ..
+        } => format!("weak {}{}", path_text(class), arguments_text(arguments)),
+        TypeRef::Applied {
+            path, arguments, ..
+        } => format!("{}{}", path_text(path), arguments_text(arguments)),
         TypeRef::Array { element, .. } => format!("[]{}", type_text(element)),
         TypeRef::FixedArray { element, size, .. } => {
             format!("[{}]{}", expr_text(size), type_text(element))

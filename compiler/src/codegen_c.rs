@@ -894,6 +894,7 @@ fn type_name(structs: &[StructInfo], ty: Type) -> String {
         Type::Struct(id) if structs[id.0].reference => format!("skuld_s{} *", id.0),
         Type::Struct(id) => format!("skuld_s{}", id.0),
         Type::Error => unreachable!("internal compiler bug: error type in HIR"),
+        Type::Param(_) => unreachable!("internal compiler bug: a type parameter in HIR"),
     }
 }
 impl<'a> Emitter<'a> {

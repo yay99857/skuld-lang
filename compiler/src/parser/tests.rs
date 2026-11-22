@@ -546,7 +546,7 @@ fn class_bodies_and_new_expressions() {
     let StatementKind::Variable(var) = &statement.kind else {
         panic!("variable statement");
     };
-    let ExprKind::New { name, fields } = &var.initializer.kind else {
+    let ExprKind::New { name, fields, .. } = &var.initializer.kind else {
         panic!("new expression");
     };
     assert_eq!(name.name.text, "User");

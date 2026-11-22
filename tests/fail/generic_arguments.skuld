@@ -1,0 +1,22 @@
+// A generic type is written with its arguments, as many as it declares, and
+// an ordinary type takes none.
+struct Box<T> {
+    value: T
+}
+
+struct Plain {
+    value: int
+}
+
+func bare(b: Box) {
+}
+
+func too_many(b: Box<int, int>) {
+}
+
+func not_generic(p: Plain<int>) {
+}
+
+func main() {
+    let b = Box { value: 1 }
+}

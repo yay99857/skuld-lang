@@ -1,0 +1,14 @@
+// Inside a generic body a type parameter is opaque: its values can be stored,
+// passed and returned, and nothing else, because the body is checked once for
+// every instance at the same time. A capability is passed in as a function.
+func same<T>(a: T, b: T) -> bool {
+    return a == b
+}
+
+func show<T>(value: T) {
+    print(value)
+}
+
+func main() {
+    print(same(1, 1))
+}
