@@ -2257,10 +2257,25 @@ impl<'a> Emitter<'a> {
                         self.line(&format!("{arr_c_ty} skuld_t{arr_temp} = {arr_val};"));
                         let idx_temp = self.next_temp;
                         self.next_temp += 1;
+                        // The elements visited are the ones there when the
+                        // loop began. Reading the length each time made a
+                        // `push` in the body a loop that never ended; a body
+                        // that shortens the array is a trap, as it is for a
+                        // comparator during `sort`, rather than a loop that
+                        // quietly stops early or reads what was released.
+                        let count_temp = self.next_temp;
+                        self.next_temp += 1;
                         self.line(&format!(
-                            "for (int64_t skuld_t{idx_temp} = 0; skuld_t{idx_temp} < skuld_t{arr_temp}->len; skuld_t{idx_temp}++) {{"
+                            "const int64_t skuld_t{count_temp} = (int64_t)skuld_t{arr_temp}->len;"
+                        ));
+                        self.line(&format!(
+                            "for (int64_t skuld_t{idx_temp} = 0; skuld_t{idx_temp} < skuld_t{count_temp}; skuld_t{idx_temp}++) {{"
                         ));
                         self.indent += 1;
+                        let site = self.at(collection.span.start);
+                        self.line(&format!(
+                            "if ((size_t)skuld_t{idx_temp} >= skuld_t{arr_temp}->len) skuld_fail(\"the array was shortened while it was being iterated\", {site});"
+                        ));
                         let Type::Array(array_id) = collection.ty else {
                             unreachable!("checked array for loop")
                         };

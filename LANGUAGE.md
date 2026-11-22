@@ -242,6 +242,12 @@ the innermost enclosing loop; outside any loop they are `E0111`.
 values (strings, arrays, classes), each element is safely retained on entry to the iteration and
 released on iteration exit (including upon `break`, `continue` or `return`).
 
+The elements visited are the ones the array held when the loop began: the count is read once, so a
+`push` in the body adds elements the loop does not reach, rather than a loop that never ends. A body
+that shortens the array — `pop`, `remove` — traps with "the array was shortened while it was being
+iterated", the way a comparator that changes the array traps during `sort`, rather than stopping
+early or reading an element already released.
+
 The loop variable is an immutable binding scoped strictly to the loop body. Like `while`, `for` loops
 may execute 0 times, so they do not satisfy a non-void return type. `break` and `continue` inside `for`
 bind to the innermost enclosing loop.

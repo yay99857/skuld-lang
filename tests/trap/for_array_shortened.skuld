@@ -1,0 +1,9 @@
+// Shortening the array a `for` is visiting is a trap, as it is for a
+// comparator during `sort`, rather than a loop that quietly stops early.
+func main() {
+    let names: []string = ["a" + "1", "b" + "2", "c" + "3"]
+    for name in names {
+        print(name)
+        let gone = names.pop()
+    }
+}
