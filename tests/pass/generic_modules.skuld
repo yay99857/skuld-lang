@@ -1,0 +1,26 @@
+// Generics across a module boundary: a public generic class instantiated from
+// another module over a type of its own, a public generic function inferred
+// there, and two structs both called `Item` in two modules, each giving
+// `Holder` an instance of its own.
+import "generic_modules/shapes"
+
+struct Item {
+    name: string
+}
+
+func main() {
+    let mine = new shapes.Holder<Item>()
+    mine.put(Item { name: "local" + "" })
+    let theirs = new shapes.Holder<shapes.Item>()
+    theirs.put(shapes.Item { width: 3 })
+    let made = shapes.wrap_item(7)
+    print(mine.count() + theirs.count() + made.count())
+    print(mine.held[0].name)
+    print(made.held[0].width)
+    if let big = shapes.largest([3, 9, 2]) {
+        print(big)
+    }
+    if let word = shapes.largest(["b" + "", "c", "a"]) {
+        print(word)
+    }
+}

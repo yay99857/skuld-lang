@@ -1,0 +1,83 @@
+// The rest of the language inside a generic body: `?` over a `Result<T, E>`,
+// `defer` in a function and a loop, an `Option<Option<T>>`, and a fixed array
+// `[3]T` made with the repeated literal, over managed and plain types alike.
+enum Parse {
+    Empty,
+    Bad(string),
+}
+
+func all_ok<T, E>(results: []Result<T, E>) -> Result<[]T, E> {
+    let out: []T = []
+    for result in results {
+        let value = result?
+        out.push(value)
+    }
+    return Ok(out)
+}
+
+func first_some<T>(options: []Option<T>) -> Option<T> {
+    for option in options {
+        if let value = option {
+            return value
+        }
+    }
+    return None
+}
+
+func nested<T>(value: T) -> Option<Option<T>> {
+    let inner: Option<T> = value
+    return inner
+}
+
+func count_down<T>(label: T, n: int, log: []string) -> T {
+    defer log.push("left")
+    for i in 0..n {
+        defer log.push("iteration ${i}")
+    }
+    return label
+}
+
+func fill<T>(value: T) -> [3]T {
+    return [value; 3]
+}
+
+struct Cell<T> {
+    value: T
+}
+
+func main() {
+    let good: []Result<int, Parse> = [Ok(1), Ok(2), Ok(3)]
+    match all_ok(good) {
+        Ok(values): print(values.len())
+        Err(e): print("error")
+    }
+    let bad: []Result<string, Parse> = [Ok("a" + ""), Err(.Bad("x" + "")), Err(.Empty)]
+    match all_ok(bad) {
+        Ok(values): print(values.len())
+        Err(e): {
+            match e {
+                Empty: print("empty")
+                Bad(text): print("bad ${text}")
+            }
+        }
+    }
+    let options: []Option<string> = [None, "second" + "", "third"]
+    if let found = first_some(options) {
+        print(found)
+    }
+    if let outer = nested("deep" + "") {
+        if let inner = outer {
+            print(inner)
+        }
+    }
+    let log: []string = []
+    print(count_down("label" + "", 2, log))
+    for line in log {
+        print(line)
+    }
+    let three = fill("x" + "")
+    print(three.len())
+    print(three[2])
+    let cells = fill(Cell { value: [1, 2] })
+    print(cells[1].value.len())
+}

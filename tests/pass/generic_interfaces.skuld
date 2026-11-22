@@ -1,0 +1,72 @@
+// Generic code meeting the older features: a generic class conforming to an
+// interface and widened into it, a method returning its own instance, lambdas
+// whose result type fixes a parameter, a comparator built inside a generic
+// body, and a weak reference to a generic instance.
+interface Sized {
+    size() -> int
+}
+
+class Bag<T>: Sized {
+    items: []T = []
+
+    size() -> int {
+        return this.items.len()
+    }
+
+    add(item: T) -> Bag<T> {
+        this.items.push(item)
+        return this
+    }
+}
+
+func total(things: []Sized) -> int {
+    var sum = 0
+    for thing in things {
+        sum += thing.size()
+    }
+    return sum
+}
+
+func apply<T, U>(value: T, f: (T) -> U) -> U {
+    return f(value)
+}
+
+func twice<T>(value: T, f: (T) -> T) -> T {
+    return f(f(value))
+}
+
+func sorted_by<T>(items: []T, key: (T) -> int) -> []T {
+    let copy = items[0..items.len()]
+    copy.sort((a, b) => key(a).compare(key(b)))
+    return copy
+}
+
+struct Person {
+    name: string
+    age: int
+}
+
+func main() {
+    let ints = new Bag<int>()
+    ints.add(1).add(2).add(3)
+    let strings = new Bag<string>()
+    strings.add("a" + "")
+    let things: []Sized = [ints, strings]
+    print(total(things))
+
+    print(apply(21, (n) => n * 2))
+    print(apply("abc" + "", (s) => s.len()))
+    print(twice(3, (n) => n * n))
+    print(twice("ab" + "", (s) => s + s))
+
+    let people = [Person { name: "ann" + "", age: 40 }, Person { name: "bob", age: 20 }, Person { name: "cy", age: 30 }]
+    for p in sorted_by(people, (p) => p.age) {
+        print(p.name)
+    }
+    print(people[0].name)
+
+    let watched: weak Bag<string> = weak(strings)
+    if let back = watched.upgrade() {
+        print(back.size())
+    }
+}

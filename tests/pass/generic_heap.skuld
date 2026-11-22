@@ -1,0 +1,98 @@
+// A program, not a feature list: a binary min-heap over any `Comparable`, and
+// a heap sort built on it, instantiated over integers, strings, `char` and an
+// empty array of `u8`. The heap's own methods call one another inside a
+// generic class, and a generic function drives it through another one.
+class Heap<T: Comparable> {
+    items: []T = []
+
+    push(item: T) {
+        this.items.push(item)
+        var at = this.items.len() - 1
+        while at > 0 {
+            let parent = (at - 1) / 2
+            if this.items[at].compare(this.items[parent]) != .Less {
+                break
+            }
+            let held = this.items[at]
+            this.items[at] = this.items[parent]
+            this.items[parent] = held
+            at = parent
+        }
+    }
+
+    pop() -> Option<T> {
+        if this.items.len() == 0 {
+            return None
+        }
+        let top = this.items[0]
+        let last = this.items.pop()
+        if let moved = last {
+            if this.items.len() > 0 {
+                this.items[0] = moved
+                this.sift_down(0)
+            }
+        }
+        return top
+    }
+
+    sift_down(start: int) {
+        var at = start
+        loop {
+            let left = at * 2 + 1
+            let right = left + 1
+            var smallest = at
+            if left < this.items.len() && this.items[left].compare(this.items[smallest]) == .Less {
+                smallest = left
+            }
+            if right < this.items.len() && this.items[right].compare(this.items[smallest]) == .Less {
+                smallest = right
+            }
+            if smallest == at {
+                return
+            }
+            let held = this.items[at]
+            this.items[at] = this.items[smallest]
+            this.items[smallest] = held
+            at = smallest
+        }
+    }
+
+    len() -> int {
+        return this.items.len()
+    }
+}
+
+func heap_sort<T: Comparable>(items: []T) -> []T {
+    let heap = new Heap<T>()
+    for item in items {
+        heap.push(item)
+    }
+    let out: []T = []
+    while drain_one(heap, out) {
+    }
+    return out
+}
+
+func drain_one<T: Comparable>(heap: Heap<T>, out: []T) -> bool {
+    if let item = heap.pop() {
+        out.push(item)
+        return true
+    }
+    return false
+}
+
+func main() {
+    let numbers = heap_sort([5, 3, 9, 1, 7, 1, 0, -4])
+    for n in numbers {
+        print(n)
+    }
+    let words = heap_sort(["pear" + "", "apple", "fig" + "", "banana"])
+    for w in words {
+        print(w)
+    }
+    let chars = heap_sort(['z', 'a', 'm'])
+    print(chars[0])
+    print(chars[2])
+    let empty: []u8 = []
+    print(heap_sort(empty).len())
+}
