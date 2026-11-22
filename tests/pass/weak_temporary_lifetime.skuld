@@ -1,0 +1,35 @@
+// Pins a documented rule (LANGUAGE.md, "Memory"): an owning temporary lives
+// until the block that made it ends, so a weak reference to an object nothing
+// names any more still upgrades until then. Changing that is a decision, and
+// this fixture is what should go red when it is taken.
+class Thing {
+    n: int
+}
+
+func make(n: int) -> Thing {
+    return new Thing(n: n)
+}
+
+// Made here rather than in `main`, whose own construction temporaries would
+// otherwise hold the elements until `main` ends — the same rule, one level up.
+func things() -> []Thing {
+    return [new Thing(n: 1), new Thing(n: 2)]
+}
+
+func main() {
+    let items = things()
+    var removed: weak Thing = weak()
+    var made: weak Thing = weak()
+    if true {
+        removed = weak(items[0])
+        items.remove(0)
+        made = weak(make(3))
+        // Both temporaries are still held by this block.
+        print(removed.alive())
+        print(made.alive())
+    }
+    // And released when it ended.
+    print(removed.alive())
+    print(made.alive())
+    print(items.len())
+}

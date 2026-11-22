@@ -1,0 +1,29 @@
+// A field default is evaluated at every construction, so two objects made
+// from the same default never share an array; and a struct copy shares an
+// array field, since arrays have reference semantics even inside a value.
+class Inbox {
+    items: []string = []
+    count: int = 0
+}
+
+struct Point {
+    x: int = 0
+    tags: []int = []
+}
+
+func main() {
+    let a = new Inbox()
+    let b = new Inbox()
+    a.items.push("only a" + "")
+    print(a.items.len())
+    print(b.items.len())
+    let p = Point {}
+    let q = Point {}
+    p.tags.push(1)
+    print(q.tags.len())
+    var r = p
+    r.x = 5
+    r.tags.push(2)
+    print(p.x)
+    print(p.tags.len())
+}
