@@ -2250,6 +2250,104 @@ a parameter nothing fixes); an instantiation that does not end, for a function
 and for a type; a value cycle that exists only once instantiated; and each
 declaration that may not be generic. No change to `std/`.
 
+## M37 — Capabilities a type parameter can require — Designed, not implemented
+
+**Authorized, by the same delegation as M36.** M36 named this as the decision
+that makes generics pay for themselves: an unconstrained `T` has no equality
+and no order, so no searching container and no ordered one can be written.
+The demand objection M36 conceded is conceded again. No existing example or
+module gets shorter for this; the case is the owner's direction.
+
+M36 set aside "a compiler-known equality capability now" because deciding one
+capability without the others would fix a constraint syntax on a third of its
+evidence. What changed is that two of the three can be decided without fixing
+anything the third needs: hashing is the one left out, and nothing below
+forecloses how it will combine with these two.
+
+### The design
+
+- **Two capabilities.** `T: Equatable` allows `==` and `!=` on `T` inside the
+  generic body. `T: Comparable` allows `a.compare(b)`, answering `Ordering`,
+  and implies `Equatable`. Nothing else becomes available: there is no `<` on
+  `T`, because `<` is not defined on `string` either.
+
+  ```text
+  func index_of<T: Equatable>(items: []T, wanted: T) -> Option<int>
+  class SortedMap<K: Comparable, V>
+  ```
+- **What satisfies them is one predicate each, used everywhere.** `Comparable`
+  is exactly the types that have `compare`: every integer width, `char`,
+  `bool` and `string`, or a parameter that is itself `Comparable`. `Equatable`
+  is the types M34's `==` accepts **that hold no `float` anywhere**, or a
+  parameter bound by either capability. The same functions answer whether a
+  type argument satisfies a bound and whether the body may use the operation,
+  so a body that passes for its parameters cannot fail for an instance.
+  "Checked once" depends on that.
+- **`float` is not `Equatable`.** A generic algorithm over `==` relies on it
+  being an equivalence: a set relies on `a == a`. IEEE 754 `==` is not one,
+  since NaN is unequal to itself, which is the reason M32 gave `float` no
+  `compare`. Swift's `Equatable` states reflexivity as a requirement, in the
+  doc comment of `Equatable.swift`, and makes `Float` conform anyway. The Go
+  specification's `comparable` includes floats. Rust, recalled rather than
+  read here, keeps `f64` out of `Eq`. Skuld takes the reading that keeps its
+  own rule. `==` on a `float` outside generic code is unchanged.
+- **Written only after a type parameter's name.** `<T: Equatable>` on any
+  generic declaration. The two names are read as capabilities in that one
+  position and are ordinary identifiers everywhere else, as `packed`, `align`
+  and `indirect` are. A program may declare a type called `Comparable`: one
+  fixture already declares a `class Ordered`. Any other name after `T:` is an
+  error. `Ordering` gets its own message, since it is the near-miss.
+- **One capability per parameter, for now.** The two form a chain, so one
+  always says it. `+` is not refused; it is not needed until hashing arrives,
+  and that milestone decides how a hashable and comparable key is written.
+- **Checked wherever an instance is made**:
+  - at a call, with the span of the argument that fixed the parameter;
+  - at a type written with arguments;
+  - inside a generic declaration that names a constrained type over its own
+    parameters. `func g<T>(s: SortedMap<T, int>)` is refused in `g`'s
+    signature, unless `T` is bound, and `T: Comparable` satisfies
+    `Equatable`.
+
+  Structural types satisfy through their parts: `Option<T>` is `Equatable`
+  when `T` is.
+- **Codegen needs nothing.** An instance is concrete, and `==` and `compare`
+  on a concrete type are already emitted.
+
+### What was rejected
+
+- **Interfaces as constraints**: only classes implement one, so no scalar
+  could satisfy it. That is open question 1's reason, unchanged.
+- **User-declared traits or protocols**, as in Rust and Swift. They need
+  conformance for builtin types and coherence rules, which is a milestone of
+  its own.
+- **Go's type sets** (`~int | ~string`). They expose union types to users,
+  which the language does not have.
+- **Reserved names.** Reserving them would break a fixture, and the position
+  already says what the word is.
+- **`Set<T: Equatable>` as the closing marker.** Without hashing it is a list
+  with no duplicates, built in quadratic time. The sorted container is the
+  real deliverable: binary search over `compare` gives logarithmic lookup.
+
+### Out
+
+Hashing, and with it `Map<K, V>` and `Set<T>`. Also out: `<` on `T`, combining
+capabilities, a capability on an interface, and any change to `std/`.
+
+### Closing marker
+
+`tests/pass/capabilities.skuld` runs clean under the sanitizers and on i686.
+It contains:
+
+- `index_of` and `contains` over `Equatable`, instantiated with `int`, a value
+  struct and an enum;
+- `max` over `Comparable`;
+- a `SortedMap<K: Comparable, V>` doing binary-search lookup and insertion
+  over `int` and `string` keys.
+
+The fail fixtures cover: an operation on a parameter without its bound; `float`
+and a class given for `Equatable`, with the span on the argument; a declaration
+naming a constrained type over an unbound parameter; and an unknown capability.
+
 ## Open design questions
 
 These are not settled by this document and change the shape of the milestones
