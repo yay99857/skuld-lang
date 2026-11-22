@@ -2195,6 +2195,9 @@ impl Checker<'_> {
                         return false;
                     }
                     let mut has_wildcard = false;
+                    // A `bool` has two values, so naming both is as complete
+                    // as a wildcard, the way naming every variant is.
+                    let mut booleans = [false, false];
                     let mut all_arms_return = !arms.is_empty();
                     for arm in arms {
                         match &arm.pattern {
@@ -2206,13 +2209,44 @@ impl Checker<'_> {
                                 let const_ty = self.expression(c_expr);
                                 self.expected_context = None;
                                 self.expect_type(target_ty, const_ty, c_expr.span);
+                                if let ExprKind::Literal(Literal::Boolean(value)) =
+                                    &strip_groups_ref(c_expr).kind
+                                {
+                                    booleans[usize::from(*value)] = true;
+                                }
                             }
                             MatchPattern::Range {
                                 start,
                                 end,
-                                inclusive: _,
+                                inclusive,
                                 span,
                             } => {
+                                // A range that holds nothing is a mistake in
+                                // the pattern, most often its ends swapped,
+                                // and an arm that can never match says so.
+                                let bound = |expr: &Expr| match &strip_groups_ref(expr).kind {
+                                    ExprKind::Literal(Literal::Char(c)) => Some(*c as i128),
+                                    _ => self.const_int_value(expr),
+                                };
+                                if let (Some(low), Some(high)) = (bound(start), bound(end))
+                                    && (high < low || (high == low && !*inclusive))
+                                {
+                                    let written = self.span_text(*span);
+                                    self.error(
+                                        DiagnosticCode::IntegerRange,
+                                        *span,
+                                        format!(
+                                            "the range `{written}` holds no value, so this arm can never match"
+                                        ),
+                                    );
+                                    if let Some(last) = self.diagnostics.last_mut() {
+                                        last.diagnostic.help = Some(if high < low {
+                                            "a range runs from its lower end to its upper end; write the smaller value first".into()
+                                        } else {
+                                            "`a..a` is empty because the end is excluded; write the value itself, or `a..=a`".into()
+                                        });
+                                    }
+                                }
                                 if target_ty.int_type().is_none() && target_ty != Type::Char {
                                     self.error(
                                         DiagnosticCode::InvalidOperator,
@@ -2282,14 +2316,20 @@ impl Checker<'_> {
                         let returns = self.block(&arm.body);
                         all_arms_return &= returns;
                     }
-                    if !has_wildcard {
+                    let exhaustive =
+                        has_wildcard || (target_ty == Type::Bool && booleans == [true, true]);
+                    if !exhaustive {
                         self.error(
                             DiagnosticCode::NonExhaustiveMatch,
                             statement.span,
-                            "non-exhaustive match: value matches require a wildcard `_` arm",
+                            if target_ty == Type::Bool {
+                                "non-exhaustive match: cover both `true` and `false`, or add a wildcard `_` arm"
+                            } else {
+                                "non-exhaustive match: value matches require a wildcard `_` arm"
+                            },
                         );
                     }
-                    return all_arms_return && has_wildcard;
+                    return all_arms_return && exhaustive;
                 }
                 // A `Result` matches like a two-variant enum, so the arm and
                 // exhaustiveness checking below is shared rather than repeated.

@@ -1109,7 +1109,7 @@ match status {
 ```
 
 - Target expression can be an enum, a `Result` (which matches as a two-variant enum with `Ok` and `Err`), or any scalar or string type (integers, float, bool, string). Non-matchable types like structs or classes are rejected (`E0102`).
-- Arm patterns support variant patterns (`Status.Pending`, `Status.Active(code)`), literal and constant value patterns, half-open ranges `a..b`, inclusive ranges `a..=b`, and the wildcard pattern (`_`).
+- Arm patterns support variant patterns (`Status.Pending`, `Status.Active(code)`), literal and constant value patterns, half-open ranges `a..b`, inclusive ranges `a..=b`, and the wildcard pattern (`_`). A range whose ends are known and that holds no value — `10..=1`, `3..3` — is an error (`E0105`): the arm could never match, and the ends are almost always swapped.
 - A variant pattern may leave the enum out — `Pending:` and `Active(code):` —
   since the target already says which enum it is. A pattern never takes the
   dotted `.Pending` an expression does: the arm grammar would then depend on
@@ -1119,7 +1119,7 @@ match status {
   until M32.
 - Arms can have a single statement or a block `{ ... }`.
 - Variant payload bindings introduce an immutable local variable scoped to that arm's body.
-- Exhaustiveness is strictly checked: every enum variant must be covered or a wildcard `_` provided; for scalar and string matches, a wildcard `_` arm is mandatory (`E0113`).
+- Exhaustiveness is strictly checked: every enum variant must be covered or a wildcard `_` provided; for scalar and string matches, a wildcard `_` arm is mandatory (`E0113`), except that a `bool` match naming both `true` and `false` is complete without one.
 - If every arm returns (or diverges), the `match` statement satisfies the function's return contract.
 - Inside loops, `break` and `continue` inside match arms naturally bind to the enclosing loop.
 
