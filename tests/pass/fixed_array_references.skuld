@@ -1,0 +1,75 @@
+// A fixed array may hold references — classes, arrays, interface values,
+// weak references — as well as values. Every container below is built from
+// one, since it was the building that went wrong: the literal took a count
+// on its own zeroed storage before any element was written.
+interface Shape {
+    area() -> int
+}
+class Dog: Shape {
+    name: string
+    area() -> int { return this.name.len() }
+}
+enum Pack {
+    Empty
+    Two([2]Dog)
+}
+class Yard {
+    dogs: [2]Dog
+    maybe: [2]Option<Dog> = [None; 2]
+    watchers: [2]weak Dog
+}
+struct Lot {
+    shapes: [2]Shape
+}
+func make(prefix: string) -> [2]Dog {
+    return [new Dog(name: prefix + "1"), new Dog(name: prefix + "2")]
+}
+func pick(found: bool) -> Result<[2]Dog, string> {
+    if found { return Ok(make("r")) }
+    return Err("none" + "!")
+}
+func main() {
+    let pair = make("p")
+    let opt: Option<[2]Dog> = Some(pair)
+    if let Some(dogs) = opt { print(dogs[0].name) }
+    match pick(true) {
+        Ok(dogs): print(dogs[1].name)
+        Err(reason): print(reason)
+    }
+    match pick(false) {
+        Ok(dogs): print(dogs[1].name)
+        Err(reason): print(reason)
+    }
+    let pack = Pack.Two(pair)
+    match pack {
+        Two(dogs): print(dogs[1].name)
+        Empty: print("empty")
+    }
+    let yard = new Yard(dogs: pair, watchers: [weak(pair[0]), weak(pair[1])])
+    yard.dogs[0] = new Dog(name: "new" + "!")
+    yard.maybe[1] = pair[0]
+    print(yard.dogs[0].name)
+    print(yard.maybe[0].is_none())
+    print(yard.watchers[1].alive())
+    let grid: [][2]Dog = [pair, make("g")]
+    grid.push(make("h"))
+    print(grid[2][1].name)
+    let lot = Lot { shapes: [pair[0], pair[1]] }
+    var total = 0
+    for shape in lot.shapes { total += shape.area() }
+    print(total)
+    let part = pair[0..1]
+    part.push(pair[1])
+    print(part.len())
+    for dog in pair { print(dog.name) }
+    var copy = pair
+    copy[0] = pair[1]
+    print(copy[0].name)
+    print(pair[0].name)
+    let same: [3]Dog = [pair[0]; 3]
+    print(same[2].name)
+    let rows: [2][]int = [[1], [2, 3]]
+    rows[0].push(9)
+    print(rows[0].len())
+    print(rows[1].len())
+}

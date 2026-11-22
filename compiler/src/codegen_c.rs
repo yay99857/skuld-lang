@@ -2430,7 +2430,7 @@ impl<'a> Emitter<'a> {
                     .map(|element| self.expression(element))
                     .collect();
                 let type_str = self.c_type(expr.ty);
-                let name = self.store(expr.ty, &format!("({type_str}){{0}}"), false);
+                let name = self.store(expr.ty, &format!("({type_str}){{0}}"), true);
                 for (position, value) in values.iter().enumerate() {
                     self.line(&format!(
                         "{name}.data[{position}] = {};",
@@ -2446,7 +2446,7 @@ impl<'a> Emitter<'a> {
                 let element_type = self.fixed_arrays[id.0].element;
                 let val = self.expression(element);
                 let type_str = self.c_type(expr.ty);
-                let name = self.store(expr.ty, &format!("({type_str}){{0}}"), false);
+                let name = self.store(expr.ty, &format!("({type_str}){{0}}"), true);
                 self.line(&format!(
                     "for (size_t skuld_i = 0; skuld_i < {size}; ++skuld_i) {{ {name}.data[skuld_i] = {}; }}",
                     self.retained(element_type, &val)
