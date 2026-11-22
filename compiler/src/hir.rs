@@ -21,6 +21,9 @@ pub struct Program {
     pub(crate) options: Vec<crate::types::OptionInfo>,
     pub(crate) results: Vec<crate::types::ResultInfo>,
     pub(crate) functions: Vec<Function>,
+    /// Every file of the program, by `FileId`, so that a run-time failure
+    /// can say where it happened in the coordinates a reader uses.
+    pub(crate) sources: Vec<crate::span::SourceFile>,
     /// One entry per lambda in the program, in lowering order.
     pub(crate) lambdas: Vec<Lambda>,
     /// Interned function-value signatures; `Type::Function` indexes this.
@@ -63,6 +66,8 @@ pub(crate) struct Function {
     pub return_type: Type,
     pub body: Block,
     pub span: Span,
+    /// The file its spans are offsets into.
+    pub file: crate::module::FileId,
     /// The receiver of a `var` method, which arrives as the address of the
     /// caller's storage. Every other parameter is a value.
     pub by_reference: Option<SymbolId>,
@@ -273,6 +278,13 @@ pub(crate) enum ExprKind {
     Interpolation(Vec<InterpolationPart>),
     Array(Vec<Expr>),
     FixedArray(Vec<Expr>),
+    /// An expression written in another file than the function it is
+    /// evaluated in — a field default, which runs at every construction — so
+    /// its spans are offsets into `file`.
+    InFile {
+        file: crate::module::FileId,
+        value: Box<Expr>,
+    },
     FixedArrayRepeat {
         element: Box<Expr>,
         size: usize,
@@ -455,6 +467,9 @@ pub(crate) struct Lambda {
     pub(crate) return_type: Type,
     pub(crate) body: Block,
     pub(crate) span: Span,
+    /// The file its spans are offsets into, which is the file it was written
+    /// in, whatever function it is called from.
+    pub(crate) file: crate::module::FileId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

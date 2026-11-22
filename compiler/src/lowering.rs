@@ -121,6 +121,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
                     return_type: typed.signatures[&id].return_type,
                     body: block(&method.body, cx),
                     span: method.span,
+                    file: cx.file.get(),
                     by_reference: method.mutating.then_some(this),
                 });
             }
@@ -146,6 +147,7 @@ pub fn lower(typed: TypedProgram) -> h::Program {
                     return_type: typed.signatures[&id].return_type,
                     body: block(&function.body, cx),
                     span: function.span,
+                    file: cx.file.get(),
                     by_reference: None,
                 });
             }
@@ -197,6 +199,12 @@ pub fn lower(typed: TypedProgram) -> h::Program {
         options: typed.options.clone(),
         results: typed.results.clone(),
         functions,
+        sources: typed
+            .program
+            .files
+            .iter()
+            .map(|file| crate::span::SourceFile::new(file.name.clone(), file.source.clone()))
+            .collect(),
         // A hosted program has been checked to have one; a freestanding
         // program is started by something else entirely.
         entry: typed.entry(),
@@ -526,6 +534,7 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     span: lambda.body.span,
                 },
                 span: lambda.span,
+                file: cx.file.get(),
             });
             let body = block(&lambda.body, cx);
             cx.lambdas.borrow_mut()[index].body = body;
@@ -608,6 +617,18 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                 let current = cx.file.replace(declaring);
                 let lowered = expression(&default, cx);
                 cx.file.set(current);
+                let lowered = if declaring == current {
+                    lowered
+                } else {
+                    h::Expr {
+                        ty: lowered.ty,
+                        span: lowered.span,
+                        kind: h::ExprKind::InFile {
+                            file: declaring,
+                            value: Box::new(lowered),
+                        },
+                    }
+                };
                 values.push((index, lowered));
             }
             h::ExprKind::StructLiteral { id, fields: values }

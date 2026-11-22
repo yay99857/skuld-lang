@@ -374,10 +374,21 @@ and argument evaluation order.
 magnitude under unary minus in `-9223372036854775808` (grouping is allowed).
 Integer addition, subtraction, multiplication and negation trap on overflow.
 Division truncates toward zero; remainder has the dividend's sign. Division
-and remainder by zero trap. MIN / -1 traps; MIN % -1 is zero. Runtime failures
-print a message with a source byte offset to stderr and exit 1. Static checking
-does not attempt constant arithmetic evaluation, so `1 / 0` passes checking
-and fails only when evaluated. Runtime source-line rendering is future work.
+and remainder by zero trap. MIN / -1 traps; MIN % -1 is zero. A run-time
+failure prints its message and where it happened, the way a diagnostic does,
+to stderr and exits 1:
+
+```text
+runtime error: array index out of bounds
+  --> main.skuld:4:17
+```
+
+The file is the one the failing operation was written in, which for a field
+default is the file declaring the type rather than the one constructing it.
+The program carries a table of only the places it can fail at, with the line
+and column worked out when it is compiled. Static checking does not attempt
+constant arithmetic evaluation, so `1 / 0` passes checking and fails only when
+evaluated.
 
 Floats use binary64 operations without fast-math, with normal IEEE infinities
 and NaNs possible during arithmetic; literal parsing still rejects non-finite

@@ -142,13 +142,42 @@ fn runtime_integer_errors_are_defined() {
         "1 / 0",
         "1 % 0",
     ] {
-        let fixture = Fixture::new(&format!("func main() {{ print({expression}) }}"));
+        // On the second line, so the line is not right by accident.
+        let fixture = Fixture::new(&format!("func main() {{\n    print({expression})\n}}"));
         let output = fixture.run();
         assert_eq!(output.status.code(), Some(1), "{expression}: {:?}", output);
-        assert!(String::from_utf8_lossy(&output.stderr).contains("runtime error:"));
-        assert!(String::from_utf8_lossy(&output.stderr).contains("source byte"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("runtime error:"), "{stderr}");
+        // Where it failed, the way a compiler diagnostic says it: the file,
+        // the line and the column of the operation that trapped.
+        assert!(stderr.contains("  --> "), "{stderr}");
+        assert!(stderr.contains("input with spaces.skuld:2:"), "{stderr}");
         assert_eq!(fs::read_dir(&fixture.dir).expect("contents").count(), 1);
     }
+}
+#[test]
+fn a_trap_names_the_file_it_happened_in() {
+    // The default runs at every construction, in main's file, but it was
+    // written in the module's, and that is where the failure is.
+    let fixture = Fixture::new(
+        "import \"shapes\"\nfunc main() {\n    let s = shapes.Shape {}\n    print(s.ratio)\n}",
+    );
+    let module = fixture.dir.join("shapes");
+    fs::create_dir(&module).expect("module directory");
+    fs::write(
+        module.join("shape.skuld"),
+        "pub struct Shape {\n    width: int = 0\n    ratio: int = 10 / zero()\n}\nfunc zero() -> int {\n    return 0\n}\n",
+    )
+    .expect("module source");
+    let output = fixture.run();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("runtime error: integer division by zero"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("shape.skuld:3:"), "{stderr}");
+    fs::remove_dir_all(&module).expect("module removed");
 }
 #[test]
 fn check_does_not_require_clang_and_run_reports_its_absence() {
