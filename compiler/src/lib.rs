@@ -21,6 +21,47 @@ pub use formatter::format_source;
 pub mod type_checker;
 pub mod types;
 
+/// How much stack a compilation is given by [`with_compiler_stack`].
+///
+/// Every stage after the parser walks the syntax tree by recursion, so the
+/// stack it needs is the tree's depth times a frame. The frames are large —
+/// an unoptimised build spent a megabyte, the whole of a Windows main thread,
+/// on a concatenation of a hundred strings — and the parser admits a tree a
+/// thousand levels deep. Only address space is reserved; a page is committed
+/// when it is first touched.
+pub const COMPILER_STACK_BYTES: usize = 256 * 1024 * 1024;
+
+/// Run a compilation on a thread whose stack is sized for the deepest tree the
+/// parser admits, and hand back what it answered.
+///
+/// The stack of the thread a program starts on is the system's choice — one
+/// megabyte on Windows, eight on Linux — and the limits in `parser.rs` are not
+/// written against either. A binary that compiles calls this once around its
+/// whole run, so that the tree is also dropped where there is room to drop
+/// it. If the thread cannot be started the work runs where it was asked for,
+/// which is no worse than it was.
+pub fn with_compiler_stack<T: Send>(work: impl FnOnce() -> T + Send) -> T {
+    let mut work = Some(work);
+    let answered = std::thread::scope(|scope| {
+        let spawned = std::thread::Builder::new()
+            .name("skuld".into())
+            .stack_size(COMPILER_STACK_BYTES)
+            .spawn_scoped(scope, || work.take().map(|work| work()));
+        match spawned {
+            Ok(thread) => match thread.join() {
+                Ok(answer) => answer,
+                Err(panic) => std::panic::resume_unwind(panic),
+            },
+            Err(_) => None,
+        }
+    });
+    match (answered, work) {
+        (Some(answer), _) => answer,
+        (None, Some(work)) => work(),
+        (None, None) => unreachable!("the work either ran or is still here"),
+    }
+}
+
 /// Load, resolve and type-check a whole program: the entry file, and every
 /// module it imports, through the caller's loader.
 pub fn check_program(

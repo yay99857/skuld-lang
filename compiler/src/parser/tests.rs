@@ -297,9 +297,19 @@ fn deeply_nested_and_long_expressions_are_diagnosed() {
     for body in [
         format!("{}1{}", "(".repeat(200), ")".repeat(200)),
         format!("{}true", "!".repeat(200)),
-        format!("{}1", "1+".repeat(400)),
+        format!("{}1", "1+".repeat(1100)),
+        format!("x{}", ".y()".repeat(600)),
         format!("{}{}", "{".repeat(100), "}".repeat(100)),
-        format!("{}{{}}", "if true {} else ".repeat(100)),
+        format!("{}{{}}", "if true {} else ".repeat(1100)),
+        // The depth is the tree's, wherever in it the levels are: a chain
+        // under the left end of a chain, in the last of many arms. None of
+        // the three is over the limit alone.
+        format!(
+            "{}{{ let x = ({}1){} }}",
+            "if true {} else ".repeat(400),
+            "1+".repeat(400),
+            "+1".repeat(400)
+        ),
     ] {
         let output = parse(&format!("func main() {{ {body} }}"));
         assert!(output.program.is_none());
@@ -312,6 +322,73 @@ fn deeply_nested_and_long_expressions_are_diagnosed() {
             output.diagnostics
         );
     }
+}
+
+#[test]
+fn what_is_wide_is_not_deep() {
+    // A table is as many siblings as it has entries, one level down. The
+    // limit this replaced counted tokens and refused the 128th element.
+    let table = (0..5000)
+        .map(|n| n.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let arguments = "f(1 + 2), ".repeat(2000);
+    for body in [
+        format!("let table = [{table}]"),
+        format!("g({arguments}0)"),
+        format!("let text = {}\"z\"", "\"a\" + ".repeat(300)),
+        format!("let last = x{}", ".next()".repeat(200)),
+        // A right operand hangs off the top of a chain, so its own depth is
+        // not added to the chain's.
+        format!("let sum = {}({}1)", "1+".repeat(700), "1+".repeat(700)),
+    ] {
+        let output = parse(&format!("func main() {{ {body} }}"));
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+        assert!(output.program.is_some());
+    }
+}
+
+#[test]
+fn a_tree_too_deep_is_reported_once() {
+    // Recovery skips what failed, so its height must not be charged to the
+    // syntax that follows it.
+    let output = parse(&format!(
+        "func main() {{
+    let x = {}1
+    print(x)
+}}
+func other() {{}}",
+        "1 + ".repeat(1100)
+    ));
+    let limits = output
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::SyntaxLimit)
+        .count();
+    assert_eq!(limits, 1, "{:?}", output.diagnostics);
+}
+
+#[test]
+fn a_chain_of_alternatives_is_not_nesting() {
+    // Arms are read in a loop, so a long chain does not count against the
+    // limit on nesting, and the tree is the one recursion built: each
+    // `else if` is the `else` of the one before it.
+    let chain = (0..300)
+        .map(|n| format!("if x == {n} {{ }} else "))
+        .collect::<String>();
+    let output = parse(&format!("func main() {{ {chain}{{ }} }}"));
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let program = output.program.expect("a program");
+    let mut statement = &program.functions[0].body.statements[0];
+    let end = statement.span.end;
+    let mut arms = 0;
+    while let StatementKind::If { else_branch, .. } = &statement.kind {
+        arms += 1;
+        assert_eq!(statement.span.end, end);
+        statement = else_branch.as_ref().expect("every arm has an else");
+    }
+    assert_eq!(arms, 300);
+    assert!(matches!(statement.kind, StatementKind::Block(_)));
 }
 
 #[test]

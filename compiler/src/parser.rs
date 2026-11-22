@@ -30,15 +30,29 @@ pub fn parse(source: &str) -> ParseOutput {
         position: 0,
         diagnostics: Vec::new(),
         depth: 0,
-        expression_start: None,
+        height: 0,
         struct_literals: true,
     }
     .program()
 }
 
-// Bound recursive syntax and expression size before exhausting the host stack.
+// Two bounds, for two stacks.
+//
+// `MAX_DEPTH` bounds this parser's own recursion: a block inside a block, a
+// parenthesis inside a parenthesis.
+//
+// `MAX_TREE_DEPTH` bounds how deep the tree it builds may be, which is what
+// every later stage recurses over. The two are not the same number because a
+// tree grows without the parser recursing: `a + b + c` is built in a loop and
+// is one level deeper per operator, and so is `a.b().c()` per call and an
+// `else if` per arm.
+//
+// The second bound used to be a count of tokens in an expression, 256 of
+// them. That refused what is wide rather than deep — a table of two hundred
+// numbers is two hundred siblings one level down — and so a program could not
+// carry its own data. Depth is what the stack pays for, so depth is counted.
 const MAX_DEPTH: usize = 64;
-const MAX_EXPRESSION_TOKENS: usize = 256;
+const MAX_TREE_DEPTH: usize = 1024;
 type Parsed<T> = Result<T, Diagnostic>;
 
 struct Parser<'a> {
@@ -47,7 +61,9 @@ struct Parser<'a> {
     position: usize,
     diagnostics: Vec<Diagnostic>,
     depth: usize,
-    expression_start: Option<usize>,
+    /// How tall the tallest piece of syntax finished so far inside the one
+    /// being parsed is. See [`Parser::nested`] and [`Parser::deepen`].
+    height: usize,
     /// False while parsing an `if`/`while` condition, where `name {` would be
     /// ambiguous with the block that follows.
     struct_literals: bool,
@@ -132,9 +148,38 @@ impl Parser<'_> {
             ));
         }
         self.depth += 1;
+        // What is parsed in here starts with nothing inside it, and ends one
+        // level taller than the tallest thing that was. Its siblings are not
+        // stacked on one another, which is what lets a list be long.
+        let beside = std::mem::take(&mut self.height);
         let result = f(self);
         self.depth -= 1;
-        result
+        let Ok(result) = result else {
+            // What failed is skipped by recovery, so its height is not
+            // something the syntax after it is built on.
+            self.height = beside;
+            return result;
+        };
+        let height = self.height + 1;
+        self.height = beside.max(height);
+        self.tree_limit()?;
+        Ok(result)
+    }
+    /// One more level on top of what has been parsed so far, without the
+    /// parser recursing for it: an operator over its left operand, a call
+    /// over its callee, an `else if` under the `if` before it.
+    fn deepen(&mut self) -> Parsed<()> {
+        self.height += 1;
+        self.tree_limit()
+    }
+    fn tree_limit(&self) -> Parsed<()> {
+        if self.depth + self.height > MAX_TREE_DEPTH {
+            return Err(self.error(
+                DiagnosticCode::SyntaxLimit,
+                format!("syntax depth limit exceeded ({MAX_TREE_DEPTH} levels)"),
+            ));
+        }
+        Ok(())
     }
     fn previous_end(&self) -> usize {
         if self.position == 0 {
@@ -1538,7 +1583,74 @@ impl Parser<'_> {
         )?;
         Ok(ExprKind::StructLiteral { name, fields })
     }
+    /// `if` with every `else if` that follows it.
+    ///
+    /// The arms are read in a loop and nested afterwards, last one innermost,
+    /// which is the tree the recursive reading built. Recursing once per arm
+    /// counted a chain of alternatives against the limit on nesting, although
+    /// nothing in one is inside anything else as far as a reader is concerned.
     fn if_statement(&mut self) -> Parsed<Statement> {
+        // The tree is still one level deeper per arm, and the deepest thing
+        // in it may sit in the last one: the chain is as tall as its arms are
+        // many, on top of the tallest of them.
+        let beside = std::mem::take(&mut self.height);
+        let mut tallest = 0;
+        let mut arms = vec![self.if_arm()?];
+        let mut otherwise = None;
+        loop {
+            tallest = tallest.max(std::mem::take(&mut self.height));
+            if self.take(&TokenKind::Else).is_none() {
+                break;
+            }
+            if self.at(&TokenKind::If) {
+                self.height = tallest + arms.len();
+                self.tree_limit()?;
+                self.height = 0;
+                arms.push(self.if_arm()?);
+            } else {
+                let block = self.block()?;
+                tallest = tallest.max(std::mem::take(&mut self.height));
+                otherwise = Some(Box::new(Statement {
+                    span: block.span,
+                    kind: StatementKind::Block(block),
+                }));
+                break;
+            }
+        }
+        self.height = beside.max(tallest + arms.len() - 1);
+        let end = self.previous_end();
+        let mut else_branch = otherwise;
+        let mut statement = None;
+        while let Some((start, binding, condition, then_block)) = arms.pop() {
+            let built = Statement {
+                kind: if let Some((pattern, binding)) = binding {
+                    StatementKind::IfLet {
+                        pattern,
+                        binding,
+                        value: condition,
+                        then_block,
+                        else_branch: else_branch.take(),
+                    }
+                } else {
+                    StatementKind::If {
+                        condition,
+                        then_block,
+                        else_branch: else_branch.take(),
+                    }
+                },
+                span: Span::new(start, end),
+            };
+            if arms.is_empty() {
+                statement = Some(built);
+            } else {
+                else_branch = Some(Box::new(built));
+            }
+        }
+        Ok(statement.expect("an `if` has at least the arm it began with"))
+    }
+    /// One `if condition { ... }`, without what follows its block.
+    #[allow(clippy::type_complexity)]
+    fn if_arm(&mut self) -> Parsed<(usize, Option<(IfLetPattern, Name)>, Expr, Block)> {
         let start = self.expect(&TokenKind::If, "`if`")?.span.start;
         let binding = if self.take(&TokenKind::Let).is_some() {
             let constructor = match &self.current().kind {
@@ -1578,68 +1690,15 @@ impl Parser<'_> {
         };
         let condition = self.with_struct_literals(false, |parser| parser.expression())?;
         let then_block = self.block()?;
-        let else_branch = if self.take(&TokenKind::Else).is_some() {
-            if self.at(&TokenKind::If) {
-                Some(Box::new(self.nested(|parser| parser.if_statement())?))
-            } else {
-                let block = self.block()?;
-                Some(Box::new(Statement {
-                    span: block.span,
-                    kind: StatementKind::Block(block),
-                }))
-            }
-        } else {
-            None
-        };
-        Ok(Statement {
-            kind: if let Some((pattern, binding)) = binding {
-                StatementKind::IfLet {
-                    pattern,
-                    binding,
-                    value: condition,
-                    then_block,
-                    else_branch,
-                }
-            } else {
-                StatementKind::If {
-                    condition,
-                    then_block,
-                    else_branch,
-                }
-            },
-            span: Span::new(start, self.previous_end()),
-        })
+        Ok((start, binding, condition, then_block))
     }
     fn expression(&mut self) -> Parsed<Expr> {
-        let root = self.expression_start.is_none();
-        if root {
-            self.expression_start = Some(self.position);
-        }
-        let result = self.expression_bp(0);
-        if root {
-            self.expression_start = None;
-        }
-        result
-    }
-    fn expression_limit(&self) -> Parsed<()> {
-        if self
-            .position
-            .saturating_sub(self.expression_start.unwrap_or(self.position))
-            >= MAX_EXPRESSION_TOKENS
-        {
-            Err(self.error(
-                DiagnosticCode::SyntaxLimit,
-                "expression complexity limit exceeded (256 tokens)",
-            ))
-        } else {
-            Ok(())
-        }
+        self.expression_bp(0)
     }
     fn expression_bp(&mut self, minimum: u8) -> Parsed<Expr> {
         self.nested(|parser| parser.expression_inner(minimum))
     }
     fn expression_inner(&mut self, minimum: u8) -> Parsed<Expr> {
-        self.expression_limit()?;
         let token = self.current().clone();
         let kind = match token.kind {
             TokenKind::Integer(value) => {
@@ -1817,9 +1876,11 @@ impl Parser<'_> {
             kind,
             span: Span::new(token.span.start, self.previous_end()),
         };
+        // Each turn of this loop puts one node on top of `left`, so the tree
+        // is a level deeper for it although the parser is not.
         loop {
-            self.expression_limit()?;
             if self.at(&TokenKind::Question) {
+                self.deepen()?;
                 let end = self.bump().span.end;
                 let span = Span::new(left.span.start, end);
                 left = Expr {
@@ -1829,6 +1890,7 @@ impl Parser<'_> {
                 continue;
             }
             if self.at(&TokenKind::LeftBracket) {
+                self.deepen()?;
                 self.bump();
                 let index = self.with_struct_literals(true, |p| p.expression())?;
                 // `[a..b]` slices; `[a]` indexes. The `..` is the same token
@@ -1867,6 +1929,7 @@ impl Parser<'_> {
                 continue;
             }
             if self.at(&TokenKind::LeftParen) {
+                self.deepen()?;
                 self.bump();
                 let mut arguments = Vec::new();
                 if !self.at(&TokenKind::RightParen) {
@@ -1893,6 +1956,7 @@ impl Parser<'_> {
                 continue;
             }
             if self.take(&TokenKind::Dot).is_some() {
+                self.deepen()?;
                 let member = self.name("a member name after `.`")?;
                 let span = Span::new(left.span.start, member.span.end);
                 left = Expr {
@@ -1910,6 +1974,7 @@ impl Parser<'_> {
             if left_bp < minimum {
                 break;
             }
+            self.deepen()?;
             let op_span = self.bump().span;
             if matches!(op, Infix::Assignment(_))
                 && !matches!(

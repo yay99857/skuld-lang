@@ -285,10 +285,16 @@ entrypoints, return completeness and mutability are checked by the type checker.
 `skuld parse file.skuld` prints the debug AST, not a stable serialization format.
 It is a temporary inspection command, not semantic `check`. Codes E1001–E1005
 represent expected syntax, expected top-level declaration, unsupported syntax,
-invalid assignment target and syntax resource limits. Parser nesting is bounded
-at 64 recursive levels and expressions at fewer than 256 consumed tokens to
-report pathological input instead of overflowing the compiler's stack. These
-are implementation limits, not permanent language limits.
+invalid assignment target and syntax resource limits. Two limits report
+pathological input instead of overflowing the compiler's stack: syntax the
+parser enters recursively — a block, a parenthesis, a unary operator — nests
+at most 64 levels, and the tree it builds is at most 1024 levels deep, where
+each operator in a chain, each call or member in `a.b().c()` and each
+`else if` is a level. Width is not limited: a literal of thousands of
+elements, a call with thousands of arguments and a chain of hundreds of
+`else if` arms all parse. The compiler runs on a stack sized for that depth
+rather than the one the system gives a program's first thread. These are
+implementation limits, not permanent language limits.
 
 ## Lexical name resolution — Implemented
 
