@@ -1516,6 +1516,21 @@ What it buys is that a function value costs nothing. It never allocates, never
 retains and never releases: its captures are copied into an environment that
 lives in the enclosing block, which the value cannot outlive.
 
+**A function value is named by a `let`.** `var f = (x: int) -> int { ... }` is
+refused (`E0103`, with the edit to `let`), and so is a `var` whose checked type
+is a function for any other reason, such as `var f = increment`. A `var`
+declared outside a loop could otherwise be given a lambda made inside it and be
+called after the loop, when the environment that lambda captured into is gone.
+Where the function depends on a condition, call the one meant in each branch:
+
+```skuld
+if descending {
+    names.sort((a, b) => b.compare(a))
+} else {
+    names.sort((a, b) => a.compare(b))
+}
+```
+
 **A lambda captures values, not variables.** Only immutable bindings — `let`,
 parameters, `this`, and the bindings introduced by `if let`, `match` and `for`
 — may be captured. A copy of a `var` could disagree with the variable by the

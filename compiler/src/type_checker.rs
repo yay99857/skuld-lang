@@ -1211,6 +1211,27 @@ impl Checker<'_> {
             diagnostic,
         });
     }
+    /// The `var` in front of a declared name, turned into a `let`: the
+    /// reverse of [`Self::let_into_var`], read back out of the source the same
+    /// way.
+    fn var_into_let(&self, declared: Span) -> Option<Fix> {
+        let text = &self.files[self.file.0].source;
+        let before = text.get(..declared.start)?.trim_end();
+        let keyword = before.strip_suffix("var")?;
+        if keyword
+            .chars()
+            .next_back()
+            .is_some_and(|last| last.is_alphanumeric() || last == '_')
+        {
+            return None;
+        }
+        let start = keyword.len();
+        Some(Fix::new(
+            "declare it with `let`",
+            Span::new(start, start + 3),
+            "let",
+        ))
+    }
     /// The `let` in front of a declared name, turned into a `var`.
     ///
     /// The resolver records where the name was written and not where its
@@ -1957,6 +1978,34 @@ impl Checker<'_> {
                         }
                     }
                 };
+                // A function value's environment is a local of the block that
+                // made it. A `let` cannot be given another value, so whatever
+                // it names was made where the `let` is or further out, and
+                // outlives it. A `var` declared outside a block could be given
+                // a lambda made inside it and be called after that block has
+                // ended, reading captures that were gone. So the binding that
+                // names a function value is always a `let`.
+                if variable.mutability == Mutability::Mutable && matches!(ty, Type::Function(_)) {
+                    let mut diagnostic = Diagnostic {
+                        code: DiagnosticCode::InvalidValueType,
+                        span: variable.name.span,
+                        message: format!(
+                            "`{}` holds a function value, which cannot be declared `var`",
+                            variable.name.text
+                        ),
+                        help: Some(
+                            "a function value lives only as long as the block that made it, so a variable that could be given one from an inner block could outlive it; declare it with `let`, or call the function you mean in each branch".into(),
+                        ),
+                        fix: None,
+                    };
+                    if let Some(fix) = self.var_into_let(variable.name.span) {
+                        diagnostic = diagnostic.with_fix(fix);
+                    }
+                    self.diagnostics.push(FileDiagnostic {
+                        file: self.file,
+                        diagnostic,
+                    });
+                }
                 let id = self.declaration(&variable.name);
                 self.symbol_types[id.0] = ty;
                 false

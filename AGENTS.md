@@ -640,7 +640,22 @@ behind it. The obligations above are checkable, and a persona is not.
   reintroduces cycles the reference counter cannot collect — and it is what
   makes a function value free: no allocation, no retain, no release, with
   captures copied into an environment in the enclosing block. Only immutable
-  bindings may be captured, since a copy of a `var` could go stale. A
+  bindings may be captured, since a copy of a `var` could go stale. The binding
+  that names a function value is a `let` too, judged on its checked type: a
+  `var` declared outside a loop could be given a lambda made inside it and be
+  called after the loop, on an environment that was gone — an audit found that
+  program printing -1 where 21 was right. With every function value in a `let`
+  or a parameter, each lives in a scope nested inside the one that made its
+  environment, by construction. Rejected: allowing assignment only from the
+  `var`'s own block or an enclosing one (sound, but a rule about scope depth no
+  reader holds in their head); hoisting environments to function scope
+  (unsound — two values from one lambda in different iterations would share
+  one); and, for now, a `var` that may only be assigned a declared function,
+  which captures nothing. That last one is sound and would keep choosing a
+  comparator at run time, which today needs the call written in both branches
+  or a dispatching lambda; it was set aside because refusing now and relaxing
+  later is compatible and the reverse is not, and nothing used it. Reopen it
+  with a program that measures the cost. A
   consequence to keep written down: a callback cannot be stored, so handler
   tables and registries wait for interfaces. A lambda body must open on the
   same line its parentheses close, or `var x = (None)` followed by a block would
