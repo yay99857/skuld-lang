@@ -333,7 +333,7 @@ behind it. The obligations above are checkable, and a persona is not.
   literals, comparisons, string interpolation `${c}`, `print(c)`, explicit conversions to/from
   `u8`/`u32`/integers trapping on invalid Unicode code points, and pattern matching on char literals
   and ranges. `extern "C"` declarations use `usize`/`isize` for `size_t`/`ssize_t`, and
-  `portability.rs` runs 100% of pass fixtures on i686 with no exceptions left (`TARGET_SPECIFIC = &[]`).
+  `portability.rs` runs every pass fixture on i686 with no exceptions left (`TARGET_SPECIFIC = &[]`).
   M22 (fixed-size arrays and stack buffers) is complete: the type `[N]T` with
   value semantics, `N` a constant expression greater than zero, the repeated
   literal `[element; count]` and list literals inferred against an expected
@@ -792,9 +792,8 @@ behind it. The obligations above are checkable, and a persona is not.
   the whole document each time: a delta would mean keeping the previous stream
   per document to diff against, which is state to go stale.
 - Files, the process and tests arrived with M13. `std/fs` reads and writes a
-  whole file **by path**: a handle would need a lifetime rule and Skuld has no
-  destructor a user can write, so there is no `open`, no close and no streaming
-  yet. `std/os` reaches the process through the runtime, not through libc
+  whole file **by path**; a handle, `open`/`create` and a `File` with `close`,
+  arrived with M30 under the `defer` rule recorded there. `std/os` reaches the process through the runtime, not through libc
   directly: following `argv` is a pointer-to-pointer read the foreign boundary
   refuses, so `sk_arg_count`, `sk_arg_len`, `sk_arg_copy`, `sk_flush` and
   `sk_exit` are the whole bridge — scalars and a pointer to bytes the caller
@@ -835,13 +834,14 @@ behind it. The obligations above are checkable, and a persona is not.
   the numbers in `BENCHMARKS.md` are updated with it; no speed ratio is
   promised anywhere.
 - The second native target is i686-linux-gnu, and `cli/tests/portability.rs`
-  runs every `tests/pass` fixture on it: 58 of 59 produce identical output with
-  no change to the runtime. The exception is the foreign boundary, which is the
-  only place a target leaks into the language — an `extern "C"` declaration
-  names a concrete width and `size_t` is not one. Skuld has no `usize`; adding
-  one is a language decision, not a portability fix. `std/net` and `std/dns`
-  also assume a little-endian Linux and its numeric constants, and `std/dns`
-  builds a `struct timeval` of two 64-bit fields, which is LP64-specific.
+  runs every `tests/pass` fixture on it with no change to the runtime. When
+  M18 measured it, the one exception was the foreign boundary, where an
+  `extern "C"` declaration named a concrete width and `size_t` is not one; M21
+  added `usize` and `isize` for exactly that, and M24 replaced `std/dns`'s
+  hand-packed `struct timeval` and the little-endian arithmetic in `std/net`
+  with declared layouts and `htons`/`htonl`, so the exception list is empty.
+  The suite returns early where clang cannot build a 32-bit program, so it
+  checks something only where the 32-bit libc is installed, as it is in CI.
 - Compiler unit tests live beside modules; CLI/native tests are in `cli/tests/`.
   Root `tests/pass`, `tests/fail` and `tests/trap` contain language fixtures.
   Full workspace testing requires clang: every `tests/pass` fixture is built

@@ -2,11 +2,9 @@
 
 Status labels: **Implemented** means available now; **Planned** describes future
 intent, not accepted/executable programs; **Experimental** denotes provisional
-choices. The complete single-file native pipeline, Demos 0–2, loops, structs,
-reference-counted strings, interpolation, classes, weak references, arrays,
-builtin Option values, builtin `Result<T, E>` with `?` propagation, the sized
-integer types and byte-level string access are implemented. Self-hosting
-remains planned.
+choices. Each section below carries its own label, and that label is the claim
+to check; the overview in `README.md` lists what is implemented as a whole.
+Self-hosting remains planned.
 
 ## Philosophy — Planned
 
@@ -58,10 +56,11 @@ Function declarations use `func`, replacing the earlier `fn` and `function` spel
 The builtin is `print`, replacing `println`; neither old spelling is an alias.
 The old words are ordinary identifiers and can be explicitly declared by users.
 
-Keywords: `func let var return if else while loop for in break continue new weak class struct
-impl enum match import pub extern unsafe interface`. A lambda needs none of them: it is
-written `(a: int) -> int { ... }`, the shape a method already uses.
-Reserved future keywords: `static`.
+Keywords: `func let var const static return if else while loop for in break continue defer new
+weak class struct impl interface enum match import pub extern unsafe`. A lambda needs none of
+them: it is written `(a: int) -> int { ... }`, the shape a method already uses. `packed`,
+`align` and `indirect` are read as markers only in the one position each has, and are ordinary
+identifiers everywhere else.
 `true` and `false` produce boolean literal tokens. Type names, `print`, `Some`,
 `None`, `Ok` and `Err` are identifiers. `Option<T>` and `Result<T, E>` are
 builtin type syntax, not user-defined generics. In a type annotation,
@@ -216,15 +215,15 @@ field writes require a mutable place; writes through class or array references
 can use an immutable binding. Assignments preserve the target type and yield the assigned value.
 Comparison chains are parsed left-associatively and then type-checked normally.
 Direct function/builtin calls, optionally grouped, and type-checked method calls
-are supported. Callable values and indirect calls are rejected by the checker. Trailing commas are accepted in parameter and
+are supported, and so are calls through a function value (see "Function values"). Trailing commas are accepted in parameter and
 argument lists. Local declarations require an initializer; annotations are
 optional, but function parameters require types. AST type references preserve
 source names, including unknown names; these are not semantic type values.
 
 Blocks, return, expression statements, variables, `if`/`else` (including
-`else if` and `if let Some(name) = value`), `while`, `loop`, `break` and `continue` are parsed. Later:
-`for item in items`, `0..10` and `0..=10`. Arrays `[1, 2, 3]` with type
-syntax `[]int` are implemented below.
+`else if` and `if let Some(name) = value`), `while`, `loop`, `for`, `break` and `continue` are parsed.
+A `for` range is half-open, `0..10`; the inclusive `0..=10` exists only as a `match` pattern.
+Arrays `[1, 2, 3]` with type syntax `[]int` are implemented below.
 
 ### Loops — Implemented
 
@@ -363,7 +362,7 @@ operand first, or annotate, when both sides could be literals. Numeric ordering
 returns bool. Strings compare byte content, not pointer identity. Equality is
 described under "Equality" below. `&&`, `||` and `!` require bool;
 there is no truthiness or implicit int/float conversion. Unary `+` and `-`
-require numbers; unary `~` requires integers. Function values, chars, invalid member accesses and unknown types produce
+require numbers; unary `~` requires integers. Invalid member accesses and unknown types produce
 explicit diagnostics rather than reaching code generation.
 
 Evaluation is left to right, including call arguments. `&&` and `||`
@@ -578,7 +577,8 @@ receiver, matching the class syntax. `this` is the current value.
 assign to `this.field`, and since structs copy, the receiver is a copy and a
 method never modifies its caller's value fields. Reference-valued fields retain
 their sharing rules: a method can mutate an object or array referenced by a
-struct field. Mutating value receivers remain future work.
+struct field. A method declared `var` may change its receiver; see "Methods that
+change the struct" above.
 
 A method name is not in ordinary scope. A sibling method is reached through
 `this`, and a plain function cannot see methods at all. A method is not a
@@ -675,8 +675,9 @@ Fields keep explicit type annotations, and method parameters and non-void
 returns retain explicit types.
 
 Class construction uses `new ClassName(field: value, ...)`. Every field must be
-initialized in construction; there are no uninitialized reads, field defaults
-or JavaScript-style `undefined` values. Constructing a class with `User { ... }`
+initialized in construction, by an argument or by its default (see "Field
+defaults"); there are no uninitialized reads and no JavaScript-style `undefined`
+values. Constructing a class with `User { ... }`
 or a struct with `new Struct(...)` is rejected.
 
 Reference semantics and memory rules:
@@ -733,8 +734,8 @@ Use a weak parent link with a strong child link to avoid ownership cycles; see
 
 `Option<T>` is a builtin value type representing a present value or `None`.
 `T` can be any non-void implemented value type, including another Option,
-a struct, a class, an array or a weak reference. This milestone introduces
-neither general generics nor user-defined enums.
+a struct, a class, an array or a weak reference. It is builtin type syntax, not
+a general generic, and general generics remain planned.
 
 ```skuld
 func answer(found: bool) -> Option<int> {
@@ -773,7 +774,7 @@ once. The successful branch receives an immutable copy of the payload, retaining
 any owned references. That name exists only in that branch. The `else` branch
 is optional and can contain another `if`/`if let`; both branches must guarantee
 a return for the statement to satisfy a non-void function's return requirement.
-General patterns and `match` remain planned. There is no direct payload field or unchecked Option extraction API.
+`match` over an Option is not supported; use `if let`, `let ... else` or `is_some()`. There is no direct payload field or unchecked Option extraction API.
 
 `is_some(): bool` and `is_none(): bool` query the tag and take no arguments.
 Use `if let` to obtain the payload. Two Options compare with `==` when their
@@ -794,8 +795,8 @@ weak promotion together.
 
 ## Bytes and slices — Implemented
 
-A Skuld string is a sequence of bytes, and this milestone makes that reachable
-without adding a character or code point type.
+A Skuld string is a sequence of bytes, and these operations reach those bytes.
+A `char` is a separate scalar type, described under "Types".
 
 ```skuld
 let text = "olá"
@@ -843,7 +844,7 @@ belongs in the language before a standard library exists to own one.
 
 Building a string is building a `[]u8` and validating it once at the end;
 `push` and the other array operations are the string builder. Encodings other
-than UTF-8, a `char` or code point type, normalization and regular expressions
+than UTF-8, iterating a string by `char`, normalization and regular expressions
 remain out of scope.
 
 ## Error handling — Implemented
@@ -995,8 +996,8 @@ func main() {
 }
 ```
 
-Arrays are homogeneous, heap allocated and reference counted. Their length is
-fixed at construction. Assignment, arguments and returns share the array;
+Arrays are homogeneous, heap allocated and reference counted, and they grow and
+shrink through the operations below. Assignment, arguments and returns share the array;
 `let` prevents rebinding but permits writing an element, like class fields.
 Reading a struct element copies its value; reading a class or array element
 shares that reference. Elements can have any implemented non-void value type,
@@ -1021,9 +1022,11 @@ Dynamic array mutation and growth:
 - `values.pop(): Option<T>` removes and returns the last element, or `None` if empty.
 - `values.remove(index: int): Option<T>` removes and returns element at index, shifting elements left, or `None` if out of bounds.
 
-Slicing, array equality, sorting, callbacks and `for` iteration remain
-planned. Strong cycles through classes and arrays still require explicit
-breaking or weak class links; arrays themselves cannot be weakened yet.
+Slicing is under "Bytes and slices", `for` under "Loops", and `sort` with its
+comparator under "Function values". Two arrays do not compare with `==`, since
+an array is a shared reference. Strong cycles through classes and arrays still
+require explicit breaking or weak class links; arrays themselves cannot be
+weakened yet.
 
 ## Fixed-size arrays — Implemented
 
