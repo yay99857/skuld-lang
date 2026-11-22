@@ -480,7 +480,9 @@ writes to the VGA text buffer. What that sequence deliberately left out —
 inline assembly, atomics and a memory model, threads, interrupt and naked
 calling conventions, linker sections, a target that is not Linux — is a
 milestone each, and none is authorized; so are the older candidates listed
-there, general generics and self-hosting among them.
+there, self-hosting among them. Generics arrived with M36: unconstrained type
+parameters on functions, structs, classes and enums, checked once and
+compiled per use (see `LANGUAGE.md`, "Generics").
 Status is reported as completed milestones, not as a completion percentage, and
 implies no production readiness. Performance is measured in
 [BENCHMARKS.md](BENCHMARKS.md): between 1.3x and 2.2x the faster of Rust and Go

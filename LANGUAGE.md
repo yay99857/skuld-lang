@@ -1491,6 +1491,81 @@ Out of scope: references with lifetimes, aliasing rules, a borrow checker, and
 unchecked indexing — `load` and `store` are the only unchecked accesses in the
 language, and each one is written where a reader can see it.
 
+## Generics — Implemented (M36)
+
+Functions, structs, classes and enums take type parameters:
+
+```skuld
+func first<T>(items: []T) -> Option<T> {
+    if items.len() == 0 {
+        return None
+    }
+    return items[0]
+}
+
+class Stack<T> {
+    items: []T = []
+
+    push(item: T) {
+        this.items.push(item)
+    }
+}
+
+func main() {
+    let numbers: []int = [3, 1, 2]
+    let stack = new Stack<int>()
+    if let n = first(numbers) {
+        stack.push(n)
+    }
+}
+```
+
+- **Checked once.** A generic body is checked where it is written, with each
+  parameter an opaque type, so a mistake in it is reported once and a generic
+  nobody calls is still checked. A value of a parameter may be bound,
+  assigned, passed, returned, stored in a field, an array, an `Option` or a
+  `Result`, and captured by a lambda — nothing else: no `==`, no `print` or
+  interpolation, no method, no conversion, no `ptr`, no `weak`. An operation
+  that needs one is passed in as a function value, the way `sort` takes its
+  comparator. There is no constraint syntax.
+- **Monomorphized.** Every combination of type arguments the program uses is
+  its own function, struct or C type. Whether an instance is reference
+  counted, how it is laid out and whether it compares with `==` are decided
+  per instance, exactly as for a type written by hand.
+- **Type arguments are written only where a type is written** — annotations,
+  signatures, fields, `weak Stack<int>`, and after `new`. A generic type
+  written bare, `Stack`, is an error (`E0106`). In an expression they are
+  inferred and cannot be written, so `a < b > (c)` never needs a second
+  reading; a struct literal `Pair { first: 1, second: "x" }` and a variant
+  `Tree.Leaf` take theirs from their fields, payload or context.
+- **Inference never looks through a conversion.** An argument with a type of
+  its own fixes the parameters it matches exactly; then the type the call is
+  expected to have fills in what is left, against the declared result; then
+  the arguments that take their type from context — an integer literal, an
+  array literal, `None`, `.Variant`, `Ok`, `Err`, `weak()`, `ptr_from`, a
+  lambda — are checked against what is known. A lambda's result may fix a
+  parameter nothing else does, as `map_err` takes its new error type. The
+  implicit wrap into an `Option` and the widening into an interface apply only
+  after every parameter is fixed. Two disagreeing matches are `E0102`, and a
+  parameter nothing fixes is `E0101`.
+- **What may be an argument** is what may be an array element: not `void` and
+  not a function value. A fixed array's size is not a parameter.
+- **Not generic:** a method (it uses its type's parameters), an interface,
+  `main`, a `test_` function, an `extern struct`, a numbered enum, and a `pub
+  func` under `--freestanding`, which is exported under one name.
+- **Finite.** A function that calls itself at an ever larger type and a type
+  that contains itself at one would need infinitely many instances, and are
+  refused (`E0110`); so is a value type that contains itself only once
+  instantiated (`E0103`).
+- `Option<T>` and `Result<T, E>` stay builtin: they are spelled, instantiated
+  and laid out by the same rules, and keep the sugar only they have — the
+  implicit wrap, contextual `None`, `?`, `if let` and `let ... else`.
+  `Result.map_err` is the one method with a type parameter of its own.
+
+Out, each its own decision: constraints, `Map<K, V>` and `Set<T>`, methods
+with their own parameters, generic interfaces, default type arguments, const
+generics, specialization and explicit type arguments at a call.
+
 ## Function values — Implemented
 
 A lambda is a function declaration without a name, which is why it needs no

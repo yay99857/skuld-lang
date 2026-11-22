@@ -2034,13 +2034,20 @@ Sources read, not recalled:
   copied, never the whole element. Copying the whole element would also
   overwrite sibling fields the call changed.
 
-## M36 — Type parameters, checked once — Designed, not implemented
+## M36 — Type parameters, checked once — Implemented
 
 **Authorized, by delegation.** The owner asked for this design and delegated
 the language decisions in it, stating that the purpose of the project is now
 to build programs in Skuld. That is direction and not evidence, and it is
-recorded as such: see "What this does not answer" below. Nothing here is
-implemented; the section is the design the implementation is held to.
+recorded as such: see "What this does not answer" below. It is implemented as
+designed, and the closing marker below is met: `tests/pass/generics.skuld`
+runs clean under the sanitizers, with the fail fixtures `tests/fail/generic_*`
+beside it. Two details were settled while building it: an instance's fields
+are read from the declaration rather than from the declaration's own field
+list, which may not exist yet when `struct B { a: A<B> }` asks for `A<B>`; and
+a type that grows without end is refused at its declaration even when nothing
+uses it, while a function that does is found when its instances are made, so
+only the first is reported when both occur.
 
 This reopens open question 1, where generics were proposed and withdrawn on
 three objections. Each is answered or conceded below, by name.

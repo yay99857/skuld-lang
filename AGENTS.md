@@ -552,16 +552,21 @@ behind it. The obligations above are checkable, and a persona is not.
   replace `let`, since an immutable binding is what the backend reads to borrow
   a managed local instead of counting it.
   Do not infer authorization for further features without explicit decision.
-  One has been given since: **M36, type parameters**, is authorized by the
-  owner's delegation and designed in `ROADMAP.md`, and is not implemented.
-  Its shape is settled there and should not be redrawn while building it:
+  One has been given since: **M36, type parameters**, authorized by the
+  owner's delegation, designed in `ROADMAP.md` and now implemented. Its shape
+  is settled there and should not be redrawn by accident:
   unconstrained, opaque type parameters on functions, structs, classes and
   enums; checked once at the declaration; monomorphized; type arguments
   written only where a type is written and inferred everywhere else, by a rule
   that never unifies through an implicit wrap; `Option` and `Result` still
   builtin. It adds no constraints, no `Map<K, V>` and nothing to `std/`, and
   the record says plainly that the demand for it is the owner's direction
-  rather than anything found in the repository.
+  rather than anything found in the repository. How it is built matters as
+  much as what it is: the checker makes every instance from a worklist and
+  keeps each one's per-position records (`Tables`) apart, a generic body is
+  recorded once in terms of its parameters, and lowering lowers instances
+  only. Anything that reads the checker's tables — lowering, the language
+  server — reads the set that belongs to the body it is looking at.
 - M27's shape should not be reopened by accident. The bar is the
   one Rust states for a Tier 1 target: **CI builds Windows and every test passes
   there**, which is a measurement rather than a claim. Platform differences live
