@@ -44,6 +44,15 @@ pub enum Visibility {
 /// A name that may be qualified by an imported module: `parse` or
 /// `json.parse`. An unqualified path names something in the current module or
 /// the prelude; there is no unqualified access to another module.
+/// `T` or `T: Equatable` in a generic declaration's parameter list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParam {
+    pub name: Name,
+    /// The capability a type argument must have, as written: `Equatable` or
+    /// `Comparable`. The word is read as one in this position only.
+    pub bound: Option<Name>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Path {
     pub module: Option<Name>,
@@ -108,7 +117,7 @@ pub struct EnumDecl {
     pub name: Name,
     /// `enum Tree<T>`: the type parameters, in order. Empty for an ordinary
     /// enum.
-    pub type_params: Vec<Name>,
+    pub type_params: Vec<TypeParam>,
     /// `enum Protocol: u8`. An enum that names an integer type has a value per
     /// variant that a program may depend on, and converts to and from it.
     pub underlying: Option<TypeRef>,
@@ -173,7 +182,7 @@ pub struct StructDecl {
     pub name: Name,
     /// `struct Pair<A, B>`: the type parameters, in order. Empty for an
     /// ordinary struct or class.
-    pub type_params: Vec<Name>,
+    pub type_params: Vec<TypeParam>,
     /// `class User: Printable, Comparable`. Conformance is declared here
     /// rather than inferred from the methods that happen to be present.
     pub conforms: Vec<Path>,
@@ -303,7 +312,7 @@ pub struct FunctionDecl {
     pub name: Name,
     /// `func first<T>(...)`: the type parameters, in order. Always empty on a
     /// method, which uses the parameters of the type that owns it.
-    pub type_params: Vec<Name>,
+    pub type_params: Vec<TypeParam>,
     pub parameters: Vec<Parameter>,
     /// None means an implicit void return type.
     pub return_type: Option<TypeRef>,

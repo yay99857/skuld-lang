@@ -1,0 +1,27 @@
+// A type argument must have the capability its parameter requires, and the
+// error points at the argument that chose it. A class has no `==`, a `float`'s
+// `==` is not an equivalence, and `float` has no `compare`.
+class Dog {
+    name: string
+}
+
+class SortedMap<K: Comparable, V> {
+    keys: []K = []
+}
+
+func contains<T: Equatable>(items: []T, wanted: T) -> bool {
+    for item in items {
+        if item == wanted {
+            return true
+        }
+    }
+    return false
+}
+
+func main() {
+    let dogs: []Dog = [new Dog(name: "rex")]
+    print(contains(dogs, dogs[0]))
+    let readings: []float = [1.5]
+    print(contains(readings, 1.5))
+    let by_weight = new SortedMap<float, int>()
+}

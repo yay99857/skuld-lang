@@ -1071,7 +1071,7 @@ impl<'a> Formatter<'a> {
         self.push(">");
     }
     /// `<T, U>` after a declaration's name, or nothing.
-    fn format_type_params(&mut self, params: &[Name]) {
+    fn format_type_params(&mut self, params: &[TypeParam]) {
         if params.is_empty() {
             return;
         }
@@ -1080,7 +1080,11 @@ impl<'a> Formatter<'a> {
             if i > 0 {
                 self.push(", ");
             }
-            self.push(&param.text);
+            self.push(&param.name.text);
+            if let Some(bound) = &param.bound {
+                self.push(": ");
+                self.push(&bound.text);
+            }
         }
         self.push(">");
     }

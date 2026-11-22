@@ -1,0 +1,140 @@
+// M37's closing marker: what a type parameter can require. `Equatable` gives
+// a generic body `==`; `Comparable` gives it `compare`, and implies
+// `Equatable`. The sorted map is the real deliverable: without hashing, a
+// set would be a list searched end to end, while an order gives binary
+// search.
+
+// `Comparable` is a capability only after a type parameter's name; anywhere
+// else it is an ordinary name, so a program may still declare one.
+class Comparable {
+    weight: int = 3
+}
+
+struct Point {
+    x: int
+    y: int
+}
+
+enum Shade {
+    Light,
+    Dark,
+}
+
+func index_of<T: Equatable>(items: []T, wanted: T) -> Option<int> {
+    for i in 0..items.len() {
+        if items[i] == wanted {
+            return i
+        }
+    }
+    return None
+}
+
+func contains<T: Equatable>(items: []T, wanted: T) -> bool {
+    return index_of(items, wanted).is_some()
+}
+
+// A `Comparable` parameter is also `Equatable`, so it can be passed on.
+func count<T: Comparable>(items: []T, wanted: T) -> int {
+    var found = 0
+    for item in items {
+        if item == wanted {
+            found += 1
+        }
+    }
+    return found
+}
+
+func max<T: Comparable>(a: T, b: T) -> T {
+    if a.compare(b) == .Less {
+        return b
+    }
+    return a
+}
+
+// Keys kept in order, found by binary search: logarithmic lookup over any key
+// that has `compare`.
+class SortedMap<K: Comparable, V> {
+    keys: []K = []
+    values: []V = []
+
+    // Where `key` is, or where it would go.
+    position(key: K) -> int {
+        var low = 0
+        var high = this.keys.len()
+        while low < high {
+            let middle = low + (high - low) / 2
+            if this.keys[middle].compare(key) == .Less {
+                low = middle + 1
+            } else {
+                high = middle
+            }
+        }
+        return low
+    }
+
+    set(key: K, value: V) {
+        let at = this.position(key)
+        if at < this.keys.len() && this.keys[at] == key {
+            this.values[at] = value
+            return
+        }
+        this.keys.insert(at, key)
+        this.values.insert(at, value)
+    }
+
+    get(key: K) -> Option<V> {
+        let at = this.position(key)
+        if at < this.keys.len() && this.keys[at] == key {
+            return this.values[at]
+        }
+        return None
+    }
+
+    len() -> int {
+        return this.keys.len()
+    }
+}
+
+func main() {
+    print(unwrap(index_of([4, 8, 15], 15)))
+    print(contains(["a" + "", "b" + ""], "b"))
+    print(contains([Point { x: 1, y: 2 }], Point { x: 2, y: 1 }))
+    print(contains([Shade.Light, Shade.Dark], .Dark))
+    print(count([1, 2, 2, 3], 2))
+    print(max("pear" + "", "apple"))
+    print(max(u8(3), 200))
+    print(max('a', 'z'))
+
+    let ages = new SortedMap<string, int>()
+    ages.set("grace" + "", 85)
+    ages.set("ada", 36)
+    ages.set("linus", 54)
+    ages.set("ada", 37)
+    print(ages.len())
+    print(ages.keys[0])
+    print(ages.keys[2])
+    if let age = ages.get("ada") {
+        print(age)
+    }
+    print(ages.get("ken").is_none())
+
+    let squares = new SortedMap<int, Point>()
+    for n in [9, 3, 7, 1, 5] {
+        squares.set(n, Point { x: n, y: n * n })
+    }
+    print(squares.keys[0])
+    print(squares.keys[4])
+    if let point = squares.get(7) {
+        print(point.y)
+    }
+
+    let named = new Comparable()
+    print(named.weight)
+}
+
+func unwrap(value: Option<int>) -> int {
+    if let found = value {
+        return found
+    }
+    return -1
+}

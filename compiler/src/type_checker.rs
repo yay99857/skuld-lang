@@ -347,7 +347,7 @@ pub(crate) fn type_check(
             if !params.is_empty() && declaration.underlying.is_some() {
                 checker.error(
                     DiagnosticCode::UnsupportedFeature,
-                    declaration.type_params[0].span,
+                    declaration.type_params[0].name.span,
                     "a numbered enum cannot be generic: its variants are worth integers, not values of a type",
                 );
             }
@@ -404,7 +404,7 @@ pub(crate) fn type_check(
             if !params.is_empty() && declaration.layout.is_foreign() {
                 checker.error(
                     DiagnosticCode::UnsupportedFeature,
-                    declaration.type_params[0].span,
+                    declaration.type_params[0].name.span,
                     "a layout C decides cannot be generic: C has one definition of each type",
                 );
             }
@@ -1289,6 +1289,26 @@ struct Checker<'a> {
 #[derive(Debug, Clone)]
 struct ParamInfo {
     name: String,
+    /// The capability every argument for it must have.
+    bound: Option<Capability>,
+}
+
+/// What a type parameter may require of its arguments (M37).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Capability {
+    /// `==` and `!=`, as an equivalence.
+    Equatable,
+    /// `compare`, answering `Ordering`; implies `Equatable`.
+    Comparable,
+}
+
+impl Capability {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Equatable => "Equatable",
+            Self::Comparable => "Comparable",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -4347,9 +4367,10 @@ impl Checker<'_> {
             Type::Int(_) | Type::Float | Type::Bool | Type::Char | Type::String => None,
             // Inside a generic body nothing is known about a parameter, so
             // nothing is known about comparing one.
+            Type::Param(id) if self.params[id.0].bound.is_some() => None,
             Type::Param(_) => Some((
                 String::new(),
-                "it is a type parameter, and a generic body knows nothing about what its values can do".into(),
+                "it is a type parameter that does not require `Equatable`, so nothing is known about comparing its values".into(),
             )),
             Type::Struct(id) => {
                 let info = &self.structs[id.0];
@@ -4594,6 +4615,11 @@ impl Checker<'_> {
         let ordering = Type::Enum(self.ordering);
         let comparison = match (receiver, member.text.as_str()) {
             (Type::Int(_) | Type::Char | Type::Bool | Type::String, "compare") => Some(receiver),
+            (Type::Param(id), "compare")
+                if self.params[id.0].bound == Some(Capability::Comparable) =>
+            {
+                Some(receiver)
+            }
             (Type::Float, "total_compare") => Some(Type::Float),
             (Type::Enum(id), "then") if id == self.ordering => Some(ordering),
             _ => None,
@@ -4618,6 +4644,25 @@ impl Checker<'_> {
             }
             self.expected_context = previous;
             return ordering;
+        }
+        if let Type::Param(id) = receiver
+            && member.text == "compare"
+        {
+            let param = self.params[id.0].name.clone();
+            self.error(
+                DiagnosticCode::UnknownName,
+                member.span,
+                format!("`{param}` has no `compare`: it is a type parameter that does not require `Comparable`"),
+            );
+            if let Some(last) = self.diagnostics.last_mut() {
+                last.diagnostic.help = Some(format!(
+                    "declare it `{param}: Comparable` to compare its values, which every integer, `char`, `bool` and `string` can be"
+                ));
+            }
+            for argument in arguments {
+                self.expression(argument);
+            }
+            return Type::Error;
         }
         if receiver == Type::Float && member.text == "compare" {
             self.error(
@@ -7204,9 +7249,14 @@ mod tests;
 impl Checker<'_> {
     /// `<T, U>` on a declaration, as fresh parameters. Two with one name in a
     /// list is a mistake; each declaration's parameters are its own.
-    fn declare_params(&mut self, names: &[Name]) -> Vec<ParamId> {
+    fn declare_params(&mut self, written: &[crate::ast::TypeParam]) -> Vec<ParamId> {
         let mut declared: Vec<ParamId> = Vec::new();
-        for name in names {
+        for param in written {
+            let name = &param.name;
+            let bound = param
+                .bound
+                .as_ref()
+                .and_then(|bound| self.capability(bound));
             if declared
                 .iter()
                 .any(|param| self.params[param.0].name == name.text)
@@ -7221,10 +7271,131 @@ impl Checker<'_> {
             let id = ParamId(self.params.len());
             self.params.push(ParamInfo {
                 name: name.text.clone(),
+                bound,
             });
             declared.push(id);
         }
         declared
+    }
+    /// `Equatable` or `Comparable` after a type parameter's name. The words
+    /// are capabilities in this position only, so a program may still declare
+    /// a type with either name.
+    fn capability(&mut self, bound: &Name) -> Option<Capability> {
+        match bound.text.as_str() {
+            "Equatable" => Some(Capability::Equatable),
+            "Comparable" => Some(Capability::Comparable),
+            other => {
+                let message = if other == "Ordering" {
+                    "`Ordering` is the enum `compare` answers, not a capability; a parameter whose values can be compared is `T: Comparable`".to_owned()
+                } else {
+                    format!(
+                        "`{other}` is not a capability; a type parameter may require `Equatable` or `Comparable`"
+                    )
+                };
+                self.error(DiagnosticCode::UnknownType, bound.span, message);
+                None
+            }
+        }
+    }
+    /// Whether a type holds a `float` anywhere a structural `==` would reach.
+    fn holds_float(&self, ty: Type) -> bool {
+        match ty {
+            Type::Float => true,
+            Type::Struct(id) if !self.structs[id.0].reference => self.structs[id.0]
+                .fields
+                .iter()
+                .any(|field| self.holds_float(field.ty)),
+            Type::Enum(id) => self.enums[id.0]
+                .variants
+                .iter()
+                .filter_map(|variant| variant.payload)
+                .any(|payload| self.holds_float(payload)),
+            Type::FixedArray(id) => self.holds_float(self.fixed_arrays[id.0].element),
+            Type::Option(id) => self.holds_float(self.options[id.0].element),
+            Type::Result(id) => {
+                self.holds_float(self.results[id.0].ok) || self.holds_float(self.results[id.0].err)
+            }
+            _ => false,
+        }
+    }
+    /// Whether a type has a capability, and why not when it does not. This is
+    /// the one answer to the question, for a type argument and for what a
+    /// body may do alike: a body that passes for its parameters then cannot
+    /// fail for an instance.
+    fn satisfies(&self, ty: Type, capability: Capability) -> Result<(), String> {
+        if let Type::Param(id) = ty {
+            return match (self.params[id.0].bound, capability) {
+                (Some(Capability::Comparable), _)
+                | (Some(Capability::Equatable), Capability::Equatable) => Ok(()),
+                _ => Err(format!(
+                    "the type parameter `{}` does not require `{}`",
+                    self.params[id.0].name,
+                    capability.name()
+                )),
+            };
+        }
+        match capability {
+            Capability::Comparable => match ty {
+                Type::Int(_) | Type::Char | Type::Bool | Type::String | Type::Error => Ok(()),
+                Type::Float => Err(
+                    "`float` has `total_compare`, not `compare`: `<` leaves NaN unordered"
+                        .to_owned(),
+                ),
+                _ => {
+                    Err("only the integers, `char`, `bool` and `string` have `compare`".to_owned())
+                }
+            },
+            Capability::Equatable => {
+                if let Some((path, reason)) = self.not_comparable(ty) {
+                    return Err(if path.is_empty() {
+                        reason
+                    } else {
+                        format!("`{path}` cannot be compared: {reason}")
+                    });
+                }
+                if self.holds_float(ty) {
+                    return Err(
+                        "it holds a `float`, and NaN is unequal to itself, so `==` on it is not an equivalence".to_owned(),
+                    );
+                }
+                Ok(())
+            }
+        }
+    }
+    /// Check each argument of an instance against its parameter's capability,
+    /// reporting at `spans[i]` (or the last span given) where one falls short.
+    fn check_bounds(
+        &mut self,
+        owner: &str,
+        params: &[ParamId],
+        arguments: &[Type],
+        spans: &[Span],
+    ) -> bool {
+        let mut ok = true;
+        for (index, (param, argument)) in params.iter().zip(arguments).enumerate() {
+            let Some(capability) = self.params[param.0].bound else {
+                continue;
+            };
+            if let Err(reason) = self.satisfies(*argument, capability) {
+                let span = spans
+                    .get(index)
+                    .or(spans.last())
+                    .copied()
+                    .unwrap_or_default();
+                let rendered = self.type_name(*argument);
+                let param_name = self.params[param.0].name.clone();
+                self.error(
+                    DiagnosticCode::TypeMismatch,
+                    span,
+                    format!(
+                        "`{owner}` requires `{param_name}` to be `{}`, and `{rendered}` is not: {reason}",
+                        capability.name()
+                    ),
+                );
+                ok = false;
+            }
+        }
+        ok
     }
     /// What each of a declaration's parameter names stands for: the
     /// arguments of an instance, or the parameters themselves.
@@ -7284,7 +7455,7 @@ impl Checker<'_> {
     }
     /// The declarations that cannot be generic, each for its own reason.
     fn refuse_generic_function(&mut self, function: &crate::ast::FunctionDecl) {
-        let span = function.type_params[0].span;
+        let span = function.type_params[0].name.span;
         let reason = if function.name.text == "main" && self.file == ROOT_FILE {
             Some("`main` is where the program starts, and it takes no type parameters")
         } else if function.name.text.starts_with("test_") {
@@ -7376,6 +7547,11 @@ impl Checker<'_> {
         }
         if let Some(&id) = self.struct_instances.get(&(template, arguments.clone())) {
             return Type::Struct(id);
+        }
+        let owner = self.structs[template.0].name.clone();
+        let params = self.structs[template.0].params.clone();
+        if !self.check_bounds(&owner, &params, &arguments, &[span]) {
+            return Type::Error;
         }
         if self.instantiation_depth >= INSTANCE_LIMIT {
             let name = self.structs[template.0].name.clone();
@@ -7532,6 +7708,11 @@ impl Checker<'_> {
         }
         if let Some(&id) = self.enum_instances.get(&(template, arguments.clone())) {
             return Type::Enum(id);
+        }
+        let owner = self.enums[template.0].name.clone();
+        let params = self.enums[template.0].params.clone();
+        if !self.check_bounds(&owner, &params, &arguments, &[span]) {
+            return Type::Error;
         }
         if self.instantiation_depth >= INSTANCE_LIMIT {
             let name = self.enums[template.0].name.clone();
@@ -7994,6 +8175,9 @@ impl Checker<'_> {
             return Type::Error;
         }
         let mut bindings = BTreeMap::new();
+        // Where each parameter was fixed, so a type argument that lacks a
+        // capability is reported at the argument that chose it.
+        let mut fixed_at: BTreeMap<ParamId, Span> = BTreeMap::new();
         let mut found = vec![Type::Error; arguments.len()];
         let mut failed = false;
         let previous = self.expected_context;
@@ -8009,6 +8193,9 @@ impl Checker<'_> {
             {
                 self.report_disagreement(argument.span, "call", disagreement);
                 failed = true;
+            }
+            for param in bindings.keys() {
+                fixed_at.entry(*param).or_insert(argument.span);
             }
         }
         if let Some(expected) = expected
@@ -8030,6 +8217,9 @@ impl Checker<'_> {
                 .is_ok()
             {
                 bindings = from_context;
+                for param in bindings.keys() {
+                    fixed_at.entry(*param).or_insert(span);
+                }
             }
         }
         for (index, argument) in arguments.iter().enumerate() {
@@ -8059,6 +8249,9 @@ impl Checker<'_> {
                         self.report_disagreement(argument.span, "call", disagreement);
                         failed = true;
                     }
+                    for param in bindings.keys() {
+                        fixed_at.entry(*param).or_insert(argument.span);
+                    }
                     continue;
                 }
             }
@@ -8069,6 +8262,9 @@ impl Checker<'_> {
             {
                 self.report_disagreement(argument.span, "call", disagreement);
                 failed = true;
+            }
+            for param in bindings.keys() {
+                fixed_at.entry(*param).or_insert(argument.span);
             }
         }
         self.expected_context = previous;
@@ -8114,6 +8310,14 @@ impl Checker<'_> {
             );
             return Type::Error;
         }
+        let spans: Vec<Span> = generic
+            .params
+            .iter()
+            .map(|param| fixed_at.get(param).copied().unwrap_or(span))
+            .collect();
+        if !self.check_bounds(&name, &generic.params, &type_arguments, &spans) {
+            return Type::Error;
+        }
         let Some(instance) = self.instantiate_function(template, type_arguments, span) else {
             return Type::Error;
         };
@@ -8155,6 +8359,9 @@ impl Checker<'_> {
             );
             return Type::Error;
         };
+        if !self.check_bounds(&name, &generic.params, &type_arguments, &[span]) {
+            return Type::Error;
+        }
         let Some(instance) = self.instantiate_function(template, type_arguments, span) else {
             return Type::Error;
         };

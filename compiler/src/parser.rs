@@ -398,15 +398,22 @@ impl Parser<'_> {
         let end = self.close_generic("`>` after the type arguments")?;
         Ok((arguments, end))
     }
-    /// `<T, U>` after the name of a generic declaration. A parameter is a
-    /// name and nothing else: there are no constraints and no defaults.
-    fn type_parameters(&mut self) -> Parsed<Vec<Name>> {
+    /// `<T, U: Equatable>` after the name of a generic declaration. A
+    /// parameter is a name, and may name one capability its arguments must
+    /// have; there are no defaults.
+    fn type_parameters(&mut self) -> Parsed<Vec<TypeParam>> {
         if self.take(&TokenKind::Less).is_none() {
             return Ok(Vec::new());
         }
         let mut parameters = Vec::new();
         loop {
-            parameters.push(self.name("a type parameter name")?);
+            let name = self.name("a type parameter name")?;
+            let bound = if self.take(&TokenKind::Colon).is_some() {
+                Some(self.name("a capability, `Equatable` or `Comparable`")?)
+            } else {
+                None
+            };
+            parameters.push(TypeParam { name, bound });
             if self.take(&TokenKind::Comma).is_none() {
                 break;
             }

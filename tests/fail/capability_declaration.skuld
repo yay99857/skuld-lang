@@ -1,0 +1,21 @@
+// A generic declaration that names a constrained type over its own parameter
+// is refused where it is written unless the parameter has the capability too;
+// `Equatable` does not give `Comparable`. A capability is one of two names.
+class SortedMap<K: Comparable, V> {
+    keys: []K = []
+}
+
+func loose<T>(map: SortedMap<T, int>) {
+}
+
+func weaker<T: Equatable>(map: SortedMap<T, int>) {
+}
+
+func misnamed<T: Ordering>(value: T) {
+}
+
+func unknown<T: Hashable>(value: T) {
+}
+
+func main() {
+}
