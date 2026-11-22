@@ -229,6 +229,20 @@ pub(crate) fn type_check(
         ordering: EnumId(0),
         lambda_parameters: None,
     };
+    // Constants are collected before any type is read, because a type may be
+    // sized by one: `[N]u8` in a field asks for `N` long before the pass that
+    // evaluates the constants in order, and a constant nobody had collected
+    // yet read as no constant at all — an error type with no diagnostic,
+    // which then reached the backend.
+    for (file_idx, file) in program.files.iter().enumerate() {
+        let file_id = FileId(file_idx);
+        for constant in &file.program.constants {
+            let sym_id = checker.resolution.declarations[&(file_id, constant.name.span.start)];
+            checker
+                .constant_decls
+                .insert(sym_id, (file_id, constant.clone()));
+        }
+    }
     // Where each type was declared, aligned with the ids handed out below, so
     // that a later pass finds its syntax without searching for it.
     let mut enum_sites: Vec<(FileId, usize)> = Vec::new();
@@ -868,16 +882,8 @@ pub(crate) fn type_check(
         ),
         None => {}
     }
-    // Constants, collected across all files and evaluated.
-    for (file_idx, file) in program.files.iter().enumerate() {
-        let file_id = FileId(file_idx);
-        for constant in &file.program.constants {
-            let sym_id = checker.resolution.declarations[&(file_id, constant.name.span.start)];
-            checker
-                .constant_decls
-                .insert(sym_id, (file_id, constant.clone()));
-        }
-    }
+    // Every constant is evaluated by now or evaluated here; one a type
+    // mentioned was already evaluated where it was needed.
     for (file_idx, file) in program.files.iter().enumerate() {
         let file_id = FileId(file_idx);
         for constant in &file.program.constants {

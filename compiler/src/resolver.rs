@@ -299,6 +299,28 @@ pub fn resolve(program: &LoadedProgram) -> ResolveOutput {
                 }
             }
         }
+        // A type is resolved wherever one is written, because `[N]T` names a
+        // constant: a payload or an interface signature the resolver skipped
+        // left the checker looking up a use nobody had recorded.
+        for declaration in &syntax.enums {
+            resolver.current = file_scope;
+            for variant in &declaration.variants {
+                if let Some(payload) = &variant.payload {
+                    resolver.type_ref(payload);
+                }
+            }
+        }
+        for declaration in &syntax.interfaces {
+            resolver.current = file_scope;
+            for method in &declaration.methods {
+                for parameter in &method.parameters {
+                    resolver.type_ref(&parameter.type_ref);
+                }
+                if let Some(t) = &method.return_type {
+                    resolver.type_ref(t);
+                }
+            }
+        }
         // Methods get symbols, but in a scope of their own so they never
         // resolve as bare identifiers: a method is reached through `this` or a
         // value.

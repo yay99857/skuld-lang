@@ -1,0 +1,41 @@
+// A constant sizes a fixed array wherever one is written, a field included.
+// Fields are read before the pass that evaluates constants in order, so the
+// constant is evaluated where it is first needed.
+const WIDTH: int = 3
+const AREA: int = WIDTH * 2
+
+struct Row {
+    cells: [WIDTH]int
+}
+
+class Board {
+    rows: [2]Row
+    flat: [AREA]u8
+}
+
+enum Shape {
+    Empty
+    Line([WIDTH]int)
+}
+
+func sum(row: [WIDTH]int) -> int {
+    var total = 0
+    for cell in row {
+        total += cell
+    }
+    return total
+}
+
+func main() {
+    let row = Row { cells: [1, 2, 3] }
+    print(row.cells.len())
+    print(sum(row.cells))
+    let board = new Board(rows: [row; 2], flat: [0; AREA])
+    board.flat[AREA - 1] = 9
+    print(board.flat.len())
+    print(board.flat[5])
+    match Shape.Line(row.cells) {
+        Line(cells): print(cells[2])
+        Empty: print(0)
+    }
+}
