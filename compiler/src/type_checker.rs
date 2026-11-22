@@ -55,7 +55,6 @@ pub struct TypedProgram {
     pub(crate) options: Vec<OptionInfo>,
     pub(crate) results: Vec<ResultInfo>,
     pub(crate) implicit_wraps: BTreeMap<(FileId, usize, usize), Type>,
-    pub(crate) slice_coercions: BTreeMap<(FileId, usize, usize), Type>,
     /// `value == .Variant` against a variant with no payload, by the span of
     /// the comparison: the variant's index, and whether the variant was
     /// written on the left. Such a comparison tests the tag and nothing else.
@@ -204,7 +203,6 @@ pub(crate) fn type_check(
         arrays: Vec::new(),
         fixed_arrays: Vec::new(),
         fixed_array_types: BTreeMap::new(),
-        slice_coercions: BTreeMap::new(),
         tag_tests: BTreeMap::new(),
         equalities: BTreeSet::new(),
         options: Vec::new(),
@@ -968,7 +966,6 @@ pub(crate) fn type_check(
         signatures,
         externs,
         implicit_wraps,
-        slice_coercions,
         tag_tests,
         equalities,
         layout_queries,
@@ -992,7 +989,6 @@ pub(crate) fn type_check(
         options,
         results,
         implicit_wraps,
-        slice_coercions,
         tag_tests,
         equalities,
         layout_queries,
@@ -1049,7 +1045,6 @@ struct Checker<'a> {
     arrays: Vec<ArrayInfo>,
     fixed_arrays: Vec<FixedArrayInfo>,
     fixed_array_types: BTreeMap<(Type, usize), FixedArrayId>,
-    slice_coercions: BTreeMap<(FileId, usize, usize), Type>,
     options: Vec<OptionInfo>,
     option_types: BTreeMap<Type, OptionId>,
     /// Interned `Result` types; `Type::Result` indexes this.
@@ -1814,16 +1809,40 @@ impl Checker<'_> {
         if expected == found {
             return true;
         }
-        if let Type::Array(expected_array) = expected {
-            let expected_elem = self.arrays[expected_array.0].element;
-            if let Type::FixedArray(found_fixed) = found {
-                let fixed_info = self.fixed_arrays[found_fixed.0];
-                if fixed_info.element == expected_elem {
-                    self.slice_coercions
-                        .insert((self.file, span.start, span.end), expected);
-                    return true;
-                }
+        // A fixed array never becomes a `[]T` by itself. Until this was
+        // decided it widened into one silently, as a view of its storage that
+        // looked like any other array and could be returned, pushed or stored
+        // by a callee long after that storage was gone. The slice that copies
+        // is written instead, and it is one edit away.
+        if let (Type::Array(expected_array), Type::FixedArray(found_fixed)) = (expected, found)
+            && self.arrays[expected_array.0].element == self.fixed_arrays[found_fixed.0].element
+        {
+            let size = self.fixed_arrays[found_fixed.0].size;
+            let diagnostic = Diagnostic {
+                code: DiagnosticCode::TypeMismatch,
+                span,
+                message: format!(
+                    "expected `{}`, found `{}`; a fixed array does not become a dynamic array by itself",
+                    self.type_name(expected),
+                    self.type_name(found)
+                ),
+                help: Some(format!(
+                    "`[0..{size}]` copies the elements into a new `{}`; a function that only reads a fixed array can take `{}` itself",
+                    self.type_name(expected),
+                    self.type_name(found)
+                )),
+                fix: None,
             }
+            .with_fix(Fix::new(
+                format!("copy it with `[0..{size}]`"),
+                Span::new(span.end, span.end),
+                format!("[0..{size}]"),
+            ));
+            self.diagnostics.push(FileDiagnostic {
+                file: self.file,
+                diagnostic,
+            });
+            return false;
         }
         if let Type::Option(id) = expected {
             let element = self.options[id.0].element;
@@ -1961,14 +1980,6 @@ impl Checker<'_> {
                     .unwrap_or(Type::Void);
                 self.expected_context = previous_expected;
                 let span = value.as_ref().map(|e| e.span).unwrap_or(statement.span);
-                if let (Type::Array(_), Type::FixedArray(_)) = (self.return_type, found) {
-                    self.error(
-                        DiagnosticCode::InvalidValueType,
-                        span,
-                        "cannot return a fixed-size array as a dynamic array slice; slice explicitly",
-                    );
-                    return true;
-                }
                 self.expect_type(self.return_type, found, span);
                 true
             }
@@ -2723,14 +2734,6 @@ impl Checker<'_> {
                 );
             }
             initialized[index] = true;
-            if let (Type::Array(_), Type::FixedArray(_)) = (declared.ty, found) {
-                self.error(
-                    DiagnosticCode::InvalidValueType,
-                    field.value.span,
-                    "cannot initialize a field expecting a dynamic array with a fixed-size array; slice explicitly",
-                );
-                continue;
-            }
             self.expect_type(declared.ty, found, field.value.span);
         }
         // A union is one piece of memory, so exactly one member is written and
@@ -3205,16 +3208,6 @@ impl Checker<'_> {
                 self.expected_context = Some(target_type);
                 let value_type = self.expression(value);
                 self.expected_context = previous_expected;
-                if let (Type::Array(_), Type::FixedArray(_)) = (target_type, value_type)
-                    && self.through_reference(target)
-                {
-                    self.error(
-                        DiagnosticCode::InvalidValueType,
-                        value.span,
-                        "cannot assign a fixed-size array to a class field expecting a dynamic array; slice explicitly",
-                    );
-                    return target_type;
-                }
                 self.expect_type(target_type, value_type, value.span);
                 if *op != AssignmentOp::Assign {
                     let binary = match op {

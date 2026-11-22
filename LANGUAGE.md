@@ -1020,8 +1020,8 @@ let header: [4]u8 = [0x7F, 'E', 'L', 'F']
   - Indexing: `arr[i]` checks bounds both at compile time (for constant indices) and at runtime, trapping with `array index out of bounds`.
   - Length: `arr.len()` is a compile-time constant int.
   - Slicing: `arr[a..b]` creates an owned dynamic array `[]T` copying the sliced elements.
-  - Slice coercion: `[N]T` coerces implicitly to `[]T` slice views for functions expecting dynamic slices (e.g. `bytes_to_string(arr)`), with immortal stack lifetime and zero heap allocations. Mutating a coerced slice view (e.g. `push`) traps at runtime with `"cannot mutate a fixed array view"`.
-  - Escape prevention: returning a local fixed array as a dynamic slice `[]T` or assigning a fixed array to a class dynamic array field is rejected at compile time (`E0103`).
+  - No conversion to `[]T`: `[N]T` and `[]T` are different types, and a fixed array is never widened into a dynamic one by itself. Where a `[]T` is wanted, `arr[0..N]` copies into one, and the type mismatch (`E0102`) carries that edit as a fix. A function that only reads a fixed array can take `[N]T` itself.
+  - Why there is no view: until the change was reversed, `[N]T` widened implicitly into a `[]T` pointing at its own storage. Nothing about the type said so, so the view could be returned, pushed into an array or stored by a callee, and read the storage after it was gone; it could also write through a `let`. A view is sound only as a type of its own that cannot escape, which is how C#'s `Span<T>` and Swift's `Span` work, and that is not part of the language.
   - Fields: struct and class types can embed fixed arrays inline (`field: [N]T`).
   - Iteration: `for item in arr { ... }` loops over elements by value copy.
   - FFI: `ptr(arr)` borrows `*T` for scalar fixed arrays directly without copying.

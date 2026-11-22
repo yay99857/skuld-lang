@@ -1672,3 +1672,22 @@ fn an_expression_lambda_reports_each_mistake_once() {
         DiagnosticCode::InvalidValueType,
     );
 }
+
+#[test]
+fn a_fixed_array_is_copied_into_a_dynamic_one_where_it_is_written() {
+    // There is no implicit widening; the fix writes the copy, and the program
+    // it leaves checks.
+    let source = "func total(xs: []int) -> int {\n    var sum = 0\n    for x in xs { sum += x }\n    return sum\n}\nfunc make() -> [3]int { return [1, 2, 3] }\nfunc main() {\n    let local: [3]int = [1, 2, 3]\n    print(total(local))\n    print(total(make()))\n    print(total([7; 2]))\n}";
+    let errors = check(source).expect_err("a fixed array is not a `[]int`");
+    assert_eq!(errors.len(), 3, "{errors:?}");
+    assert!(
+        errors
+            .iter()
+            .all(|error| error.code == DiagnosticCode::TypeMismatch)
+    );
+    let fixed = apply_fixes(source);
+    assert!(fixed.contains("total(local[0..3])"), "{fixed}");
+    assert!(fixed.contains("total(make()[0..3])"), "{fixed}");
+    assert!(fixed.contains("total([7; 2][0..2])"), "{fixed}");
+    assert!(check(&fixed).is_ok(), "{fixed}");
+}

@@ -1089,15 +1089,20 @@ let header: [4]u8 = [0x7F, 'E', 'L', 'F']
   repeated-element literal `[elem; N]`, list literals `[a, b, c]`, indexing with
   bounds checking both at compile time (for constant indices) and runtime,
   `len()` as a compile-time constant, fixed arrays as struct and class fields,
-  slice coercion `[N]T -> []T` producing immortal stack views without heap
-  allocation, compile-time escape checks preventing stack buffers from outliving
-  their scope, runtime traps on mutating fixed-array views, and `ptr(arr)`
-  borrowing `*T`.
-- **Semantics settled:** `N` is a constant expression evaluated at compile time;
-  `[N]T` coerces to `[]T` slice views without allocating, with mutating operations
-  trapping at runtime via `*capacity == 0` in `skuld_array_reserve`; compile-time
-  checks reject returning a fixed array as a dynamic slice or storing it into a
-  heap slice field.
+  slicing `arr[a..b]` into an owned `[]T`, and `ptr(arr)` borrowing `*T`.
+- **Semantics settled:** `N` is a constant expression evaluated at compile time.
+  `[N]T` and `[]T` are different types with no conversion between them;
+  `arr[0..N]` copies.
+- **Reversed after the milestone — the stack view.** M22 shipped `[N]T`
+  widening implicitly into a `[]T` view of its storage, mutation trapping
+  through `*capacity == 0` and three escape routes refused by name. An audit
+  under AddressSanitizer found the routes nobody had named — through a `let`,
+  through a call, a push, a callee storing its parameter, a view of a dying
+  object or of a temporary — all reading a dead frame, and the trap fired only
+  on growth, so the view wrote through a `let`. The view is gone rather than
+  patched, for the reasons and with the costs recorded in `AGENTS.md`; a
+  non-escaping slice type, which is how C# and Swift make a view sound, remains
+  open as a milestone of its own.
 - **Decision taken — a fixed array lives in a class field inline.** A class field
   allocation embeds the fixed array buffer inline, with the same rules its other
   fields have.

@@ -1179,22 +1179,6 @@ fn wrap_expression(kind: h::ExprKind, source: &ast::Expr, cx: &Lowering<'_>) -> 
             span: source.span,
         };
     }
-    if let Some(target_type) = cx
-        .typed
-        .slice_coercions
-        .get(&(cx.file.get(), source.span.start, source.span.end))
-        .copied()
-        && let Type::Array(array_id) = target_type
-    {
-        lowered = h::Expr {
-            kind: h::ExprKind::FixedArrayToSlice {
-                object: Box::new(lowered),
-                array_id,
-            },
-            ty: target_type,
-            span: source.span,
-        };
-    }
     if let Some(target_type) =
         cx.typed
             .implicit_wraps

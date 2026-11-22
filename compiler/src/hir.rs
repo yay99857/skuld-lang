@@ -277,10 +277,6 @@ pub(crate) enum ExprKind {
         element: Box<Expr>,
         size: usize,
     },
-    FixedArrayToSlice {
-        object: Box<Expr>,
-        array_id: crate::types::ArrayId,
-    },
     Index {
         object: Box<Expr>,
         index: Box<Expr>,

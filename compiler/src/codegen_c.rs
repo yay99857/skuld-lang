@@ -2453,23 +2453,6 @@ impl<'a> Emitter<'a> {
                 ));
                 name
             }
-            ExprKind::FixedArrayToSlice { object, array_id } => {
-                let val = if let Some(lv) = self.lvalue(object) {
-                    lv
-                } else {
-                    self.expression(object)
-                };
-                let Type::FixedArray(fa_id) = object.ty else {
-                    unreachable!("checked fixed array to slice")
-                };
-                let size = self.fixed_arrays[fa_id.0].size;
-                let slice_type = format!("skuld_a{}", array_id.0);
-                self.store(
-                    expr.ty,
-                    &format!("(&( {slice_type} ){{ .header = {{ .strong = SIZE_MAX / 2, .weak = SIZE_MAX / 2, .destroy = NULL }}, .len = {size}, .capacity = 0, .data = {val}.data }})"),
-                    true,
-                )
-            }
             ExprKind::Index { object, index } if object.ty == Type::String => {
                 // A byte read out of settled storage borrows it: nothing
                 // between the read and the use can release the string.

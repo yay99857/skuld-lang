@@ -343,13 +343,32 @@ behind it. The obligations above are checkable, and a persona is not.
   A fixed array lives inline: on the stack, inside a struct, and — the
   milestone's open question, decided yes — inline in a class allocation, with
   the same rules the object's other fields have, which is sound because a fixed
-  array is not itself reference counted. `[N]T` widens into `[]T` without
-  allocating, as an immortal stack view; a view is read-only, and a mutating
-  call on one traps through `*capacity == 0` in `skuld_array_reserve`, so a
-  stack buffer is never reallocated onto the heap behind a reference. Escape is
-  a diagnostic rather than a trap wherever the compiler can see it: returning a
-  local fixed array as a `[]T`, or storing one into a heap array field, is
-  rejected. The closing marker is met — `std/fs`'s `read_file` and `std/net`'s
+  array is not itself reference counted. `[N]T` does **not** become a `[]T` by
+  itself; `arr[0..N]` copies one out, and the mismatch carries that edit as a
+  fix. M22 had shipped an implicit widening into an "immortal stack view" — a
+  `[]T` header on the stack pointing at the fixed array — with three escape
+  routes refused by name. It was reversed after an audit ran it under
+  AddressSanitizer: a view returned through a `let`, through `identity(xs)`,
+  pushed into an array, stored by a callee, taken from a class that then died
+  or made from a temporary all read a dead frame, and `view[0] = 99` wrote
+  through a `let`, because the "read-only" trap fired only on growth. No call
+  site can see that a callee stores its parameter, so per-site checks could
+  not be completed. What was weighed: a view that copies (an allocation behind
+  no syntax, against "no implicit coercions"); a distinct non-escaping slice
+  type, which is C#'s `ref struct`/`Span<T>` and Swift's `~Escapable` `Span`
+  (SE-0446, SE-0447) — sound, but it splits every `[]T` API and is a milestone
+  of its own, which this decision does not foreclose; Go's escape analysis
+  (`cmd/compile/internal/escape`), which moves an escaping array to a GC heap
+  Skuld does not have. The cost, named by the review that tried to break it: a
+  fixed array has no length-generic borrow left — a function takes `[N]T` by
+  value for one `N`, or a copied `[]T` — and no in-place `sort`. Nothing in the
+  repository used the view outside the two fixtures written to show it, and
+  `std/` read its stack buffers through `ptr()` and `buffer[0..n]`, since a
+  view always spans all of `N` and so never described a partly filled buffer.
+  Not closed by this: `ptr(arr)` on a fixed local is legal outside `unsafe`
+  and a function may return it, which is the foreign boundary's documented
+  contract for every `ptr()` — valid only while its operand is alive — and not
+  a fixed-array rule. The closing marker is met — `std/fs`'s `read_file` and `std/net`'s
   `receive_all` and `open` read into stack buffers instead of pushing byte by
   byte, and `tests/bench/strings.skuld` formats integers through one.
   M23 (pointers that can be read) is complete. `unsafe { ... }` is a statement

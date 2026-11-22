@@ -44,10 +44,10 @@ func main() {
     print(slice[0])
     print(slice[1])
 
-    print_slice(arr2)
+    print_slice(arr2[0..3])
 
     let text_bytes: [5]u8 = [104, 101, 108, 108, 111]
-    let s = bytes_to_string(text_bytes) else problem {
+    let s = bytes_to_string(text_bytes[0..5]) else problem {
         print("fail")
         return
     }
