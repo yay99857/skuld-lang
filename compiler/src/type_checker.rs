@@ -1828,6 +1828,25 @@ impl Checker<'_> {
     /// A function value may be a parameter or a local and nothing else. If a
     /// managed value could hold one, a closure that captured that value would
     /// close a cycle the reference counter has no way to collect.
+    /// A type argument is stored wherever its parameter is, so it must be a
+    /// type a value can be stored as. Checked where every instance is made —
+    /// a call, a construction, a variant and a written type alike — since a
+    /// function value inside a `Box<T>` field is exactly the escape M8's rule
+    /// forbids.
+    fn storable_arguments(&mut self, arguments: &[Type], span: Span) -> bool {
+        if arguments
+            .iter()
+            .any(|ty| matches!(ty, Type::Void | Type::Function(_)))
+        {
+            self.error(
+                DiagnosticCode::InvalidValueType,
+                span,
+                "a type argument is a type a value can be stored as: not `void`, and not a function",
+            );
+            return false;
+        }
+        true
+    }
     fn reject_stored_function(&mut self, ty: Type, span: Span, position: &str) {
         if matches!(ty, Type::Function(_)) {
             self.error(
@@ -2013,11 +2032,7 @@ impl Checker<'_> {
             } => {
                 let types: Vec<Type> = arguments
                     .iter()
-                    .map(|argument| {
-                        let ty = self.type_ref(argument, false);
-                        self.reject_stored_function(ty, argument.span(), "a type argument");
-                        ty
-                    })
+                    .map(|argument| self.type_ref(argument, false))
                     .collect();
                 let entry = self.lookup_type(path, "type");
                 if types.contains(&Type::Error) {
@@ -7548,6 +7563,9 @@ impl Checker<'_> {
         if let Some(&id) = self.struct_instances.get(&(template, arguments.clone())) {
             return Type::Struct(id);
         }
+        if !self.storable_arguments(&arguments, span) {
+            return Type::Error;
+        }
         let owner = self.structs[template.0].name.clone();
         let params = self.structs[template.0].params.clone();
         if !self.check_bounds(&owner, &params, &arguments, &[span]) {
@@ -7709,6 +7727,9 @@ impl Checker<'_> {
         if let Some(&id) = self.enum_instances.get(&(template, arguments.clone())) {
             return Type::Enum(id);
         }
+        if !self.storable_arguments(&arguments, span) {
+            return Type::Error;
+        }
         let owner = self.enums[template.0].name.clone();
         let params = self.enums[template.0].params.clone();
         if !self.check_bounds(&owner, &params, &arguments, &[span]) {
@@ -7768,6 +7789,9 @@ impl Checker<'_> {
     ) -> Option<SymbolId> {
         if let Some(&id) = self.function_instances.get(&(template, arguments.clone())) {
             return Some(id);
+        }
+        if !self.storable_arguments(&arguments, span) {
+            return None;
         }
         let generic = self.generic_functions[&template].clone();
         let concrete = !arguments.iter().any(|ty| self.mentions_param(*ty));
@@ -8299,15 +8323,7 @@ impl Checker<'_> {
                 }
             }
         }
-        if type_arguments
-            .iter()
-            .any(|ty| matches!(ty, Type::Void | Type::Function(_)))
-        {
-            self.error(
-                DiagnosticCode::InvalidValueType,
-                span,
-                "a type argument is a type a value can be stored as: not `void`, and not a function",
-            );
+        if !self.storable_arguments(&type_arguments, span) {
             return Type::Error;
         }
         let spans: Vec<Span> = generic

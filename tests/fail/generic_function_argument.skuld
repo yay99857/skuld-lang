@@ -1,0 +1,32 @@
+// A type argument is stored wherever its parameter is, so it is never a
+// function type: a function value inside a generic field, array or payload
+// would outlive the environment it captured. Each way of making an instance
+// is refused, not only a call.
+struct Box<T> {
+    value: T
+}
+
+class Cell<T> {
+    value: T
+}
+
+enum Wrapped<T> {
+    Held(T),
+}
+
+func keep<T>(value: T) -> T {
+    return value
+}
+
+func add(n: int) -> int {
+    return n + 1
+}
+
+func main() {
+    let base = 10
+    let boxed = Box { value: (n: int) -> int { return n + base } }
+    let celled = new Cell(value: add)
+    let wrapped = Wrapped.Held(add)
+    let written: Box<(int) -> int> = Box { value: add }
+    let kept = keep(add)
+}

@@ -567,6 +567,10 @@ behind it. The obligations above are checkable, and a persona is not.
   recorded once in terms of its parameters, and lowering lowers instances
   only. Anything that reads the checker's tables — lowering, the language
   server — reads the set that belongs to the body it is looking at.
+  A type argument is never `void` or a function type, and that is checked
+  where an instance is made rather than at each kind of use: inferring
+  `Box { value: lambda }` once produced a struct with a function field, which
+  is the escape M8's rule forbids, because only the call path checked it.
   **M37** followed, by the same delegation: `T: Equatable` gives a generic
   body `==` and `T: Comparable` gives it `compare` and implies `Equatable`.
   `float` is not `Equatable`, because IEEE `==` is not an equivalence — the
