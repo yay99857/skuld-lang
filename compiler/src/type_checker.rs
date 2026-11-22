@@ -5078,12 +5078,14 @@ impl Checker<'_> {
 }
 
 impl Checker<'_> {
-    /// Every value stored inline in `ty`: the type itself, or what an `Option`
-    /// or `Result` keeps inside it. Sizing and cycle detection have to see
-    /// through both, because neither adds indirection.
+    /// Every value stored inline in `ty`: the type itself, or what an
+    /// `Option`, a `Result` or a fixed array keeps inside it. Sizing and cycle
+    /// detection have to see through all three, because none adds
+    /// indirection: `[2]Node` inside `Node` is two whole nodes.
     fn inline_payloads(&self, ty: Type) -> Vec<Type> {
         match ty {
             Type::Option(id) => self.inline_payloads(self.options[id.0].element),
+            Type::FixedArray(id) => self.inline_payloads(self.fixed_arrays[id.0].element),
             Type::Result(id) => {
                 let info = self.results[id.0];
                 let mut payloads = self.inline_payloads(info.ok);
