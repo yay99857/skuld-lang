@@ -2042,6 +2042,17 @@ impl Checker<'_> {
                 self.defer_depth += 1;
                 let returns = self.statement(deferred);
                 self.defer_depth -= 1;
+                // `defer defer x` registers `x` while the block is already
+                // being left, after the moment it would have run, so it
+                // never ran at all. A deferred block may defer inside itself,
+                // since that block has an end of its own.
+                if matches!(deferred.kind, StatementKind::Defer(_)) {
+                    self.error(
+                        DiagnosticCode::UnsupportedSyntax,
+                        deferred.span,
+                        "a `defer` inside a `defer` would be registered after its block had ended, so it would never run",
+                    );
+                }
                 if matches!(
                     deferred.kind,
                     StatementKind::Variable(_) | StatementKind::Constant(_)

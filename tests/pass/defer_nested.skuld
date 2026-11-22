@@ -1,0 +1,11 @@
+// A deferred block may defer inside itself: that block has an end of its
+// own, so what it defers runs when the block finishes.
+func main() {
+    {
+        defer {
+            defer print("inner")
+            print("outer")
+        }
+    }
+    print("after")
+}

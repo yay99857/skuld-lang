@@ -1303,7 +1303,9 @@ defer close(handle)
   statement: it runs while the block is already being left, so leaving again
   would have to decide what happens to the exit already under way. A deferred
   declaration is refused too — it would bind a name at the moment the block
-  ends, where nothing can read it.
+  ends, where nothing can read it — and so is `defer defer x`, which would
+  register `x` after the block had ended and never run it. A deferred block
+  may defer inside itself, since that block has an end of its own.
 - There is no `errdefer`. `Result` already makes the failure path visible at
   the call site, and where a resource is released on failure but handed over on
   success, a flag says which happened:
