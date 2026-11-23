@@ -312,3 +312,75 @@ fn a_comment_after_a_lambda_stays_with_its_statement() {
     assert_eq!(fmt(input), expected);
     assert_eq!(fmt(expected), expected);
 }
+
+#[test]
+fn a_list_that_fits_stays_on_one_line_however_it_was_written() {
+    let input = "func main() {\n    let short = [\n        1,\n        2,\n    ]\n}\n";
+    assert_eq!(fmt(input), "func main() {\n    let short = [1, 2]\n}\n");
+}
+
+#[test]
+fn a_list_past_the_width_takes_one_element_per_line() {
+    let input = "func main() {\n    let request = new Request(url: \"https://api.github.com/repos/owner/repository/issues\", headers: [agent, version])\n}\n";
+    let expected = "func main() {\n    let request = new Request(\n        url: \"https://api.github.com/repos/owner/repository/issues\",\n        headers: [agent, version],\n    )\n}\n";
+    assert_eq!(fmt(input), expected);
+    assert_eq!(fmt(expected), expected);
+}
+
+#[test]
+fn a_long_signature_breaks_its_parameters() {
+    let input = "func connect_with_everything(address: string, port: int, host_name: string, timeout_ms: int, retries: int) -> int {\n    return port\n}\n";
+    let expected = "func connect_with_everything(\n    address: string,\n    port: int,\n    host_name: string,\n    timeout_ms: int,\n    retries: int,\n) -> int {\n    return port\n}\n";
+    assert_eq!(fmt(input), expected);
+    assert_eq!(fmt(expected), expected);
+}
+
+#[test]
+fn the_outer_list_stays_when_breaking_it_would_not_help() {
+    // Breaking `push(...)` would leave its one element still too long, so the
+    // struct literal inside it is the list that breaks.
+    let input = "func main() {\n    found.push(Issue { number: 1, title: \"a fairly long title for an issue\", author: \"someone\", comments: 3 })\n}\n";
+    let expected = "func main() {\n    found.push(Issue {\n        number: 1,\n        title: \"a fairly long title for an issue\",\n        author: \"someone\",\n        comments: 3,\n    })\n}\n";
+    assert_eq!(fmt(input), expected);
+    assert_eq!(fmt(expected), expected);
+}
+
+#[test]
+fn a_single_long_string_is_left_on_its_line() {
+    let line = format!("    show(\"{}\")\n", "x".repeat(120));
+    let input = format!("func main() {{\n{line}}}\n");
+    assert_eq!(fmt(&input), input);
+}
+
+#[test]
+fn a_comment_inside_a_list_breaks_it_and_keeps_its_place() {
+    let input = "func main() {\n    let list = [1, // one\n        2,\n        // before three\n        3]\n}\n";
+    let expected = "func main() {\n    let list = [\n        1, // one\n        2,\n        // before three\n        3,\n    ]\n}\n";
+    assert_eq!(fmt(input), expected);
+    assert_eq!(fmt(expected), expected);
+}
+
+#[test]
+fn a_block_lambda_is_measured_by_its_header_line() {
+    let input = "func main() {\n    items.sort((a: int, b: int) -> Ordering {\n        return a.compare(b)\n    })\n}\n";
+    assert_eq!(fmt(input), input);
+}
+
+#[test]
+fn a_signature_counts_its_return_type() {
+    // 88 columns to the `)`, 113 with ` -> Result<int, string> {`: the
+    // parameters break, because the signature's line is the whole of it.
+    let input = "func connect(address: string, port: int, host_name: string, timeout_ms: int, retry: int) -> Result<int, string> {
+    return Ok(port)
+}
+";
+    assert!(
+        fmt(input).starts_with(
+            "func connect(
+    address: string,
+"
+        ),
+        "{}",
+        fmt(input)
+    );
+}

@@ -746,6 +746,13 @@ behind it. The obligations above are checkable, and a persona is not.
   and AST semantics. Signatures are written `-> Type` — since M32 the only
   spelling — and match arms `Pattern: ...`, their only separator.
   Idempotency and native output preservation are tested across all fixtures.
+  Lines target 100 columns: a call's arguments, `new` and struct-literal
+  fields, an array and a function's, method's or lambda's parameters break one
+  element per line when they do not fit, and nothing reads where the author
+  broke lines, so the output is a function of the program. Its rules and what
+  was rejected — leaving wrapping to the author as Go does, a width of 80 —
+  are in `ROADMAP.md` under M11. Operator chains, strings and `extern`/interface
+  signatures are never broken, so the width is a target and not a limit.
 - The language server finds references and renames. A workspace is the set of
   programs the editor has open: each document is compiled as the entry file of
   its own program, so a module's uses are found through whichever entry file

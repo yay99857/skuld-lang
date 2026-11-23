@@ -568,7 +568,11 @@ The tool that makes Skuld code consistent and keeps review discussions on behavi
 - **Implemented:** `skuld fmt <file>` formatting in-place and `skuld fmt --check <file>`
   reporting drift with a non-zero exit code without modifying the file. Preserves
   all `//` comments (leading and trailing), literal values with original formatting
-  and escapes, statement boundaries, multiline expressions, and AST semantics.
+  and escapes, statement boundaries and AST semantics. This entry used to say it
+  preserved "multiline expressions" too; it never did — every expression was
+  printed on one line, however it was written — and the claim stood until a
+  review ran the formatter instead of reading this entry. Line width is now its
+  own decision, below.
 - **Decision taken — return type normalization:** function and method return
   signatures normalize to `-> Type`. Both `:` and `->` remain fully accepted by the
   language and parser; formatting standardizes the representation across the codebase.
@@ -594,6 +598,59 @@ The tool that makes Skuld code consistent and keeps review discussions on behavi
   inherited a gap that was never there. A comment the author left standing
   alone still keeps its blank line on both sides.
 - **Out of scope, and still out:** syntax changes, import reorganization, and lint rules.
+- **Decision taken after the milestone — line width.** Writing
+  `examples/issues.skuld` produced a 300-column `new Request(...)` with no way
+  to wrap it, because the formatter joined whatever the author broke. What
+  others do, as read: rustfmt's `max_width` defaults to 100 (its
+  `Configurations.md`); Effective Go says "Go has no line length limit … If a
+  line feels too long, wrap it" — wrapping is the author's; Prettier
+  "prints expressions on a single line if they fit", and its rationale calls
+  the one place it keeps an author's line break "a workaround, not a feature",
+  because "Prettier avoids non-reversible formatting".
+  - **What is decided.** A target width of 100 columns, counted in Unicode
+    scalar values. Output depends on the program and its comments alone, never
+    on where the author broke lines, so formatting twice changes nothing and
+    a list that shrinks back under the width returns to one line. The lists
+    that break are call arguments, `new C(...)` fields, `S { ... }` fields,
+    array literals and the parameters of functions, methods and lambdas; a
+    broken list puts one element per line, one level in, each followed by a
+    comma, with the closing delimiter on a line of its own. A list with a
+    comment inside it always breaks, and each comment keeps its place. A list
+    is tried on one line with the lists inside it held flat, so the outermost
+    decides first; lists side by side decide left to right. A list that does
+    not fit is broken only if at least one element would then fit on its own
+    line — otherwise it stays and its inner lists decide, which is how
+    `push(Issue { ... })` breaks the literal and not the call. A line is
+    measured to its first forced newline, so a block lambda is judged by its
+    header, and a signature counts its ` -> Type {`.
+  - **Not broken, on purpose:** operator chains, member chains, strings and
+    interpolations, match arms, and the signatures of `extern` blocks and
+    interfaces, whose separator rules in the parser depend on newlines. So the
+    width is a target, as Prettier's is, and a line can still exceed it.
+    Outside a signature, text after a list's closing delimiter on the same
+    line (` {`, ` else problem {`) is not counted.
+  - **Rejected:** Go's model, where the author wraps, because it
+    leaves wrapping to review, which is what this formatter exists to remove;
+    Prettier's object exception, for the reason Prettier itself gives; and a
+    width of 80, measured over the 381 tracked `.skuld` files. At 100, 12
+    files change and lines over 100 columns go from 41 to 17; at 80, 26 files
+    and 2.7 times as many lines change, mostly in `std/`, and 63 lines are
+    still over 80. What remains over 100 is strings, interpolations, operator
+    chains and match arms.
+  - **Argued against first.** An adversarial review ran the formatter rather
+    than reading it and found two faults the design rested on: a block lambda
+    inside a call left `, 2)` alone on the next line, and a comment after a
+    list was pulled into a lambda inside it. Both were fixed in their own
+    commit before any width code. Its other objections became the rules
+    above: comments force a break, the one-line trial changes no state, "fits"
+    stops at a forced newline, siblings have an order, a break that helps no
+    element is not taken, and every list kind is named. Two of its points are
+    recorded rather than acted on. Counting scalar values rather than display
+    width diverges from rustfmt, which the review believed uses display width
+    but did not verify. And nothing in CI runs `skuld fmt --check` — 34 files
+    in `std/`, `examples/` and `tests/pass` already drift — so this change
+    does not by itself keep the repository formatted. Such a gate is a
+    separate decision and has not been taken.
 
 ## M12 — References and rename — Implemented
 

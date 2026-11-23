@@ -91,6 +91,74 @@ struct Formatter<'a> {
     /// only from before it, so a comment written after a block's `}` on the
     /// same source line is never pulled inside the block.
     block_end: usize,
+    /// Set while a list is tried on one line: the lists inside it stay flat
+    /// too, so the outermost list is the one that decides first.
+    flat: bool,
+}
+
+/// The column a line should end by. rustfmt's `max_width` default; Skuld
+/// shares its four-space indentation. A target rather than a limit: a long
+/// string, an operator chain or a list whose elements would each still be too
+/// long is left on one line.
+const WIDTH: usize = 100;
+
+/// One element of a list the formatter may break one element per line.
+#[derive(Clone, Copy)]
+enum Item<'a> {
+    Expr(&'a Expr),
+    Field(&'a FieldInit),
+    Param(&'a Parameter),
+    LambdaParam(&'a LambdaParameter),
+}
+
+impl Item<'_> {
+    fn span(&self) -> Span {
+        match self {
+            Item::Expr(e) => e.span,
+            Item::Field(f) => f.span,
+            Item::Param(p) => p.span,
+            Item::LambdaParam(p) => p.span,
+        }
+    }
+}
+
+/// How a list opens and closes, on one line and broken.
+struct Delimiters {
+    flat_open: &'static str,
+    flat_close: &'static str,
+    open: &'static str,
+    close: &'static str,
+}
+
+const PARENS: Delimiters = Delimiters {
+    flat_open: "(",
+    flat_close: ")",
+    open: "(",
+    close: ")",
+};
+const BRACKETS: Delimiters = Delimiters {
+    flat_open: "[",
+    flat_close: "]",
+    open: "[",
+    close: "]",
+};
+const BRACES: Delimiters = Delimiters {
+    flat_open: " { ",
+    flat_close: " }",
+    open: " {",
+    close: "}",
+};
+
+/// Everything a trial rendering can change, so a list that did not fit can be
+/// printed again as if the trial never happened.
+struct Snapshot {
+    len: usize,
+    comment_idx: usize,
+    covered: usize,
+    needs_indent: bool,
+    indent_level: usize,
+    block_end: usize,
+    flat: bool,
 }
 
 enum Decl<'a> {
@@ -130,6 +198,7 @@ impl<'a> Formatter<'a> {
             needs_indent: true,
             covered: 0,
             block_end: usize::MAX,
+            flat: false,
         }
     }
 
@@ -463,13 +532,7 @@ impl<'a> Formatter<'a> {
             self.push("var ");
         }
         self.push(&f.name.text);
-        self.push("(");
-        self.format_parameters(&f.parameters);
-        self.push(")");
-        if let Some(ret) = &f.return_type {
-            self.push(" -> ");
-            self.format_type(ret);
-        }
+        self.format_signature(&f.parameters, f.name.span.end, f.return_type.as_ref());
         self.push(" ");
         self.format_block_inline(&f.body);
     }
@@ -548,13 +611,7 @@ impl<'a> Formatter<'a> {
         self.push("func ");
         self.push(&f.name.text);
         self.format_type_params(&f.type_params);
-        self.push("(");
-        self.format_parameters(&f.parameters);
-        self.push(")");
-        if let Some(ret) = &f.return_type {
-            self.push(" -> ");
-            self.format_type(ret);
-        }
+        self.format_signature(&f.parameters, f.name.span.end, f.return_type.as_ref());
         self.push(" ");
         self.format_block_inline(&f.body);
     }
@@ -586,6 +643,234 @@ impl<'a> Formatter<'a> {
         self.emit_trailing_comment(ext.span.end);
     }
 
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            len: self.output.len(),
+            comment_idx: self.comment_idx,
+            covered: self.covered,
+            needs_indent: self.needs_indent,
+            indent_level: self.indent_level,
+            block_end: self.block_end,
+            flat: self.flat,
+        }
+    }
+
+    fn restore(&mut self, snapshot: &Snapshot) {
+        self.output.truncate(snapshot.len);
+        self.comment_idx = snapshot.comment_idx;
+        self.covered = snapshot.covered;
+        self.needs_indent = snapshot.needs_indent;
+        self.indent_level = snapshot.indent_level;
+        self.block_end = snapshot.block_end;
+        self.flat = snapshot.flat;
+    }
+
+    /// Whether the line holding output byte `from` ends by `WIDTH`, counting
+    /// to the end of the output or the first newline after `from`, whichever
+    /// comes first — a block lambda's body is on lines of its own, and what
+    /// is measured is the line its header sits on. Counted in Unicode scalar
+    /// values, not display columns.
+    fn fits_from(&self, from: usize) -> bool {
+        self.fits_reserving(from, 0)
+    }
+
+    /// The same, keeping `reserve` columns free for what is known to follow
+    /// on the line — a signature's ` -> Type {`.
+    fn fits_reserving(&self, from: usize, reserve: usize) -> bool {
+        let line_start = self.output[..from].rfind('\n').map_or(0, |at| at + 1);
+        let rest = &self.output[from..];
+        let line_end = rest.find('\n').map_or(self.output.len(), |at| from + at);
+        self.output[line_start..line_end].chars().count() + reserve <= WIDTH
+    }
+
+    fn format_item(&mut self, item: Item<'_>) {
+        match item {
+            Item::Expr(expr) => self.format_expr(expr),
+            Item::Field(field) => {
+                self.push(&field.name.text);
+                self.push(": ");
+                self.format_expr(&field.value);
+            }
+            Item::Param(param) => {
+                self.push(&param.name.text);
+                self.push(": ");
+                self.format_type(&param.type_ref);
+            }
+            Item::LambdaParam(param) => {
+                self.push(&param.name.text);
+                if let Some(t) = &param.type_ref {
+                    self.push(": ");
+                    self.format_type(t);
+                }
+            }
+        }
+    }
+
+    fn format_flat(&mut self, delimiters: &Delimiters, items: &[Item<'_>]) {
+        self.push(delimiters.flat_open);
+        for (i, item) in items.iter().enumerate() {
+            if i > 0 {
+                self.push(", ");
+            }
+            self.format_item(*item);
+        }
+        self.push(delimiters.flat_close);
+    }
+
+    /// A list, on one line if it fits and one element per line if not.
+    ///
+    /// `open` is where its opening delimiter is in the source and `close`
+    /// where its closing one is. The rules, in the order they apply:
+    ///
+    /// - A list with a comment anywhere inside it is broken, because a `//`
+    ///   comment ends the line it is on. Each comment keeps its place: after
+    ///   the element it followed on the same line, or on a line of its own
+    ///   before the element it preceded.
+    /// - Otherwise the list is tried on one line with every list inside it
+    ///   held flat, so the outermost list decides first. Lists side by side
+    ///   decide left to right, each seeing only what precedes it on the line.
+    /// - A list that fits stays. One that does not is broken only if that
+    ///   helps — if at least one element would then fit on its own line. If
+    ///   none would, it stays on one line and the lists inside it decide.
+    ///
+    /// Nothing here reads where the author broke lines, so formatting is a
+    /// function of the program alone and formatting twice changes nothing.
+    fn format_list(
+        &mut self,
+        delimiters: &Delimiters,
+        items: &[Item<'_>],
+        open: usize,
+        close: usize,
+    ) {
+        self.format_list_reserving(delimiters, items, open, close, 0);
+    }
+
+    /// A list followed on its line by `reserve` columns the caller knows it
+    /// will print. Only a signature knows that; anywhere else the text after a
+    /// list's closing delimiter is not counted, and a line may end a few
+    /// columns past `WIDTH`.
+    fn format_list_reserving(
+        &mut self,
+        delimiters: &Delimiters,
+        items: &[Item<'_>],
+        open: usize,
+        close: usize,
+        reserve: usize,
+    ) {
+        if items.is_empty() {
+            self.push(delimiters.flat_open.trim_end());
+            self.push(delimiters.flat_close.trim_start());
+            return;
+        }
+        let commented = self
+            .comments
+            .iter()
+            .skip(self.comment_idx)
+            .any(|comment| comment.span.start > open && comment.span.start < close);
+        if !commented {
+            if self.flat {
+                self.format_flat(delimiters, items);
+                return;
+            }
+            let before = self.snapshot();
+            self.flat = true;
+            self.format_flat(delimiters, items);
+            self.flat = before.flat;
+            if self.fits_reserving(before.len, reserve) {
+                return;
+            }
+            self.restore(&before);
+            if !self.breaking_helps(items) {
+                self.format_flat(delimiters, items);
+                return;
+            }
+        }
+        self.format_broken(delimiters, items, open, close);
+    }
+
+    /// Whether any element, alone on a line one level in and followed by its
+    /// comma, would end by `WIDTH`.
+    fn breaking_helps(&mut self, items: &[Item<'_>]) -> bool {
+        items.iter().any(|item| {
+            let before = self.snapshot();
+            self.push("\n");
+            self.indent();
+            self.flat = true;
+            let start = self.output.len();
+            self.format_item(*item);
+            self.push(",");
+            let fits = self.fits_from(start);
+            self.restore(&before);
+            fits
+        })
+    }
+
+    fn format_broken(
+        &mut self,
+        delimiters: &Delimiters,
+        items: &[Item<'_>],
+        open: usize,
+        close: usize,
+    ) {
+        self.push(delimiters.open);
+        self.emit_trailing_comment_before(open + 1, items[0].span().start);
+        self.indent();
+        let flat = std::mem::replace(&mut self.flat, false);
+        for (i, item) in items.iter().enumerate() {
+            self.emit_comments_before(item.span().start);
+            self.format_item(*item);
+            self.push(",");
+            let next = items.get(i + 1).map_or(close, |next| next.span().start);
+            self.emit_trailing_comment_before(item.span().end, next);
+        }
+        self.emit_comments_before(close);
+        self.flat = flat;
+        self.dedent();
+        self.push(delimiters.close);
+    }
+
+    /// Where the `)` closing a parameter list is, from the end of its last
+    /// parameter: the first one that is not inside a comment.
+    fn closing_paren(&self, from: usize) -> usize {
+        let bytes = self.source.as_bytes();
+        let mut at = from;
+        while at < bytes.len() {
+            match bytes[at] {
+                b')' => return at,
+                b'/' if bytes.get(at + 1) == Some(&b'/') => {
+                    while at < bytes.len() && bytes[at] != b'\n' {
+                        at += 1;
+                    }
+                }
+                _ => at += 1,
+            }
+        }
+        bytes.len()
+    }
+
+    /// A function's or method's parameters and return type. The parameters
+    /// break like any list, and what follows their `)` — ` -> Type {` — is
+    /// measured with them, since a signature always ends that way.
+    fn format_signature(&mut self, params: &[Parameter], open: usize, result: Option<&TypeRef>) {
+        let items: Vec<Item<'_>> = params.iter().map(Item::Param).collect();
+        let close = params
+            .last()
+            .map_or(open + 1, |last| self.closing_paren(last.span.end));
+        let before = self.snapshot();
+        if let Some(ret) = result {
+            self.push(" -> ");
+            self.format_type(ret);
+        }
+        self.push(" {");
+        let reserve = self.output[before.len..].chars().count();
+        self.restore(&before);
+        self.format_list_reserving(&PARENS, &items, open, close, reserve);
+        if let Some(ret) = result {
+            self.push(" -> ");
+            self.format_type(ret);
+        }
+    }
+
     fn format_parameters(&mut self, params: &[Parameter]) {
         for (i, param) in params.iter().enumerate() {
             if i > 0 {
@@ -609,10 +894,12 @@ impl<'a> Formatter<'a> {
         self.emit_trailing_comment_before(block.span.start, block.statements[0].span.start);
         self.indent();
         let outer = std::mem::replace(&mut self.block_end, block.span.end);
+        let flat = std::mem::replace(&mut self.flat, false);
         for stmt in &block.statements {
             self.lead_in(stmt.span.start);
             self.format_statement(stmt);
         }
+        self.flat = flat;
         self.block_end = outer;
         self.dedent();
         self.emit_comments_before(block.span.end);
@@ -822,10 +1109,12 @@ impl<'a> Formatter<'a> {
         self.emit_trailing_comment_before(block.span.start, block.statements[0].span.start);
         self.indent();
         let outer = std::mem::replace(&mut self.block_end, block.span.end);
+        let flat = std::mem::replace(&mut self.flat, false);
         for stmt in &block.statements {
             self.lead_in(stmt.span.start);
             self.format_statement(stmt);
         }
+        self.flat = flat;
         self.block_end = outer;
         self.dedent();
         self.emit_comments_before(block.span.end);
@@ -932,14 +1221,8 @@ impl<'a> Formatter<'a> {
             }
             ExprKind::Call { callee, arguments } => {
                 self.format_expr(callee);
-                self.push("(");
-                for (i, arg) in arguments.iter().enumerate() {
-                    if i > 0 {
-                        self.push(", ");
-                    }
-                    self.format_expr(arg);
-                }
-                self.push(")");
+                let items: Vec<Item<'_>> = arguments.iter().map(Item::Expr).collect();
+                self.format_list(&PARENS, &items, callee.span.end, expr.span.end - 1);
             }
             ExprKind::Member { object, member } => {
                 self.format_expr(object);
@@ -954,9 +1237,8 @@ impl<'a> Formatter<'a> {
                     self.push(" {}");
                     return;
                 }
-                self.push(" { ");
-                self.format_field_inits(fields);
-                self.push(" }");
+                let items: Vec<Item<'_>> = fields.iter().map(Item::Field).collect();
+                self.format_list(&BRACES, &items, name.span.end, expr.span.end - 1);
             }
             ExprKind::New {
                 name,
@@ -967,19 +1249,13 @@ impl<'a> Formatter<'a> {
                 self.push("new ");
                 self.format_path(name);
                 self.format_type_arguments(type_arguments);
-                self.push("(");
-                self.format_field_inits(fields);
-                self.push(")");
+                let items: Vec<Item<'_>> = fields.iter().map(Item::Field).collect();
+                let open = fields.first().map_or(expr.span.start, |f| f.span.start - 1);
+                self.format_list(&PARENS, &items, open, expr.span.end - 1);
             }
             ExprKind::Array(elements) => {
-                self.push("[");
-                for (i, el) in elements.iter().enumerate() {
-                    if i > 0 {
-                        self.push(", ");
-                    }
-                    self.format_expr(el);
-                }
-                self.push("]");
+                let items: Vec<Item<'_>> = elements.iter().map(Item::Expr).collect();
+                self.format_list(&BRACKETS, &items, expr.span.start, expr.span.end - 1);
             }
             ExprKind::ArrayRepeat { element, count } => {
                 self.push("[");
@@ -999,18 +1275,15 @@ impl<'a> Formatter<'a> {
             ExprKind::Lambda(lambda) => {
                 // Lambda syntax: `(params): Type { body }`
                 // No `func` prefix.
-                self.push("(");
-                for (i, param) in lambda.parameters.iter().enumerate() {
-                    if i > 0 {
-                        self.push(", ");
-                    }
-                    self.push(&param.name.text);
-                    if let Some(t) = &param.type_ref {
-                        self.push(": ");
-                        self.format_type(t);
-                    }
-                }
-                self.push(")");
+                let items: Vec<Item<'_>> =
+                    lambda.parameters.iter().map(Item::LambdaParam).collect();
+                let close = lambda
+                    .parameters
+                    .last()
+                    .map_or(lambda.span.start + 1, |last| {
+                        self.closing_paren(last.span.end)
+                    });
+                self.format_list(&PARENS, &items, lambda.span.start, close);
                 if let Some(ret) = &lambda.return_type {
                     self.push(" -> ");
                     self.format_type(ret);
@@ -1052,17 +1325,6 @@ impl<'a> Formatter<'a> {
                 self.format_expr(end);
                 self.push("]");
             }
-        }
-    }
-
-    fn format_field_inits(&mut self, fields: &[FieldInit]) {
-        for (i, field) in fields.iter().enumerate() {
-            if i > 0 {
-                self.push(", ");
-            }
-            self.push(&field.name.text);
-            self.push(": ");
-            self.format_expr(&field.value);
         }
     }
 
