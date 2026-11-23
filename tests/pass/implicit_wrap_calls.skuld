@@ -1,0 +1,79 @@
+// A value wraps into an expected `Option` whatever kind of call made it: a
+// width, float or char conversion, a method, an interface method, an array
+// method and `bytes_to_string`. Each of these is lowered to a builtin form of
+// its own, and those forms once skipped the wrap, so `return int(n)` from a
+// function answering `Option<int>` passed the checker and failed in clang.
+
+interface Named {
+    name() -> string
+}
+
+class Dog: Named {
+    label: string
+
+    name() -> string {
+        return this.label
+    }
+}
+
+func whole(n: float) -> Option<int> {
+    return int(n)
+}
+
+func narrow(n: int) -> Option<u8> {
+    return u8(n)
+}
+
+func widen(n: int) -> Option<float> {
+    return float(n)
+}
+
+func letter(n: u32) -> Option<char> {
+    return char(n)
+}
+
+func label(d: Dog) -> Option<string> {
+    return d.name()
+}
+
+func through(n: Named) -> Option<string> {
+    return n.name()
+}
+
+func last(items: []int) -> Option<Option<int>> {
+    return items.pop()
+}
+
+func text(bytes: []u8) -> Option<Result<string, string>> {
+    return bytes_to_string(bytes)
+}
+
+func main() {
+    let maybe: Option<int> = int(2.0)
+    print(maybe.is_some())
+    if let v = whole(3.0) {
+        print(v)
+    }
+    if let b = narrow(7) {
+        print(b)
+    }
+    if let f = widen(2) {
+        print(f)
+    }
+    if let c = letter(u32(65)) {
+        print(c)
+    }
+    let dog = new Dog(label: "rex" + "")
+    if let n = label(dog) {
+        print(n)
+    }
+    if let n = through(dog) {
+        print(n)
+    }
+    if let inner = last([4]) {
+        print(inner.is_some())
+    }
+    if let r = text("ok".bytes()) {
+        print(r.is_ok())
+    }
+}

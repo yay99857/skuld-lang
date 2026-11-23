@@ -1056,15 +1056,22 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     _ => None,
                 };
                 if let Some(method) = array_method {
-                    return h::Expr {
-                        kind: h::ExprKind::ArrayCall {
-                            object: Box::new(expression(object, cx)),
-                            method,
-                            arguments: arguments.iter().map(|arg| expression(arg, cx)).collect(),
+                    return wrap_lowered(
+                        h::Expr {
+                            kind: h::ExprKind::ArrayCall {
+                                object: Box::new(expression(object, cx)),
+                                method,
+                                arguments: arguments
+                                    .iter()
+                                    .map(|arg| expression(arg, cx))
+                                    .collect(),
+                            },
+                            ty: cx.ty(source.span).expect("checked expression"),
+                            span: source.span,
                         },
-                        ty: cx.ty(source.span).expect("checked expression"),
-                        span: source.span,
-                    };
+                        source,
+                        cx,
+                    );
                 }
                 let special = match (object_type, member.text.as_str()) {
                     (Some(Type::Weak(_)), "upgrade") => {
@@ -1118,11 +1125,15 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     _ => None,
                 };
                 if let Some(kind) = special {
-                    return h::Expr {
-                        kind,
-                        ty: cx.ty(source.span).expect("checked expression"),
-                        span: source.span,
-                    };
+                    return wrap_lowered(
+                        h::Expr {
+                            kind,
+                            ty: cx.ty(source.span).expect("checked expression"),
+                            span: source.span,
+                        },
+                        source,
+                        cx,
+                    );
                 }
                 // A module-qualified call: the resolver bound the right half
                 // to the exported function, so this lowers as a direct call
@@ -1134,16 +1145,20 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                         .module_in_file(cx.file.get(), &qualifier.text)
                         .is_some()
                 {
-                    return h::Expr {
-                        kind: h::ExprKind::Call {
-                            target: h::CallTarget::Function(
-                                cx.callee(source.span, cx.reference(member.span)),
-                            ),
-                            arguments: arguments.iter().map(|e| expression(e, cx)).collect(),
+                    return wrap_lowered(
+                        h::Expr {
+                            kind: h::ExprKind::Call {
+                                target: h::CallTarget::Function(
+                                    cx.callee(source.span, cx.reference(member.span)),
+                                ),
+                                arguments: arguments.iter().map(|e| expression(e, cx)).collect(),
+                            },
+                            ty: cx.ty(source.span).expect("checked expression"),
+                            span: source.span,
                         },
-                        ty: cx.ty(source.span).expect("checked expression"),
-                        span: source.span,
-                    };
+                        source,
+                        cx,
+                    );
                 }
                 if let Some(Type::Interface(interface)) = cx.ty(object.span) {
                     let index = cx.typed.interfaces[interface.0]
@@ -1151,16 +1166,20 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                         .iter()
                         .position(|method| method.name == member.text)
                         .expect("internal compiler bug: checked interface method");
-                    return h::Expr {
-                        kind: h::ExprKind::InterfaceCall {
-                            object: Box::new(expression(object, cx)),
-                            interface,
-                            index,
-                            arguments: arguments.iter().map(|e| expression(e, cx)).collect(),
+                    return wrap_lowered(
+                        h::Expr {
+                            kind: h::ExprKind::InterfaceCall {
+                                object: Box::new(expression(object, cx)),
+                                interface,
+                                index,
+                                arguments: arguments.iter().map(|e| expression(e, cx)).collect(),
+                            },
+                            ty: cx.ty(source.span).expect("checked expression"),
+                            span: source.span,
                         },
-                        ty: cx.ty(source.span).expect("checked expression"),
-                        span: source.span,
-                    };
+                        source,
+                        cx,
+                    );
                 }
                 let Some(Type::Struct(id)) = cx.ty(object.span) else {
                     unreachable!("internal compiler bug: unchecked method call")
@@ -1184,14 +1203,18 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                 };
                 let mut values = vec![receiver];
                 values.extend(arguments.iter().map(|e| expression(e, cx)));
-                return h::Expr {
-                    kind: h::ExprKind::Call {
-                        target: h::CallTarget::Function(method.id),
-                        arguments: values,
+                return wrap_lowered(
+                    h::Expr {
+                        kind: h::ExprKind::Call {
+                            target: h::CallTarget::Function(method.id),
+                            arguments: values,
+                        },
+                        ty: cx.ty(source.span).expect("checked expression"),
+                        span: source.span,
                     },
-                    ty: cx.ty(source.span).expect("checked expression"),
-                    span: source.span,
-                };
+                    source,
+                    cx,
+                );
             }
             // A call through a value: the callee is an expression, not a name.
             if !matches!(strip_groups(callee).kind, ast::ExprKind::Identifier(_))
@@ -1212,11 +1235,15 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
             let id = cx.reference(name.span);
             if cx.typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::BytesToString)
             {
-                return h::Expr {
-                    kind: h::ExprKind::BytesToString(Box::new(expression(&arguments[0], cx))),
-                    ty: cx.ty(source.span).expect("checked expression"),
-                    span: source.span,
-                };
+                return wrap_lowered(
+                    h::Expr {
+                        kind: h::ExprKind::BytesToString(Box::new(expression(&arguments[0], cx))),
+                        ty: cx.ty(source.span).expect("checked expression"),
+                        span: source.span,
+                    },
+                    source,
+                    cx,
+                );
             }
             if let SymbolKind::Builtin(Builtin::IntConvert(target)) =
                 cx.typed.resolution.symbols[id.0].kind
@@ -1238,43 +1265,59 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                         span,
                     };
                 }
-                return h::Expr {
-                    kind: h::ExprKind::IntConvert {
-                        value: Box::new(value),
-                        target,
+                return wrap_lowered(
+                    h::Expr {
+                        kind: h::ExprKind::IntConvert {
+                            value: Box::new(value),
+                            target,
+                        },
+                        ty: cx.ty(source.span).expect("checked expression"),
+                        span: source.span,
                     },
-                    ty: cx.ty(source.span).expect("checked expression"),
-                    span: source.span,
-                };
+                    source,
+                    cx,
+                );
             }
             // `Protocol(6)`: the conversion back, which traps on a value no
             // variant is worth.
             if cx.typed.resolution.symbols[id.0].kind == SymbolKind::Enum
                 && let Some(Type::Enum(enum_id)) = cx.ty(source.span)
             {
-                return h::Expr {
-                    kind: h::ExprKind::EnumFromValue {
-                        value: Box::new(expression(&arguments[0], cx)),
-                        id: enum_id,
+                return wrap_lowered(
+                    h::Expr {
+                        kind: h::ExprKind::EnumFromValue {
+                            value: Box::new(expression(&arguments[0], cx)),
+                            id: enum_id,
+                        },
+                        ty: Type::Enum(enum_id),
+                        span: source.span,
                     },
-                    ty: Type::Enum(enum_id),
-                    span: source.span,
-                };
+                    source,
+                    cx,
+                );
             }
             if cx.typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::FloatConvert)
             {
-                return h::Expr {
-                    kind: h::ExprKind::FloatConvert(Box::new(expression(&arguments[0], cx))),
-                    ty: cx.ty(source.span).expect("checked expression"),
-                    span: source.span,
-                };
+                return wrap_lowered(
+                    h::Expr {
+                        kind: h::ExprKind::FloatConvert(Box::new(expression(&arguments[0], cx))),
+                        ty: cx.ty(source.span).expect("checked expression"),
+                        span: source.span,
+                    },
+                    source,
+                    cx,
+                );
             }
             if cx.typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::CharConvert) {
-                return h::Expr {
-                    kind: h::ExprKind::CharConvert(Box::new(expression(&arguments[0], cx))),
-                    ty: cx.ty(source.span).expect("checked expression"),
-                    span: source.span,
-                };
+                return wrap_lowered(
+                    h::Expr {
+                        kind: h::ExprKind::CharConvert(Box::new(expression(&arguments[0], cx))),
+                        ty: cx.ty(source.span).expect("checked expression"),
+                        span: source.span,
+                    },
+                    source,
+                    cx,
+                );
             }
             let constructor = match cx.typed.resolution.symbols[id.0].kind {
                 SymbolKind::Builtin(Builtin::Some) => Some(h::ExprKind::Some as fn(_) -> _),
@@ -1283,11 +1326,15 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                 _ => None,
             };
             if let Some(constructor) = constructor {
-                return h::Expr {
-                    kind: constructor(Box::new(expression(&arguments[0], cx))),
-                    ty: cx.ty(source.span).expect("checked expression"),
-                    span: source.span,
-                };
+                return wrap_lowered(
+                    h::Expr {
+                        kind: constructor(Box::new(expression(&arguments[0], cx))),
+                        ty: cx.ty(source.span).expect("checked expression"),
+                        span: source.span,
+                    },
+                    source,
+                    cx,
+                );
             }
             if cx.typed.resolution.symbols[id.0].kind == SymbolKind::Builtin(Builtin::Ptr) {
                 let operand = expression(&arguments[0], cx);
@@ -1299,22 +1346,30 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     }
                     _ => h::ExprKind::AddressOf(Box::new(operand)),
                 };
-                return h::Expr {
-                    kind,
-                    ty: cx.ty(source.span).expect("checked expression"),
-                    span: source.span,
-                };
+                return wrap_lowered(
+                    h::Expr {
+                        kind,
+                        ty: cx.ty(source.span).expect("checked expression"),
+                        span: source.span,
+                    },
+                    source,
+                    cx,
+                );
             }
             if let Some(&(id, field)) =
                 cx.tables()
                     .layout_queries
                     .get(&(cx.file.get(), source.span.start, source.span.end))
             {
-                return h::Expr {
-                    kind: h::ExprKind::LayoutOf { id, field },
-                    ty: cx.ty(source.span).expect("checked expression"),
-                    span: source.span,
-                };
+                return wrap_lowered(
+                    h::Expr {
+                        kind: h::ExprKind::LayoutOf { id, field },
+                        ty: cx.ty(source.span).expect("checked expression"),
+                        span: source.span,
+                    },
+                    source,
+                    cx,
+                );
             }
             if let SymbolKind::Builtin(
                 builtin @ (Builtin::Load
@@ -1353,11 +1408,15 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
                     Builtin::Addr => h::ExprKind::PointerAddr(pointer),
                     _ => h::ExprKind::PointerFrom(pointer),
                 };
-                return h::Expr {
-                    kind,
-                    ty: cx.ty(source.span).expect("checked expression"),
-                    span: source.span,
-                };
+                return wrap_lowered(
+                    h::Expr {
+                        kind,
+                        ty: cx.ty(source.span).expect("checked expression"),
+                        span: source.span,
+                    },
+                    source,
+                    cx,
+                );
             }
             let target = match cx.typed.resolution.symbols[id.0].kind {
                 SymbolKind::Builtin(Builtin::Print) => h::CallTarget::Print,
@@ -1376,11 +1435,19 @@ fn expression(source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
     wrap_expression(kind, source, cx)
 }
 fn wrap_expression(kind: h::ExprKind, source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
-    let mut lowered = h::Expr {
+    let lowered = h::Expr {
         kind,
         ty: cx.ty(source.span).expect("checked expression"),
         span: source.span,
     };
+    wrap_lowered(lowered, source, cx)
+}
+/// Apply what the checker recorded at `source`'s span: a class widened into an
+/// interface, then a value wrapped into an expected `Option`. Every lowered
+/// expression passes through here, including a call lowered to one of the
+/// builtin forms — `int(n)` returned as an `Option<int>` once reached the C
+/// unwrapped, because those forms returned before this step.
+fn wrap_lowered(mut lowered: h::Expr, source: &ast::Expr, cx: &Lowering<'_>) -> h::Expr {
     // A class used where an interface was expected becomes the pair of the
     // object and that interface's table. It happens first, so that a class
     // going into an `Option<Interface>` is widened and then wrapped.
