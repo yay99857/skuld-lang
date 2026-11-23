@@ -1,0 +1,13 @@
+12 [hello, world]
+36 [0123456789abcdefghijklmnopqrstuvwxyz]
+2 [ç]
+2 [ok]
+0 []
+malformed response: both Transfer-Encoding and Content-Length
+malformed response: transfer coding `gzip, chunked` is not supported
+malformed response: body shorter than its chunks
+malformed response: chunk not followed by CRLF
+malformed response: chunk size
+malformed response: chunk size
+malformed response: chunked body ended early
+malformed response: chunk larger than the body

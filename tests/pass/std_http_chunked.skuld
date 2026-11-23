@@ -1,0 +1,48 @@
+// The chunked transfer coding, which every HTTP/1.1 recipient must read
+// (RFC 9112 §7.1). It was missing until a program written against a real API
+// — `examples/issues.skuld` — got its first large answer from GitHub, whose
+// body began with the size of its first chunk in hexadecimal.
+
+import "std/http"
+
+func bytes_of(text: string) -> []u8 {
+    var out: []u8 = []
+    for byte in text.bytes() {
+        out.push(byte)
+    }
+    return out
+}
+
+func show(raw: string) {
+    match http.parse_response(bytes_of(raw)) {
+        Ok(response): print("${response.body.len()} [${response.body}]")
+        Err(reason): print(http.describe(reason))
+    }
+}
+
+func main() {
+    let head = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+    show("${head}5\r\nhello\r\n7\r\n, world\r\n0\r\n\r\n")
+    // Upper- and lower-case hex, an extension to ignore, and a trailer section
+    // to discard.
+    show("${head}A;name=value\r\n0123456789\r\n1a\r\nabcdefghijklmnopqrstuvwxyz\r\n0\r\nChecksum: 1\r\nOther: 2\r\n\r\n")
+    // A character split across two chunks is whole once they are joined:
+    // `ç` is two bytes, and each chunk carries one.
+    let cedilla = "ç"
+    show("${head}1\r\n${cedilla[0..1]}\r\n1\r\n${cedilla[1..2]}\r\n0\r\n\r\n")
+    // The coding's name is case-insensitive.
+    show("HTTP/1.1 200 OK\r\nTransfer-Encoding: Chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n")
+    // An empty body.
+    show("${head}0\r\n\r\n")
+
+    // Refused: both framings at once, a coding this client cannot decode,
+    // and every way a chunked body can be cut short or malformed.
+    show("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Length: 5\r\n\r\n5\r\nhello\r\n0\r\n\r\n")
+    show("HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip, chunked\r\n\r\n0\r\n\r\n")
+    show("${head}5\r\nhel")
+    show("${head}5\r\nhelloXX0\r\n\r\n")
+    show("${head}zz\r\n")
+    show("${head}5\r\nhello\r\n")
+    show("${head}0\r\nTrailer: unterminated\r\n")
+    show("${head}FFFFFFFFFFFFFFFFFFFFFFFF\r\nx\r\n0\r\n\r\n")
+}

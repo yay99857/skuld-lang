@@ -230,6 +230,85 @@ func unbroken(text: string) -> bool {
     return true
 }
 
+// The chunked transfer coding, RFC 9112 §7.1: chunks of `size` bytes, each
+// size in hexadecimal on a line of its own, until a size of zero, then an
+// optional trailer section and an empty line. Chunk extensions after a `;` are
+// ignored, which §7.1.1 asks of a recipient that does not recognise them, and
+// trailer fields are discarded, which §7.1.2 permits.
+//
+// A size is checked against the bytes that are actually left before it grows
+// further, so an enormous numeral is refused as a short body rather than
+// overflowing — the hazard §7.1 tells a recipient to anticipate.
+func dechunk(raw: []u8) -> Result<[]u8, HttpError> {
+    var content: []u8 = []
+    var at = 0
+    loop {
+        var size = 0
+        var digits_read = 0
+        while at < raw.len() {
+            let value = hex_digit(raw[at]) else {
+                break
+            }
+            size = size * 16 + value
+            if size > raw.len() {
+                return Err(HttpError.Malformed("chunk larger than the body"))
+            }
+            digits_read += 1
+            at += 1
+        }
+        if digits_read == 0 {
+            return Err(HttpError.Malformed("chunk size"))
+        }
+        at = line_end(raw, at)?
+        if size == 0 {
+            // The trailer section: field lines until an empty one.
+            loop {
+                let start = at
+                at = line_end(raw, at)?
+                if at - start == 2 {
+                    return Ok(content)
+                }
+            }
+        }
+        if at + size + 2 > raw.len() {
+            return Err(HttpError.Malformed("body shorter than its chunks"))
+        }
+        for offset in 0..size {
+            content.push(raw[at + offset])
+        }
+        at += size
+        if raw[at] != 13 || raw[at + 1] != 10 {
+            return Err(HttpError.Malformed("chunk not followed by CRLF"))
+        }
+        at += 2
+    }
+}
+
+// The position just past the CRLF that ends the line containing `from`.
+func line_end(raw: []u8, from: int) -> Result<int, HttpError> {
+    var at = from
+    while at + 1 < raw.len() {
+        if raw[at] == 13 && raw[at + 1] == 10 {
+            return Ok(at + 2)
+        }
+        at += 1
+    }
+    return Err(HttpError.Malformed("chunked body ended early"))
+}
+
+func hex_digit(byte: u8) -> Option<int> {
+    if byte >= 48 && byte <= 57 {
+        return int(byte - 48)
+    }
+    if byte >= 97 && byte <= 102 {
+        return int(byte - 87)
+    }
+    if byte >= 65 && byte <= 70 {
+        return int(byte - 55)
+    }
+    return None
+}
+
 // The head is ASCII by definition, so it is decoded before being split; the
 // body is decoded separately and is the only part that can fail on UTF-8.
 pub func parse_response(raw: []u8) -> Result<Response, HttpError> {
@@ -287,6 +366,38 @@ pub func parse_response(raw: []u8) -> Result<Response, HttpError> {
             }
         }
         line = line + 1
+    }
+    // How the body is framed, by RFC 9112 §6.3. A `Transfer-Encoding` would
+    // override a `Content-Length`, and a response carrying both "ought to be
+    // handled as an error" there, since one reader trusting each is how a
+    // response is smuggled past another — so it is refused, like a header
+    // that would split a request.
+    var coding: Option<string> = None
+    var declared = false
+    for entry in headers {
+        let name = lower(entry.name)
+        if name == "transfer-encoding" {
+            coding = lower(entry.value)
+        }
+        if name == "content-length" {
+            declared = true
+        }
+    }
+    if let encoding = coding {
+        if declared {
+            return Err(HttpError.Malformed("both Transfer-Encoding and Content-Length"))
+        }
+        // This client asks for no coding, so the only one it must read is the
+        // one every HTTP/1.1 recipient must (§7.1). Anything else — `gzip`,
+        // or `gzip, chunked` — is content this client cannot decode.
+        if encoding != "chunked" {
+            return Err(HttpError.Malformed("transfer coding `${encoding}` is not supported"))
+        }
+        let content = dechunk(body_bytes)?
+        let decoded = bytes_to_string(content) else invalid {
+            return Err(HttpError.Encoding(invalid))
+        }
+        return Ok(new Response(status: status, reason: reason, headers: headers, body: decoded))
     }
     // A declared length wins over what arrived, so a longer read is truncated
     // and a shorter one is reported rather than quietly accepted.
