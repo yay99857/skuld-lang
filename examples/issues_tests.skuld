@@ -1,0 +1,115 @@
+// The tests for `issues`, run by `skuld test examples/issues_tests.skuld`.
+// None of them touches the network: the GitHub answer is written below, in
+// the shape the API documents for `GET /repos/{owner}/{repo}/issues`, cut down
+// to the fields the program reads.
+
+import "std/json"
+import "std/testing"
+import "issues"
+
+// The answer, one line of JSON per line of source.
+func listing_text() -> string {
+    var text = ""
+    text += "["
+    text += "  {\"number\": 42, \"title\": \"Crash when the file is empty\", \"state\": \"open\","
+    text += "   \"comments\": 3, \"user\": {\"login\": \"ada\"},"
+    text += "   \"labels\": [{\"name\": \"bug\"}, {\"name\": \"parser\"}]},"
+    text += "  {\"number\": 41, \"title\": \"Add a --quiet flag\", \"state\": \"open\","
+    text += "   \"comments\": 0, \"user\": {\"login\": \"linus\"}, \"labels\": [],"
+    text += "   \"pull_request\": {\"url\": \"https://example.invalid/pulls/41\"}},"
+    text += "  {\"number\": 40, \"title\": \"Documentação em português\", \"state\": \"closed\","
+    text += "   \"comments\": 1, \"user\": null, \"labels\": [{\"name\": \"docs\"}, {\"name\": \"bug\"}]}"
+    text += "]"
+    return text
+}
+
+func listing() -> []issues.Issue {
+    let document = json.parse(listing_text()) else problem {
+        testing.fail(json.describe(problem))
+        return []
+    }
+    let found = issues.decode(document) else problem {
+        testing.fail(issues.describe_decode(problem))
+        return []
+    }
+    return found
+}
+
+func test_a_repository_is_enough() {
+    let query = issues.parse_arguments(["rust-lang/rust"]) else problem {
+        testing.fail(issues.describe(problem))
+        return
+    }
+    testing.equal_text(query.owner, "rust-lang", "owner")
+    testing.equal_text(query.repository, "rust", "repository")
+    testing.equal_text(issues.url(query), "https://api.github.com/repos/rust-lang/rust/issues?state=open&per_page=10", "url")
+}
+
+func test_options_may_come_before_the_repository() {
+    let query = issues.parse_arguments(["--limit", "5", "--state", "closed", "a/b"]) else problem {
+        testing.fail(issues.describe(problem))
+        return
+    }
+    testing.equal_int(query.limit, 5, "limit")
+    testing.equal_text(query.state, "closed", "state")
+}
+
+func test_bad_arguments_are_refused_with_their_reason() {
+    let nothing: []string = []
+    for given in [nothing, ["rust"], ["a/b", "c/d"], ["a/b", "--limit", "0"], ["a/b", "--limit", "x1"], ["a/b", "--state"], ["a/b", "--verbose"], ["a/b", "--state", "draft"]] {
+        if let Ok(query) = issues.parse_arguments(given) {
+            testing.fail("accepted `${query.owner}/${query.repository}`")
+        }
+    }
+}
+
+func test_pull_requests_are_left_out() {
+    let found = listing()
+    testing.equal_int(found.len(), 2, "issues")
+    testing.equal_int(found[0].number, 42, "first")
+    testing.equal_int(found[1].number, 40, "second")
+}
+
+func test_fields_are_read_and_a_deleted_author_is_a_ghost() {
+    let found = listing()
+    testing.equal_text(found[0].author, "ada", "author")
+    testing.equal_int(found[0].comments, 3, "comments")
+    testing.equal_bool(found[0].open, true, "open")
+    testing.equal_text(found[1].author, "ghost", "deleted author")
+    testing.equal_bool(found[1].open, false, "closed")
+    testing.equal_int(found[1].labels.len(), 2, "labels")
+}
+
+func test_a_missing_field_names_the_entry() {
+    let document = json.parse("[{\"number\": 1, \"state\": \"open\", \"comments\": 0}]") else problem {
+        testing.fail(json.describe(problem))
+        return
+    }
+    match issues.decode(document) {
+        Ok(found): testing.fail("decoded ${found.len()} issues without a title")
+        Err(problem): testing.equal_text(issues.describe_decode(problem), "entry 0 has no usable `title`", "error")
+    }
+}
+
+func test_a_line_lays_out_every_field() {
+    let found = listing()
+    testing.equal_text(issues.render(found[0], 30), "#42     Crash when the file is empty    @ada  3 comments  [bug, parser]", "open issue")
+    testing.equal_text(issues.render(found[1], 20), "#40     Documentação em...  @ghost  1 comment  [docs, bug]  (closed)", "closed issue")
+}
+
+func test_shortening_never_splits_a_character() {
+    // `ç` and `ã` are two bytes each. Width 13 leaves room for ten bytes and
+    // the dots, and the tenth byte is the second half of `ç`.
+    testing.equal_text(issues.shorten("Documentação", 14), "Documentação", "fits")
+    testing.equal_text(issues.shorten("Documentação!", 10), "Documen...", "ascii cut")
+    testing.equal_text(issues.shorten("Documentação!", 13), "Documenta...", "moved back")
+}
+
+func test_labels_are_ranked_by_count_then_name() {
+    let ranked = issues.label_counts(listing())
+    testing.equal_int(ranked.len(), 3, "labels")
+    testing.equal_text(ranked[0].name, "bug", "most frequent")
+    testing.equal_int(ranked[0].count, 2, "bug count")
+    testing.equal_text(ranked[1].name, "docs", "alphabetical among equals")
+    testing.equal_text(ranked[2].name, "parser", "last")
+}

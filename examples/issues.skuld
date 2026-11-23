@@ -1,0 +1,90 @@
+// `issues` — list a GitHub repository's issues in the terminal.
+//
+// A native client for a real HTTPS API, in Skuld: arguments through `std/os`,
+// a verified TLS connection through `std/https`, the answer through
+// `std/json`, and everything that can be tested without a network in the
+// `issues` module next door.
+//
+//     skuld build examples/issues.skuld -lssl -lcrypto
+//     ./issues rust-lang/rust --limit 5
+//     ./issues torvalds/linux --state closed
+//
+// GitHub answers sixty unauthenticated requests an hour from one address.
+// Under the MSVC toolchain Windows builds use, the libraries are
+// `-llibssl -llibcrypto`.
+
+import "std/http"
+import "std/https"
+import "std/json"
+import "std/os"
+import "issues"
+
+unsafe extern "C" {
+    func write(handle: i32, buffer: *u8, count: u64) -> i64
+}
+
+func report(message: string) {
+    let line = "issues: ${message}\n"
+    let ignored = write(2, ptr(line), u64(line.len()))
+}
+
+func main() {
+    let given = os.parameters() else problem {
+        report(os.describe(problem))
+        os.exit(2)
+        return
+    }
+    let query = issues.parse_arguments(given) else problem {
+        report(issues.describe(problem))
+        report(issues.usage())
+        os.exit(2)
+        return
+    }
+    // GitHub refuses a request with no `User-Agent`, and the `Accept` header
+    // pins the version of the answer this program was written against.
+    let agent = new http.Header(name: "User-Agent", value: "skuld-issues-example")
+    let version = new http.Header(name: "Accept", value: "application/vnd.github+json")
+    let request = new http.Request(url: issues.url(query), headers: [agent, version])
+    let response = https.send(request) else problem {
+        report(https.describe(problem))
+        os.exit(1)
+        return
+    }
+    let document = json.parse(response.body) else problem {
+        report("the answer is not JSON: ${json.describe(problem)}")
+        os.exit(1)
+        return
+    }
+    if response.status != 200 {
+        // An error from the API carries its reason in `message`.
+        var reason = response.reason
+        if let message = json.lookup(document, "message") {
+            match message {
+                Text(text): reason = text
+                _: {}
+            }
+        }
+        report("GitHub answered ${response.status}: ${reason}")
+        os.exit(1)
+        return
+    }
+    let found = issues.decode(document) else problem {
+        report(issues.describe_decode(problem))
+        os.exit(1)
+        return
+    }
+    if found.len() == 0 {
+        print("no ${query.state} issues in ${query.owner}/${query.repository}")
+        return
+    }
+    for issue in found {
+        print(issues.render(issue, 60))
+    }
+    let labels = issues.label_counts(found)
+    if labels.len() > 0 {
+        print("")
+        for label in labels {
+            print("${label.count}  ${label.name}")
+        }
+    }
+}

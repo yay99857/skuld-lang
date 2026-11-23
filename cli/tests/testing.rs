@@ -72,6 +72,23 @@ fn the_example_application_has_its_own_passing_suite() {
 }
 
 #[test]
+fn the_issues_example_has_its_own_passing_suite() {
+    if !clang_available() {
+        eprintln!("skipping: clang is not on PATH");
+        return;
+    }
+    // A client for a real API, tested without the network: the answer it
+    // decodes is written into the test file.
+    let (out, err, code) = skuld_test(&repository("examples/issues_tests.skuld"));
+    assert_eq!(code, Some(0), "{out}{err}");
+    assert!(
+        out.contains("ok   test_pull_requests_are_left_out"),
+        "{out}"
+    );
+    assert!(out.contains("9 of 9 tests passed"), "{out}");
+}
+
+#[test]
 fn a_failing_test_stops_the_suite_and_fails_the_command() {
     if !clang_available() {
         eprintln!("skipping: clang is not on PATH");

@@ -1,0 +1,294 @@
+// The part of `issues` worth testing: reading the command line, building the
+// request URL, decoding GitHub's answer and laying it out. Nothing here
+// touches the network, so `examples/issues_tests.skuld` runs it against a
+// document written into the test.
+
+import "std/json"
+import "std/map"
+import "std/strings"
+
+// What the command line asked for.
+pub class Query {
+    owner: string
+    repository: string
+    state: string = "open"
+    limit: int = 10
+}
+
+pub enum ArgumentError {
+    // No `owner/repository` was given.
+    Missing,
+    // The repository was not written `owner/name`.
+    Repository(string),
+    // `--state` takes `open`, `closed` or `all`.
+    State(string),
+    // `--limit` takes a whole number from 1 to 100, GitHub's page size.
+    Limit(string),
+    // An option that is not one of ours, or one missing its value.
+    Option(string),
+    // A second positional argument.
+    Extra(string),
+}
+
+pub func describe(error: ArgumentError) -> string {
+    match error {
+        Missing: return "no repository given"
+        Repository(text): return "`${text}` is not written `owner/name`"
+        State(text): return "`--state` is `open`, `closed` or `all`, not `${text}`"
+        Limit(text): return "`--limit` is a number from 1 to 100, not `${text}`"
+        Option(text): return "unknown option or missing value: `${text}`"
+        Extra(text): return "one repository at a time; `${text}` is a second"
+    }
+}
+
+pub func usage() -> string {
+    return "usage: issues owner/name [--state open|closed|all] [--limit 1..100]"
+}
+
+pub func parse_arguments(given: []string) -> Result<Query, ArgumentError> {
+    var target: Option<string> = None
+    var state = "open"
+    var limit = 10
+    var index = 0
+    while index < given.len() {
+        let argument = given[index]
+        if argument == "--state" || argument == "--limit" {
+            if index + 1 >= given.len() {
+                return Err(.Option(argument))
+            }
+            let value = given[index + 1]
+            if argument == "--state" {
+                if value != "open" && value != "closed" && value != "all" {
+                    return Err(.State(value))
+                }
+                state = value
+            } else {
+                let number = parse_count(value) else {
+                    return Err(.Limit(value))
+                }
+                if number < 1 || number > 100 {
+                    return Err(.Limit(value))
+                }
+                limit = number
+            }
+            index += 2
+            continue
+        }
+        if strings.starts_with(argument, "-") {
+            return Err(.Option(argument))
+        }
+        if target.is_some() {
+            return Err(.Extra(argument))
+        }
+        target = argument
+        index += 1
+    }
+    let written = target else {
+        return Err(.Missing)
+    }
+    let parts = strings.split(written, "/")
+    if parts.len() != 2 || parts[0].len() == 0 || parts[1].len() == 0 {
+        return Err(.Repository(written))
+    }
+    return Ok(new Query(owner: parts[0], repository: parts[1], state: state, limit: limit))
+}
+
+// A decimal count, small enough that it cannot overflow: three digits at most
+// is all `--limit` needs.
+func parse_count(text: string) -> Option<int> {
+    if text.len() == 0 || text.len() > 3 {
+        return None
+    }
+    var value = 0
+    for byte in text.bytes() {
+        if byte < u8(48) || byte > u8(57) {
+            return None
+        }
+        value = value * 10 + int(byte - u8(48))
+    }
+    return value
+}
+
+pub func url(query: Query) -> string {
+    return "https://api.github.com/repos/${query.owner}/${query.repository}/issues?state=${query.state}&per_page=${query.limit}"
+}
+
+// One issue, with only the fields this program prints.
+pub struct Issue {
+    number: int
+    title: string
+    author: string
+    labels: []string
+    comments: int
+    open: bool
+}
+
+pub enum DecodeError {
+    // The document was not the array GitHub answers a listing with.
+    NotAList,
+    // An entry lacked a field, or had one of the wrong kind.
+    Field(MissingField),
+}
+
+// A variant carries one payload, so the entry and the field travel together.
+pub struct MissingField {
+    position: int
+    name: string
+}
+
+pub func describe_decode(error: DecodeError) -> string {
+    match error {
+        NotAList: return "the answer was not a list of issues"
+        Field(missing): return "entry ${missing.position} has no usable `${missing.name}`"
+    }
+}
+
+// The issues in a listing. GitHub lists pull requests on the same endpoint and
+// marks each with a `pull_request` member; those are left out, which is why
+// the result can be shorter than `--limit`.
+pub func decode(document: json.JsonValue) -> Result<[]Issue, DecodeError> {
+    let entries = items(document) else {
+        return Err(.NotAList)
+    }
+    let found: []Issue = []
+    for position in 0..entries.len() {
+        let entry = entries[position]
+        if json.lookup(entry, "pull_request").is_some() {
+            continue
+        }
+        let number = number_at(entry, "number") else {
+            return Err(.Field(MissingField { position: position, name: "number" }))
+        }
+        let title = text_at(entry, "title") else {
+            return Err(.Field(MissingField { position: position, name: "title" }))
+        }
+        let state = text_at(entry, "state") else {
+            return Err(.Field(MissingField { position: position, name: "state" }))
+        }
+        let comments = number_at(entry, "comments") else {
+            return Err(.Field(MissingField { position: position, name: "comments" }))
+        }
+        // A deleted account leaves `user` null, which is not an error.
+        var author = "ghost"
+        if let user = json.lookup(entry, "user") {
+            if let login = text_at(user, "login") {
+                author = login
+            }
+        }
+        let labels: []string = []
+        if let listed = json.lookup(entry, "labels") {
+            if let all = items(listed) {
+                for label in all {
+                    if let name = text_at(label, "name") {
+                        labels.push(name)
+                    }
+                }
+            }
+        }
+        let open = state == "open"
+        found.push(Issue { number: number, title: title, author: author, labels: labels, comments: comments, open: open })
+    }
+    return Ok(found)
+}
+
+func items(value: json.JsonValue) -> Option<[]json.JsonValue> {
+    match value {
+        Items(all): return all
+        _: return None
+    }
+}
+
+func text_at(value: json.JsonValue, key: string) -> Option<string> {
+    let member = json.lookup(value, key) else {
+        return None
+    }
+    match member {
+        Text(text): return text
+        _: return None
+    }
+}
+
+// JSON numbers are floats; an issue number or a count is a whole one, and a
+// value that is not is refused rather than truncated.
+func number_at(value: json.JsonValue, key: string) -> Option<int> {
+    let member = json.lookup(value, key) else {
+        return None
+    }
+    match member {
+        Number(n): {
+            if n < 0.0 || n > 1000000000000.0 || float(int(n)) != n {
+                return None
+            }
+            return int(n)
+        }
+        _: return None
+    }
+}
+
+// One line per issue: number, title cut to `width` bytes, author, comments and
+// labels.
+pub func render(issue: Issue, width: int) -> string {
+    var line = "#${issue.number}"
+    while line.len() < 8 {
+        line = line + " "
+    }
+    var title = shorten(issue.title, width)
+    while title.len() < width {
+        title = title + " "
+    }
+    line = "${line}${title}  @${issue.author}"
+    if issue.comments == 1 {
+        line = "${line}  1 comment"
+    } else if issue.comments > 1 {
+        line = "${line}  ${issue.comments} comments"
+    }
+    if issue.labels.len() > 0 {
+        line = "${line}  [${strings.join(issue.labels, ", ")}]"
+    }
+    if issue.open == false {
+        line = "${line}  (closed)"
+    }
+    return line
+}
+
+// At most `width` bytes, ending in `...` when something was cut, and never
+// cutting a UTF-8 character in half: a byte of the form 10xxxxxx continues the
+// character before it, so the cut moves back until it is not one.
+pub func shorten(text: string, width: int) -> string {
+    if text.len() <= width {
+        return text
+    }
+    var end = width - 3
+    while end > 0 && text[end] & u8(0xC0) == u8(0x80) {
+        end -= 1
+    }
+    return "${text[0..end]}..."
+}
+
+// How often each label appears, most frequent first and alphabetical among
+// equals, so the summary reads the same on every run.
+pub struct LabelCount {
+    name: string
+    count: int
+}
+
+pub func label_counts(issues: []Issue) -> []LabelCount {
+    let counts = map.new_map()
+    for issue in issues {
+        for label in issue.labels {
+            let before = counts.get(label) else {
+                let ignored = counts.set(label, 1)
+                continue
+            }
+            let ignored = counts.set(label, before + 1)
+        }
+    }
+    let names = counts.keys()
+    let totals = counts.values()
+    let ranked: []LabelCount = []
+    for index in 0..names.len() {
+        ranked.push(LabelCount { name: names[index], count: totals[index] })
+    }
+    ranked.sort((a, b) => b.count.compare(a.count).then(a.name.compare(b.name)))
+    return ranked
+}

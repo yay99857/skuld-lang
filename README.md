@@ -454,7 +454,11 @@ diagnostics, completion, hover, definition, find-references, rename, document
 highlights, the document outline, formatting through `skuld fmt`'s own
 formatter, signature help, inlay hints for inferred binding types and semantic
 tokens, and
-`examples/jsontool.skuld` is a multi-module native tool with its own test suite.
+`examples/jsontool.skuld` is a multi-module native tool with its own test suite,
+and `examples/issues.skuld` lists a GitHub repository's issues over verified
+HTTPS (`skuld build examples/issues.skuld -lssl -lcrypto`, then
+`./issues rust-lang/rust --limit 5`), with a suite that runs without the
+network.
 
 ## Editors
 
