@@ -87,6 +87,10 @@ struct Formatter<'a> {
     /// and not the end of the previous comment alone, or every comment that
     /// follows a run of code inherits the gap before it.
     covered: usize,
+    /// Where the innermost enclosing block ends. A trailing comment is taken
+    /// only from before it, so a comment written after a block's `}` on the
+    /// same source line is never pulled inside the block.
+    block_end: usize,
 }
 
 enum Decl<'a> {
@@ -125,6 +129,7 @@ impl<'a> Formatter<'a> {
             indent_level: 0,
             needs_indent: true,
             covered: 0,
+            block_end: usize::MAX,
         }
     }
 
@@ -233,6 +238,14 @@ impl<'a> Formatter<'a> {
 
     /// Emit a trailing comment on the same line, then a newline.
     fn emit_trailing_comment(&mut self, line_end_pos: usize) {
+        self.emit_trailing_comment_before(line_end_pos, usize::MAX);
+    }
+
+    /// The same, taking only a comment that starts before `bound`. A block's
+    /// `{` is followed by its own statements, so a comment after them on the
+    /// same source line — `f((x) -> int { return x }, 1) // why` — belongs to
+    /// the enclosing statement, not to the block's opening line.
+    fn emit_trailing_comment_before(&mut self, line_end_pos: usize, bound: usize) {
         let mut scan = line_end_pos;
         let bytes = self.source.as_bytes();
         while scan < bytes.len() && (bytes[scan] == b' ' || bytes[scan] == b'\t') {
@@ -243,8 +256,9 @@ impl<'a> Formatter<'a> {
             let comment_start = self.comments[self.comment_idx].span.start;
             // The comment is on the same line if there is no newline between
             // the end of the code and the comment.
-            let on_same_line =
-                comment_start <= scan || !self.source[line_end_pos..comment_start].contains('\n');
+            let on_same_line = comment_start < bound.min(self.block_end)
+                && (comment_start <= scan
+                    || !self.source[line_end_pos..comment_start].contains('\n'));
             if on_same_line {
                 self.push(" ");
                 let text = self.comments[self.comment_idx].text.clone();
@@ -592,14 +606,14 @@ impl<'a> Formatter<'a> {
             return;
         }
         self.push("{");
-        self.emit_trailing_comment(block.span.start);
+        self.emit_trailing_comment_before(block.span.start, block.statements[0].span.start);
         self.indent();
-
+        let outer = std::mem::replace(&mut self.block_end, block.span.end);
         for stmt in &block.statements {
             self.lead_in(stmt.span.start);
             self.format_statement(stmt);
         }
-
+        self.block_end = outer;
         self.dedent();
         self.emit_comments_before(block.span.end);
         self.push("}");
@@ -805,12 +819,14 @@ impl<'a> Formatter<'a> {
             return;
         }
         self.push("{");
-        self.emit_trailing_comment(block.span.start);
+        self.emit_trailing_comment_before(block.span.start, block.statements[0].span.start);
         self.indent();
+        let outer = std::mem::replace(&mut self.block_end, block.span.end);
         for stmt in &block.statements {
             self.lead_in(stmt.span.start);
             self.format_statement(stmt);
         }
+        self.block_end = outer;
         self.dedent();
         self.emit_comments_before(block.span.end);
         self.push("}");
@@ -1009,8 +1025,12 @@ impl<'a> Formatter<'a> {
                         self.format_expr(expr);
                     }
                 } else {
+                    // Inside an expression the block ends at its `}`: the
+                    // newline `format_block_inline` adds belongs to a
+                    // statement, and here it split `}` from the `, 2)` or `)`
+                    // that follows it.
                     self.push(" ");
-                    self.format_block_inline(&lambda.body);
+                    self.format_block_no_trail(&lambda.body);
                 }
             }
             ExprKind::Try(inner) => {

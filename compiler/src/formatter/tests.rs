@@ -296,3 +296,19 @@ fn a_static_reads_like_the_constant_it_is_not() {
     let input = "static counter: int = 0\n\npub static bytes: [4]u8 = [0; 4]\n\nfunc main() {\n    counter = counter + 1\n}\n";
     assert_eq!(fmt(input), input);
 }
+
+#[test]
+fn a_block_lambda_argument_keeps_what_follows_it_on_its_closing_line() {
+    let input = "func main() {\n    let a = apply((x: int) -> int {\n        return x + 1\n    }, 2)\n    items.sort((p: int, q: int) -> Ordering {\n        return p.compare(q)\n    })\n}\n";
+    // Already formatted: the `}` of each lambda is followed by the rest of the
+    // call, not by a newline that would leave `, 2)` or `)` on a line alone.
+    assert_eq!(fmt(input), input);
+}
+
+#[test]
+fn a_comment_after_a_lambda_stays_with_its_statement() {
+    let input = "func main() {\n    let b = apply((x: int) -> int { return x }, 1) // why\n}\n";
+    let expected = "func main() {\n    let b = apply((x: int) -> int {\n        return x\n    }, 1) // why\n}\n";
+    assert_eq!(fmt(input), expected);
+    assert_eq!(fmt(expected), expected);
+}
